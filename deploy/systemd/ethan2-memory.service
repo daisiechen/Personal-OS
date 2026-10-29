@@ -1,0 +1,14 @@
+[Unit]
+Description=小伴 v2 每晚记忆整理：把前一天的聊天整理进 Wiki 和人物卡（ethan/nightly.py）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name memory -- /usr/bin/python3 -m ethan.nightly --data /home/ethan/data
+TimeoutStartSec=15min

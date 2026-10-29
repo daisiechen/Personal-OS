@@ -1,0 +1,17 @@
+{
+  "season_end": "2026-12-31",
+  "bosses": [
+    {"title": "减脂 4 公斤", "territory": "健康", "main": true, "measure": {"kind": "weight_avg7", "baseline": 60, "target": 56, "unit": "kg"}},
+    {"title": "做出第一个小产品并上线", "territory": "事业", "measure": {"kind": "launch"}},
+    {"title": "每周认识一个新朋友", "territory": "社交", "measure": {"kind": "count_week", "target": 1, "unit": "个"}}
+  ],
+  "habits": [
+    {"title": "训练", "cadence": "daily"},
+    {"title": "0 点前睡", "cadence": "daily"},
+    {"title": "读书 20 分钟", "cadence": "daily"},
+    {"title": "每周 1 次新体验", "cadence": "weekly"}
+  ],
+  "todos": ["约体检", "整理衣柜"],
+  "for_ai": ["列一份附近的健身房比较（价格、距离、器械）"],
+  "later": ["明年考一个证书"]
+}

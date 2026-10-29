@@ -1,0 +1,9 @@
+[Unit]
+Description=每小时同步 小伴 v2 的明文看板
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

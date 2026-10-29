@@ -1,0 +1,17 @@
+[Unit]
+Description=小伴 v2 接收口（只监听本机，经 Cloudflare Tunnel 对外为 ethan.example.com）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.inbox --data /home/ethan/data --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,42 @@
+{
+  "_说明": "每周 5 练训练模板（设计第 3 节）：上下肢分化 + 体态。每个肌群每周练 2 次、每周 10–20 组；减脂期保持力量训练以减少肌肉流失。reps 是次数区间（秒为单位时 unit=秒），用双重递增：所有组做到上限，下次加 increment；连续两次有组没做到下限，重量降 10%。疼痛超过 3 分（满分 10）换成动作库里的 easier。",
+  "sources": [
+    "Schoenfeld BJ, Ogborn D, Krieger JW (2016). Effects of resistance training frequency on measures of muscle hypertrophy: a systematic review and meta-analysis. Sports Medicine 46:1689–1697. https://doi.org/10.1007/s40279-016-0543-8",
+    "Schoenfeld BJ, Ogborn D, Krieger JW (2017). Dose-response relationship between weekly resistance training volume and increases in muscle mass: a systematic review and meta-analysis. Journal of Sports Sciences 35:1073–1082. https://doi.org/10.1080/02640414.2016.1210197",
+    "American College of Sports Medicine (2009). Progression models in resistance training for healthy adults. Medicine & Science in Sports & Exercise 41:687–708. https://doi.org/10.1249/MSS.0b013e3181915670"
+  ],
+  "warmup": {"minutes": 10, "title": "体态热身（圆肩、头前引、骨盆前倾）",
+    "items": ["泡沫轴胸椎伸展 1 分钟", "弹力带肩外旋 2×15", "下巴回收 2×10", "跪姿髋屈肌拉伸每侧 45 秒", "臀桥激活 2×15"]},
+  "days": {
+    "0": {"focus": "下肢（臀为主）", "exercises": [
+      {"id": "hip_thrust_machine", "sets": 3, "reps": [8, 12]},
+      {"id": "leg_press", "sets": 3, "reps": [10, 12]},
+      {"id": "bulgarian_split_squat_db", "sets": 3, "reps": [8, 10], "per_side": true},
+      {"id": "cable_kickback", "sets": 3, "reps": [12, 15], "per_side": true},
+      {"id": "side_plank", "sets": 3, "reps": [30, 45], "unit": "秒", "per_side": true}]},
+    "1": {"focus": "上肢（背和肩，纠正圆肩）", "exercises": [
+      {"id": "lat_pulldown", "sets": 3, "reps": [8, 12]},
+      {"id": "seated_cable_row", "sets": 3, "reps": [8, 12]},
+      {"id": "db_shoulder_press_seated", "sets": 3, "reps": [8, 12]},
+      {"id": "face_pull", "sets": 3, "reps": [12, 15]},
+      {"id": "db_lateral_raise", "sets": 3, "reps": [12, 15]}]},
+    "2": {"focus": "体态 + 核心 + 有氧", "exercises": [
+      {"id": "dead_bug", "sets": 3, "reps": [8, 10], "per_side": true},
+      {"id": "bird_dog", "sets": 3, "reps": [8, 10], "per_side": true},
+      {"id": "pallof_press", "sets": 3, "reps": [10, 12], "per_side": true},
+      {"id": "glute_bridge", "sets": 3, "reps": [15, 20]},
+      {"id": "incline_walk", "sets": 1, "reps": [30, 30], "unit": "分钟"}]},
+    "3": {"focus": "下肢（腿后侧和臀）", "exercises": [
+      {"id": "db_rdl", "sets": 3, "reps": [8, 12]},
+      {"id": "seated_leg_curl", "sets": 3, "reps": [10, 12]},
+      {"id": "hack_squat", "sets": 3, "reps": [8, 12]},
+      {"id": "hip_abduction", "sets": 3, "reps": [12, 15]},
+      {"id": "back_extension", "sets": 3, "reps": [10, 12]}]},
+    "4": {"focus": "上肢 + 核心", "exercises": [
+      {"id": "assisted_pullup", "sets": 3, "reps": [6, 10]},
+      {"id": "chest_supported_db_row", "sets": 3, "reps": [8, 12]},
+      {"id": "db_bench_press", "sets": 3, "reps": [8, 12]},
+      {"id": "cable_rear_delt_fly", "sets": 3, "reps": [12, 15]},
+      {"id": "plank", "sets": 3, "reps": [30, 45], "unit": "秒"}]}
+  }
+}

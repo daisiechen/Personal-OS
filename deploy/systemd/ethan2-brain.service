@@ -1,0 +1,14 @@
+[Unit]
+Description=小伴 v2 第二大脑：给新资料写一句话摘要、标签和领地（ethan/brain_enrich.py）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name brain -- /usr/bin/python3 -m ethan.brain_enrich --data /home/ethan/data
+TimeoutStartSec=20min

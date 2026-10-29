@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/home/ethan/Personal-OS/scripts/ethan-chat.sh:*)",
+      "Read(/home/ethan/data/media/**)"
+    ]
+  }
+}

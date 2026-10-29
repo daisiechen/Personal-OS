@@ -1,0 +1,9 @@
+[Unit]
+Description=每 5 分钟看一次有没有 Codex 的活
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

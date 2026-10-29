@@ -1,0 +1,13 @@
+[Unit]
+Description=小伴 v2 每日计划器（算事实、排计划、写苹果日历、出早报素材）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name planner -- /usr/bin/python3 -m ethan.planner --data /home/ethan/data

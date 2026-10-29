@@ -1,0 +1,9 @@
+[Unit]
+Description=每天伦敦 06:45 给 Grok 备英语课（计划 06:30 排好之后，7 点看板同步时进 ethan-vault）
+
+[Timer]
+OnCalendar=*-*-* 06:45:00 Europe/London
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,19 @@
+# 凭据与本地配置
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# 记忆数据不进入本仓库
+memory-export/
+*.sqlite
+*.db
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 系统
+.DS_Store

@@ -1,0 +1,14 @@
+[Unit]
+Description=小伴 v2 准备员：替 Mia 把答应准备的事做好（ethan/prep.py）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name prep -- /usr/bin/python3 -m ethan.prep --data /home/ethan/data
+TimeoutStartSec=40min

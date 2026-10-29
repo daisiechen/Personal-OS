@@ -1,0 +1,14 @@
+[Unit]
+Description=小伴 v2 同步 Monzo 交易（ethan/finance.py）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name money -- /usr/bin/python3 -m ethan.finance --data /home/ethan/data
+TimeoutStartSec=5min

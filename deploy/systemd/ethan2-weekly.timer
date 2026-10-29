@@ -1,0 +1,9 @@
+[Unit]
+Description=每周日 20:00（伦敦时间）发 小伴 v2 周报
+
+[Timer]
+OnCalendar=Sun *-*-* 20:00:00 Europe/London
+Persistent=false
+
+[Install]
+WantedBy=timers.target

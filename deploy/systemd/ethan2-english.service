@@ -1,0 +1,14 @@
+[Unit]
+Description=小伴 v2 英语陪练：按她今天的日程给 Grok 备课（ethan/english.py）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name english -- /usr/bin/python3 -m ethan.english --data /home/ethan/data
+TimeoutStartSec=10min

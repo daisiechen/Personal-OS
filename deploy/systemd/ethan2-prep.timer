@@ -1,0 +1,9 @@
+[Unit]
+Description=白天每 2 小时让准备员做一两件 小伴 答应准备的事（伦敦 8 点到 22 点）
+
+[Timer]
+OnCalendar=*-*-* 08,10,12,14,16,18,20,22:20:00 Europe/London
+Persistent=true
+
+[Install]
+WantedBy=timers.target

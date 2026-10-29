@@ -1,0 +1,9 @@
+[Unit]
+Description=小伴 v2 自动部署（main 有新提交就上线，失败退回）
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/home/ethan/Personal-OS
+ExecStart=/usr/bin/python3 -m ethan.autodeploy --repo /home/ethan/Personal-OS --data /home/ethan/data

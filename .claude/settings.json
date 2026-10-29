@@ -1,0 +1,103 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(cat /home/ethan/data/deploy-status.json)",
+      "Bash(tail /home/ethan/data/deploy-log.jsonl)",
+      "Bash(head:*)",
+      "Bash(wc:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git ls-remote:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git fetch:*)",
+      "Bash(systemctl status:*)",
+      "Bash(systemctl is-active:*)",
+      "Bash(systemctl list-timers:*)",
+      "Bash(journalctl:*)",
+      "Bash(df:*)",
+      "Bash(free:*)",
+      "Bash(nproc)",
+      "Bash(whoami)",
+      "Bash(hostname)",
+      "Bash(pwd)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git merge:*)",
+      "Bash(git pull:*)",
+      "Bash(git push:*)",
+      "Bash(git stash:*)",
+      "Bash(git worktree:*)",
+      "Bash(node --check:*)",
+      "Bash(python3 -m ethan.cloud:*)",
+      "Bash(python3 -m ethan.season_report:*)",
+      "Bash(grep:*)",
+      "Bash(sed -n:*)"
+    ],
+    "deny": [
+      "Read(/home/ethan/.config/**)",
+      "Read(/home/ethan/.ssh/**)",
+      "Read(/home/ethan/.claude/.credentials.json)",
+      "Read(/home/ethan/.codex/**)",
+      "Bash(cat /home/ethan/.config:*)",
+      "Bash(cat /home/ethan/.ssh:*)",
+      "Bash(head /home/ethan/.config:*)",
+      "Bash(head /home/ethan/.ssh:*)",
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git push origin --force:*)",
+      "Bash(git reset --hard:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; curl -s -m 5 -A ethan-hook -H \"Authorization: Bearer $t\" -H \"Content-Type: application/json\" --data-binary @- \"https://ethan.example.com/cloud/agent/hook?where=cloud\" >/dev/null 2>&1 || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; curl -s -m 5 -A ethan-hook -H \"Authorization: Bearer $t\" -H \"Content-Type: application/json\" --data-binary @- \"https://ethan.example.com/cloud/agent/hook?where=cloud\" >/dev/null 2>&1 || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; curl -s -m 5 -A ethan-hook -H \"Authorization: Bearer $t\" -H \"Content-Type: application/json\" --data-binary @- \"https://ethan.example.com/cloud/agent/hook?where=cloud\" >/dev/null 2>&1 || true",
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; curl -s -m 5 -A ethan-hook -H \"Authorization: Bearer $t\" -H \"Content-Type: application/json\" --data-binary @- \"https://ethan.example.com/cloud/agent/hook?where=cloud\" >/dev/null 2>&1 || true",
+            "async": true
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=小伴 v2 记忆加密备份
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name backup -- /usr/bin/python3 -m ethan.backup backup --data /home/ethan/data --repo /home/ethan/ethan-memory-backup --key /home/ethan/.config/ethan/backup.key --push

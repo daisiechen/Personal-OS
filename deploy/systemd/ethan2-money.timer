@@ -1,0 +1,9 @@
+[Unit]
+Description=每小时同步一次 Monzo 交易
+
+[Timer]
+OnBootSec=15min
+OnUnitInactiveSec=1h
+
+[Install]
+WantedBy=timers.target

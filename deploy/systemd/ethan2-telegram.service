@@ -1,0 +1,17 @@
+[Unit]
+Description=小伴 v2 Telegram 入口
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.channels.telegram --data /home/ethan/data
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

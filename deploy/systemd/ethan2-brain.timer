@@ -1,0 +1,9 @@
+[Unit]
+Description=每 30 分钟整理一次第二大脑的新资料
+
+[Timer]
+OnBootSec=10min
+OnUnitInactiveSec=30min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=每天伦敦 03:00 整理前一天的聊天记忆
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/London
+Persistent=true
+
+[Install]
+WantedBy=timers.target

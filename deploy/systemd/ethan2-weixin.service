@@ -1,0 +1,19 @@
+[Unit]
+Description=小伴 v2 微信入口（ClawBot）
+After=network-online.target
+Wants=network-online.target
+# Mia 扫码登录后才有凭据，没有就不启动
+ConditionPathExists=/home/ethan/.config/ethan/weixin.json
+
+[Service]
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 -m ethan.channels.weixin run --data /home/ethan/data
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
