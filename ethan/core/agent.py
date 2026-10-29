@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .. import achievements, brain, finance, focus, lifelog, domains, inbox, life, links, nudges, photos, prep, quests, surprises, training
+from .. import achievements, brain, finance, focus, lifelog, domains, inbox, life, links, nudges, photos, prep, quests, surprises, training, whereabouts
 from ..clock import her_now, her_tz, time_brief
 from ..memory import MemoryStore
 from ..workbench.api import recent_changes as workbench_changes
@@ -182,7 +182,7 @@ def build_system_prompt(persona: str, ctx: dict, can_delegate: bool = False, can
                   "带她做冷启动时按“冷启动”那条的具体内容一步步问，做完加 [建档 模块 完成 一句话总结]，做了一部分加 [建档 模块 进行中]。"
                   "她练完报每组重量和次数时，每个动作加一条 [训练 动作名 重量x次数/次数/次数 疼痛N]（动作名用上面的名字，徒手写 0x）。",
                   "她说某件事做完了、做了一部分或者没做，在回复末尾加 [结果 #编号 完成/部分/没做 原因]；"
-                  "她报体重时加 [体重 56.3]；她做了一次新体验或完成一次可计数的事加 [记数 #目标编号 一句话]；"
+                  "她报体重时加 [体重 56.3]；她说到了别的城市加 [在 城市名]，回到常驻地也加一次（个人主页显示她在哪）；她做了一次新体验或完成一次可计数的事加 [记数 #目标编号 一句话]；"
                   "创业漏斗推进了一步加 [漏斗 #目标编号 步骤 一句话]，步骤只能是 列出潜在客户/联系/聊过/报价/成交。"
                   "只评论这里和简报里有的数据，没有的不要编（比如没有体重记录就不说她瘦了）。这些标记不会发给她。"]
     if ctx.get("game"):
@@ -524,6 +524,7 @@ class Ethan:
     def note_records(self, text: str):
         db = self.store.db
         focus.note(db, text, her_now(self.settings).date())
+        whereabouts.note(db, text)
         open_titles = {t["title"] for t in db.open_tasks()} | {w["quote"] for w in db.open_wishes()}
         for tid, body in TASK_EDIT.findall(text):  # 补日期、改说法，不另记一条
             content, due, _ = split_record(body)
@@ -611,7 +612,7 @@ def parse_reply(text: str) -> dict:
     rest = FEEDBACK.sub("", PROGRESS.sub("", rest))
     rest = FUNNEL.sub("", COUNT.sub("", WEIGHT.sub("", RESULT.sub("", DONE_OK.sub("", DONE_UNDO.sub("", TASK_EDIT.sub("", rest)))))))
     rest = BUILD.sub("", training.MARK.sub("", rest))
-    rest = focus.strip(SURPRISE.sub("", HABIT.sub("", QUEST.sub("", CHECKIN.sub("", rest)))))
+    rest = whereabouts.strip(focus.strip(SURPRISE.sub("", HABIT.sub("", QUEST.sub("", CHECKIN.sub("", rest))))))
     rest = finance.strip(lifelog.strip(prep.CHAT_MARK.sub("", TIMESTAMP.sub("", life.strip_marks(rest)))))
     return {"bubbles": limit_bubbles(split_bubbles(rest)), "voice": voice,
             "react": (reacts[-1] or "❤") if reacts else None, "delegated": delegated, **shots}

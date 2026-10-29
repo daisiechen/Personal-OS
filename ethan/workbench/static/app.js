@@ -625,10 +625,12 @@ function teamCard(x, key) {
 function teamBody(t, board, card) {
   // 2026-10-29：系统外也在干的活一起放进看板（Claude 会话、准备员算 小伴 的、小伴 派给 Grok 还没回的），卡片按状态带动效
   const name = (a) => t.names[a] || a;
+  // 2026-10-29 她要每张卡一眼看出在干啥：会话卡多一行它最近说的话
   // 2026-10-29 她说只有 Grok 的卡能点开：所有卡统一一个样子，都能点开看详情（准备员的打开那一件）
   const liveCard = (x) => `<div class="item tcard st-${x.state}"><i class="pulse" aria-hidden="true"></i>
       <button type="button" class="grow linkish topen" ${x.prep ? `data-act="prepgo" data-id="${x.prep}"` : `data-act="alive" data-i="${(t.live || []).indexOf(x)}"`} aria-label="看这件活的详情"><span class="clamp2">${esc(x.title)}</span>
-        <span class="muted one" style="display:block;font-size:11px">${esc(name(x.agent))} · ${esc(x.sub)}${x.at ? " · " + ago(x.at) : ""}</span></button></div>`;
+        <span class="muted one" style="display:block;font-size:11px">${esc(name(x.agent))} · ${esc(x.sub)}${x.at ? " · " + ago(x.at) : ""}</span>
+        ${x.summary ? `<span class="one tsum">${esc(x.summary)}</span>` : ""}</button></div>`;
   const LIVE_COL = { queued: "queued", running: "running", review: "review" };
   const cols = t.columns.map((c) => {
     const extra = (t.live || []).filter((x) => LIVE_COL[x.state] === c.key);

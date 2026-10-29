@@ -27,6 +27,7 @@ Agent 任务队列（2026-10-28，见 ethan/agents.py），同样用 INBOX_TOKEN
   POST /cloud/activity                  她本人的工作时长：Mac 键鼠活跃的 5 分钟格 {"slots": ["2026-10-28T10:05"], "source": "mac"}（ethan/worktime.py）
   POST /cloud/place                     iPhone 定位：出门 / 到家 {"event": "leave"|"arrive", "place": "home"}（ethan/places_log.py）
   POST /cloud/agent/sessions            她 Claude 账号里各会话的快照，整份覆盖 {"sessions": [{"title","state","where","updated_at","summary"}]}
+  GET  /cloud/profile                   个人主页用：{"city","source": "told"|"home","at","birthday": "MM-DD"}（ethan/whereabouts.py）
   GET  /cloud/maps/<文件名>               领地地图底图（<数据目录>/maps/ 下的 jpg/png），给云端会话取图做设计稿
 
 DemoApp 举报提醒（2026-10-29 她同意，见 ethan/fancy_moderation.py），用单独的密钥 INBOX_TOKEN_FANCY：
@@ -51,7 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import agents, english, fancy_moderation, finance, places_log, worktime
+from . import agents, english, fancy_moderation, finance, places_log, whereabouts, worktime
 from .grok import LOG_FILE, build_grok
 from .memory import MemoryStore
 
@@ -139,6 +140,11 @@ class Inbox:
             return 200, {"ok": True}
         if parts.path.startswith("/cloud/agent/"):
             return self._agent("GET", parts.path, parse_qs(parts.query), headers, b"")
+        if parts.path == "/cloud/profile":  # 个人主页（example.com）取她在哪个城市、生日（2026-10-29 她要）
+            if not self._authorized("cloud", headers):
+                return 401, {"ok": False, "error": "unauthorized"}
+            from .planner import BIRTH
+            return 200, {"ok": True, **whereabouts.current(self.store.db), "birthday": BIRTH.strftime("%m-%d")}
         m = re.fullmatch(r"/cloud/maps/([A-Za-z0-9._-]+\.(?:jpg|png))", parts.path)
         if m:
             if not self._authorized("cloud", headers):

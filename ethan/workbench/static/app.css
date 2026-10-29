@@ -520,6 +520,7 @@ body.day .legendcard:not(.got) { filter: none; }
 .trow.dragging { opacity: .85; transform: scale(1.01); }
 .trow.dragging .task { border-color: var(--gold); box-shadow: 0 6px 20px rgba(0,0,0,.18); }
 .tcard .topen { background: none; border: none; padding: 0; text-align: left; color: inherit; font: inherit; cursor: pointer; min-width: 0; }
+.tcard .tsum { font-size: 12px; margin-top: 2px; color: var(--text); opacity: .85; }
 .tcard .topen:hover .clamp2 { text-decoration: underline; text-decoration-color: var(--line); }
 .stars5.big .x { font-size: 22px; width: 32px; height: 32px; border: none; color: var(--line); }
 .stars5.big .x.on { color: var(--gold); }
