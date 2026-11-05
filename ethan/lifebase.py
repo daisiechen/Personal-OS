@@ -561,18 +561,29 @@ def backfill(store) -> dict:
 
 def backfill_handwritten(db) -> int:
     """她在工作台上亲手写的（ontology-plan 1.5，S17）登记成证据（来源“工作台”，算她的原话），每晚的访谈整理会拆成说法：
-    - 她自己存过的日记（source = 'her'；系统自动写的初稿不算她的话）；改了再存是新的一份，同一份不重复；
+    - 她自己从空白写的日记（source = 'her'）：整篇；改了再存是新的一份，同一份不重复；
+    - 她在系统草稿上改过的（source = 'her_edited'，2026-11-05）：只登记她新增或改过的句子（和系统原稿逐句比），
+      编号 diary:<日期>:edit-<哈希>；没改的句子是系统写的，不算；
+    - 系统写的、她没改的（'ethan'，旧叫法 'auto'）不算她的话；
     - 今日卡上她写的心愿。
     人物卡、心愿单是系统从聊天里摘的，聊天本身已经进记忆，不重复登记。"""
     import hashlib
+    from . import diary
     n = 0
     try:
-        rows = db.conn.execute("SELECT day, body FROM diary WHERE source = 'her' AND TRIM(body) != ''").fetchall()
+        rows = [dict(r) for r in db.conn.execute("SELECT * FROM diary WHERE source IN ('her', 'her_edited') AND TRIM(body) != ''")]
     except sqlite3.OperationalError:
         rows = []
     for r in rows:
-        h = hashlib.sha1(r["body"].encode("utf-8")).hexdigest()[:12]
-        n += 1 if try_evidence(db, "workbench", f"diary:{r['day']}:{h}", r["day"], r["body"]) else 0
+        if r["source"] == "her":
+            text, ref = r["body"], "diary:{day}:{h}"
+        else:
+            mine = diary.her_sentences(r)
+            if not mine:
+                continue
+            text, ref = "\n".join(mine), "diary:{day}:edit-{h}"
+        h = hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+        n += 1 if try_evidence(db, "workbench", ref.format(day=r["day"], h=h), r["day"], text) else 0
     try:
         rows = db.conn.execute("SELECT id, text, created_at FROM card_wishes WHERE TRIM(text) != ''").fetchall()
     except sqlite3.OperationalError:

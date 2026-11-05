@@ -446,7 +446,7 @@ def link_tasks(db, items: list, today: date):
             task_id = locks.renamed_from(db, it["title"])
         if task_id is None:
             task_id = db.add_task(it["title"], goal_id=it.get("goal_id"),  # 多数事没有硬截止，不默认截止今天
-                                  promised_by_ethan=it.get("priority") == "ethan")
+                                  promised_by_ethan=it.get("priority") == "ethan" and not _is_ops(it["title"]))
             open_by_title[it["title"]] = task_id
             it["task_created"] = True
         it["task_id"] = task_id
@@ -743,3 +743,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def _is_ops(title: str) -> bool:
+    """给 Claude / 开发会话的放行、权限、配置：不记成 小伴 的准备任务（prep.is_ops，她 11-05）。"""
+    from . import prep
+    return prep.is_ops(title)

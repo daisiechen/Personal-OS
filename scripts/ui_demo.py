@@ -76,6 +76,18 @@ def demo_outside(db):
     mepage.add_disclosure_ask(db, "twin", "她现在人在哪个城市？", "whereabouts", "现在住在伦敦", "Leo")
 
 
+def demo_feedback_1105(db, today):
+    """她 11-05 的反馈要看得到的样子：一件先放着的（红点）、一件排进今天的“其他”、两件归了领域的待办。"""
+    from ethan import prep
+    db.add_task("和开发会话一起定正式评估的题集", due=today.isoformat())
+    parked = db.add_task("整理芬兰行程的备选酒店", promised_by_ethan=True)
+    prep.set_pending(db, parked)
+    for title, key in (("做小红书第一条笔记", "life"), ("给 LinkedIn 换头像", "career")):
+        tid = db.add_task(title)
+        db.conn.execute("UPDATE tasks SET domain = ? WHERE id = ?", (key, tid))
+    db.conn.commit()
+
+
 def main():
     root = Path(sys.argv[1])
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8810
@@ -84,6 +96,7 @@ def main():
     demo_relations(store.db, datetime.now(LOCAL).date())
     demo_system(root, store.db)
     demo_outside(store.db)
+    demo_feedback_1105(store.db, datetime.now(LOCAL).date())
     settings = Settings(root / "settings.json")
     settings.set("telegram_owner_chat_id", 1)
     wb = Workbench(store, settings, calendar=FakeCalendar())

@@ -672,6 +672,15 @@ def fix_fact(db, fid: int, text: str, kind: str = "wrong", type_: str = "long", 
         return {"ok": False, "msg": "找不到这条"}
     t = memusers.open_ticket(db, text, f["statement"], user="ethan", entry="me_page", quote=text, dimension=f["dimension"],
                              kind=kind, since=since, until=until)
+    # 她点的就是这一条：纠错单按文字找旧说法，找偏了（或这条她以前确认过、锁着）也要把这条换下来。
+    # 锁只挡系统，不挡她自己（她 11-05：“我自己归的确认的这些东西也会出错，怎么办？”）
+    new_id = t.get("fact_id")
+    now = _fact(db, f["id"])
+    if new_id and new_id != f["id"] and now and now["valid_to"] is None and now["status"] not in ("invalid", "deleted"):
+        lifebase.supersede(db, f["id"], new_id, when=since, force=True)
+        if kind == "wrong":
+            lifebase.invalidate(db, f["id"], force=True)
+        db.conn.commit()
     return {"ok": True, "msg": "改好了" if kind == "wrong" else "记下了，旧的留作历史", "ticket": t["id"]}
 
 

@@ -829,6 +829,10 @@ class Ethan:
             if kind == "答应" and SYSTEM_JOBS.search(content):
                 print(f"[agent] 系统自动做的事，不记成答应：{content}", flush=True)
                 continue
+            from .. import prep
+            if kind == "答应" and prep.is_ops(content):  # 给 Claude / 开发会话的放行、权限、配置：开发会话当场办，不是 小伴 的活（她 11-05）
+                print(f"[agent] 系统运维的事，不记成答应：{content}", flush=True)
+                continue
             if goal_id is not None and not db.goal_exists(goal_id):
                 goal_id = None  # 编号对不上就不挂，宁可不挂也不挂错
             if kind == "心愿":

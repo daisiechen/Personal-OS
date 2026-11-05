@@ -47,6 +47,14 @@ def badges_have_targets(wb, day) -> list:
     if b.get("desk", 0) != waiting:
         out.append(f"邮件和留言红点 {b.get('desk', 0)}，等你处理的有 {waiting} 条")
     out += [f"红点「{k}」没在打扰登记表里，不知道点进去是哪" for k in b if k not in nudge_registry.BADGES]
+    # 首页“小伴 今天在准备”上“先放着”的红点：数字等于弹层里“先放着”那栏的条数（她 11-05：进去不知道红点说的是哪）
+    parked = wb.parked_remind(day) if hasattr(wb, "parked_remind") else 0
+    if parked:
+        shown = sum(1 for x in prep.queue(wb.db) if x["state"] == "pending" and not x["secret"])
+        if parked != shown:
+            out.append(f"先放着的红点 {parked}，“先放着”那栏有 {shown} 件")
+        if "parked" not in nudge_registry.BADGES:
+            out.append("红点「parked」没在打扰登记表里，不知道点进去是哪")
     return out
 
 

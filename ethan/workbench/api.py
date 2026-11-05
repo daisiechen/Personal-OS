@@ -170,10 +170,9 @@ class Workbench:
             "prep_trash": self.prep_trash(),
             "prep_today": prep.today_order(db),
             # 先放着的：每天第一次打开工作台提醒她看一眼（2026-10-30 她要）
-            "parked_remind": (sum(1 for x in prep.queue(db) if x["state"] == "pending" and not x["secret"])
-                              if self.settings.get("parked_seen") != day.isoformat() else 0),
+            "parked_remind": self.parked_remind(day),
             "prep_routines": [r["title"] for r in db.conn.execute("SELECT title FROM tasks WHERE done = 0 AND promised_by_ethan = 1 ORDER BY id")
-                              if prep.ROUTINE.search(r["title"])],
+                              if prep.ROUTINE.search(r["title"]) and not prep.is_ops(r["title"])],
             "prep": [{k: x.get(k) for k in ("id", "title", "goal", "season", "state", "state_label", "summary", "decision", "star")}
                      | {"result": (prep.detail(db, x["id"]) or {}).get("result"), "help_for": helpscope.for_task(db, x["id"])}
                      for x in prep.queue(db) if not x["secret"]],  # 惊喜不给她看；help_for：替她哪件事提前准备的（2026-11-02）
@@ -182,6 +181,13 @@ class Workbench:
             "planner": self.plan_panel(day, plan),
             "goals": self.goal_options(),
         }
+
+    def parked_remind(self, day: date) -> int:
+        """首页“小伴 今天在准备”上的小红点：先放着的有几件、今天还没点开“先放着”看过（2026-10-30 她要）。
+        点进去“先放着”那栏上有同样的红点和数（她 11-05：“我每天从小伴帮我办进去都不知道红点说的是哪儿”），看过就消失。"""
+        if self.settings.get("parked_seen") == day.isoformat():
+            return 0
+        return sum(1 for x in prep.queue(self.db) if x["state"] == "pending" and not x["secret"])
 
     def _weekly(self, g: dict, day: date) -> list:
         """周常：达标后还能接着做（超额每次 +20），today 是今天做过没有（点了就撤销今天这次）。"""
@@ -413,13 +419,14 @@ class Workbench:
             e["clash_with"] = [x["title"] for x in events if x is not e and x["start"] < (e.get("end") or e["start"]) and (x.get("end") or x["start"]) > e["start"]]
         today_ids = {t["id"] for t in self.today_tasks(day, plan)["today"]}
         todos = [dict(r) for r in self.db.conn.execute(
-            "SELECT t.id, t.title, t.due, t.quest, t.star_day, g.title AS goal FROM tasks t "
+            "SELECT t.id, t.title, t.due, t.quest, t.star_day, t.domain, g.title AS goal, g.domain AS goal_domain FROM tasks t "
             "LEFT JOIN goals g ON g.id = t.goal_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
             "AND (t.id IN (%s) OR (COALESCE(t.quest, 'side') != 'main' AND (t.due IS NULL OR t.due <= ?))) "  # 今天任务里有的一律列上，不看截止日（她 2026-11-02：首页三条、编辑页两条）
             "ORDER BY t.sort IS NULL, t.sort, t.id" % (",".join(map(str, today_ids)) or "NULL"), (d,))]
         for t in todos:
             t["star"] = t["id"] in today_ids
             t["sub"] = (t.get("goal") or "").split("：")[0] if t.get("quest") == "main" else "其他"
+            t["terr"] = territory.task_territory(t) or territory.WASTE  # 归哪块领域，这里也能改（她 11-05）
         skipped = (json.loads(plan["brief"]).get("skipped") or []) if plan else []
         # 修好之前排的计划里也可能有暂停副本的事，显示时再滤一遍（她 2026-11-01：“那怎么现在系统里还有？”）
         from ..planner import PAUSED_WHY
@@ -500,8 +507,17 @@ class Workbench:
         if key == territory.WASTE:
             _, tasks = self._territory_parts(day)
             rows = [t for t in tasks if t["territory"] is None]
+            # 最近 14 天她归过的：归错了回到这里能改（她 11-05：“我都不知道怎么改”）
+            from .. import locks
+            locks.ensure(self.db)
+            since = (day - timedelta(days=14)).isoformat()
+            at = {int(r["obj"].split(":")[1]): r["at"][:10] for r in self.db.conn.execute(
+                "SELECT obj, at FROM manual_locks WHERE field = 'domain' AND obj LIKE 'task:%' AND released_at IS NULL AND at >= ? ORDER BY at",
+                (since,))}
+            recent = sorted((t for t in tasks if t["id"] in at and t["territory"]), key=lambda t: at[t["id"]], reverse=True)
             return {"key": key, "name": "荒原", "tasks": [{"id": t["id"], "title": t["title"], "due": t["due"],
                                                          "guess": territory.guess(t["title"])} for t in rows],
+                    "recent": [{"id": t["id"], "title": t["title"], "terr": t["territory"], "at": at[t["id"]][5:]} for t in recent[:30]],
                     "options": [{"key": k, "name": n} for k, n, _ in territory.TERRITORIES]}
         if key not in territory.NAME:
             raise ValueError("没有这个领域")
@@ -647,7 +663,7 @@ class Workbench:
         """那天的日记（她的口吻，ethan/diary.py；她 2026-11-01 定）。小伴 的聊天记忆不再放进日记本。"""
         from .. import diary
         d = diary.get(self.db, day)
-        return ({"diary": d["body"], "diary_mine": d["source"] == "her", "marks": diary.marks(self.db, day), "notes": diary.notes(self.db, day)} if d
+        return ({"diary": d["body"], "diary_mine": d["source"] in diary.HER, "marks": diary.marks(self.db, day), "notes": diary.notes(self.db, day)} if d
                 else {"diary": "", "diary_mine": False, "marks": [], "notes": []})
 
     def do_diary_save(self, p, day):
@@ -993,15 +1009,28 @@ class Workbench:
         return {"ok": ok, "msg": "永久删除了" if ok else "只能删回收站里的"}
 
     def do_task_domain(self, p, day):
-        """待办归到哪块领地（荒原里确认 小伴 猜的，或改掉）；waste 表示先放荒原。"""
-        tid, key = int(p["id"]), str(p.get("key", ""))
+        """待办归到哪块领地（荒原里确认 小伴 猜的，或改掉；领域页和“日历 · 改计划”里随时再改）；waste 表示先放荒原。
+        她改的记锁、系统不改回；她自己随时能再改（她 11-05：“荒原里面一条事业的不小心归成了生活体验，我都不知道怎么改”）。
+        返回撤销：几秒内点“撤销”回到改之前（undo=1 带着原来的值 prev）。"""
+        tid = int(p["id"])
+        row = self.db.conn.execute("SELECT title, domain FROM tasks WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            raise ValueError("这件事不在了")
+        if p.get("undo"):  # 撤销：原样放回（原来没归过的回到 小伴 猜 / 跟着副本，锁在 locks.record_action 里放开）
+            prev = p.get("prev") or None
+            if prev is not None and prev not in territory.NAME and prev != "waste":
+                raise ValueError("没有这个领域")
+            self.db.conn.execute("UPDATE tasks SET domain = ? WHERE id = ?", (prev, tid))
+            self.db.conn.commit()
+            return {"ok": True, "msg": "撤销了", "log": f"撤销了待办的领域：{row['title']}"}
+        key = str(p.get("key", ""))
         if key not in territory.NAME and key != territory.WASTE:
             raise ValueError("没有这个领域")
-        title = self._title(tid)
         self.db.conn.execute("UPDATE tasks SET domain = ? WHERE id = ?", (key if key in territory.NAME else "waste", tid))
         self.db.conn.commit()
         name = territory.NAME.get(key, "荒原")
-        return {"ok": True, "msg": f"归到{name}了", "log": f"待办归到{name}：{title}"}
+        return {"ok": True, "msg": f"归到{name}了", "log": f"待办归到{name}：{row['title']}",
+                "undo": {"action": "task.domain", "id": tid, "undo": 1, "prev": row["domain"] or ""}}
 
     def do_goal_up(self, p, day):
         """副本在同一块领地里往前挪一位（2026-10-28 她要能自己定先后）；整块重新编号 1、2、3…"""
@@ -1111,10 +1140,16 @@ class Workbench:
                     "week": [quests.checked(db, h["id"], d) for d in week]}
                    for h in quests.habits(db) if h["cadence"] == "daily"]
         g = quests.today_summary(db, day)
+        # 已经排进今日任务的不在“其他”里再列一遍（她 11-05：“今日待办和其他怎么又有一样的任务？”）
+        in_today = {t["id"] for t in self.today_tasks(day, db.latest_plan(day.isoformat()))["today"]}
+        side = quests.side_quests(db)
+        goal_dom = {r["id"]: r["domain"] for r in db.conn.execute("SELECT id, domain FROM goals")}
         return {
             "chapters": chapters,
-            "side": [{"id": q["id"], "title": q["title"], "points": quests.task_points(q), "progress": quests.task_progress(db, q, day)}
-                     for q in quests.side_quests(db)],
+            "side": [{"id": q["id"], "title": q["title"], "points": quests.task_points(q), "progress": quests.task_progress(db, q, day),
+                      "terr": territory.task_territory({**q, "goal_domain": goal_dom.get(q.get("goal_id"))}) or territory.WASTE}
+                     for q in side if q["id"] not in in_today],
+            "side_today": sum(1 for q in side if q["id"] in in_today),
             "later": [{"id": q["id"], "title": q["title"], "goal": q["goal"].split("：")[0], "points": quests.task_points(q)}
                       for q in quests.later_quests(db)],
             "habits": [{"id": h["id"], "title": h["title"], "cadence": h["cadence"], "target": h["target"]} for h in quests.habits(db)],

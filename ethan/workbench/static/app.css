@@ -1215,3 +1215,9 @@ blockquote.quote { margin: 0; padding: 6px 10px; border-left: 3px solid var(--go
 .kind.k-out { display: inline-block; font-size: 11px; border-radius: 6px; padding: 0 7px; margin-right: 6px; color: var(--accent); border: 1px solid var(--accent); }
 .medisc { border-color: var(--accent); }
 @media (max-width: 760px) { .polgrid { grid-template-columns: 1fr; } }
+/* 待办改领域的小下拉（11-05）：不抢标题的位置 */
+.terrpick { flex: none; max-width: 92px; font-size: 12px !important; padding: 3px 6px !important; border-radius: 6px !important; background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+.grow .terrpick { margin-top: 3px; }
+.parkdot { margin-left: 4px; }
+/* “我”页十个方面的说明（11-05：和赛季的七块领域分开） */
+.medimnote { font-size: 11px; color: var(--muted); margin: 0 0 8px; line-height: 1.5; }

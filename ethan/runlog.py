@@ -3,7 +3,8 @@
 系统的输出本身是派生物，**不算关于她的证据**；她的反应（通过、要改、不要、自己改了、删了）是行为记录。
 每晚从各处汇总一次（可以重复跑，按 key 去重）：
 - 准备员做的事：她通过 / 要改（她的意见）/ 不要了；
-- 小伴 写的日记初稿：她自己改过再存（source = her）；
+- 小伴 写的日记初稿：她自己改过再存（source = her_edited；旧数据是 her），note 记改了几句、前 2 句改前→改后（2026-11-05，
+  以后归纳她的写作习惯用）；
 - 邮件草稿：她发出去 / 点了不用管；
 - 计划器排的事：她挪了、删了。
 同一类反应 4 周里出现 3 次以上，才在 lifebase.write_behavior 里写成一条行为说法，她改一次不算长期习惯。
@@ -24,12 +25,12 @@ def ensure(db):
 
 
 def _put(db, key, at, actor, kind, title, reaction=None, reaction_at=None, note=None) -> int:
-    old = db.conn.execute("SELECT reaction FROM run_log WHERE key = ?", (key,)).fetchone()
+    old = db.conn.execute("SELECT reaction, note FROM run_log WHERE key = ?", (key,)).fetchone()
     if old is None:
         db.conn.execute("INSERT INTO run_log (key, at, actor, kind, title, reaction, reaction_at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                         (key, at or "", actor, kind, (title or "")[:120], reaction, reaction_at, (note or "")[:300] or None))
         return 1
-    if reaction and old[0] != reaction:
+    if reaction and (old[0] != reaction or (note and (note or "")[:300] != old[1])):  # 反应变了，或者同一反应的说明更新了（日记又改了一次）
         db.conn.execute("UPDATE run_log SET reaction = ?, reaction_at = ?, note = COALESCE(?, note) WHERE key = ?",
                         (reaction, reaction_at, (note or "")[:300] or None, key))
         return 1
@@ -53,9 +54,12 @@ def collect(db) -> int:
         for r in db.conn.execute("SELECT task_id, title, at FROM prep_trash WHERE task_id IS NOT NULL"):
             n += _put(db, f"prep:{r['task_id']}", r["at"], "ethan", "prep", r["title"], "dropped", r["at"])
     if _table(db, "diary"):
-        for r in db.conn.execute("SELECT day, source, updated_at FROM diary"):
+        from . import diary
+        diary.ensure(db)
+        for r in db.conn.execute("SELECT * FROM diary"):
+            mine = r["source"] in diary.HER
             n += _put(db, f"diary:{r['day']}", r["day"], "ethan", "diary", f"{r['day']} 的日记",
-                      "edited" if r["source"] == "her" else None, r["updated_at"] if r["source"] == "her" else None)
+                      "edited" if mine else None, r["updated_at"] if mine else None, diary.change_summary(dict(r)) or None)
     if _table(db, "mail_items"):
         cols = {c[1] for c in db.conn.execute("PRAGMA table_info(mail_items)")}
         if {"draft", "desk_state"} <= cols:

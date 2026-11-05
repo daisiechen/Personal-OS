@@ -249,7 +249,7 @@ function mainPage(night) {
   <footer class="foot">  <!-- 她 2026-11-01 定：左邮件和留言、中 小伴 的一天、右 小伴 在准备，和上面三栏一样宽 -->
     <button type="button" class="panel nowrap deskbtn ${(st.badges || {}).desk ? "gold" : "quiet"}" data-act="desk" aria-label="今日邮件和留言">邮件和留言${(st.badges || {}).desk ? ` <span class="rbadge">${st.badges.desk}</span>` : ""} ▸</button>
     <button type="button" class="panel ethanline" data-act="ethanday" aria-label="看 小伴 的一天"><span class="gold">小伴</span>　${esc((st.card && st.card.line) || "今天也在。")}<span class="muted nowrap" style="margin-left:auto;font-size:12px">他的一天 ▸</span></button>
-    <button type="button" class="panel gold nowrap" data-act="prep">小伴 今天在准备 ${st.prep.filter((t) => t.state !== "pending" && prepShown(st, t)).length} 件${(st.badges || {}).main ? ` <span class="rbadge">${st.badges.main} 件等你看</span>` : ""}${st.parked_remind ? ' <i class="navdot inline" aria-label="先放着的今天还没看">·</i>' : ""} ▸</button>
+    <button type="button" class="panel gold nowrap" data-act="prep">小伴 今天在准备 ${st.prep.filter((t) => t.state !== "pending" && prepShown(st, t)).length} 件${(st.badges || {}).main ? ` <span class="rbadge">${st.badges.main} 件等你看</span>` : ""}${st.parked_remind ? ` <span class="rbadge parkdot" aria-label="先放着的 ${st.parked_remind} 件今天还没看" title="点进去在“先放着”那栏">先放着 ${st.parked_remind}</span>` : ""} ▸</button>
   </footer>`;
 }
 
@@ -268,8 +268,10 @@ function sideMini() {
   if (!q) return "";
   const n = q.side.length;
   return `<div class="row subhead" style="justify-content:space-between"><h2>其他</h2><span class="row" style="gap:6px"><button type="button" class="pen" data-act="addtodo" title="加一件">＋</button><button type="button" class="btn small" data-act="side">全部 ${n} ▸</button></span></div>
-    <div class="col sidemini" style="gap:4px">${q.side.slice(0, 3).map((x) => `<button type="button" class="step locked" data-act="task" data-id="${x.id}" data-done="" data-points="${x.points}"><span class="gold" style="width:18px;text-align:center">○</span><span style="flex:1">${esc(x.title)}${prog(x)}</span><span class="gold" style="font-size:11px">+${x.points}</span></button>`).join("") || '<p class="muted" style="font-size:12px">没有别的事</p>'}</div>`;
+    <div class="col sidemini" style="gap:4px">${q.side.slice(0, 3).map((x) => `<button type="button" class="step locked" data-act="task" data-id="${x.id}" data-done="" data-points="${x.points}"><span class="gold" style="width:18px;text-align:center">○</span><span style="flex:1">${esc(x.title)}${prog(x)}</span><span class="gold" style="font-size:11px">+${x.points}</span></button>`).join("") || '<p class="muted" style="font-size:12px">没有别的事</p>'}</div>${sideTodayNote(q)}`;
 }
+// 已经排进今日任务的“其他”不在这里重复列（她 11-05：“今日待办和其他怎么又有一样的任务？”），只说一句在哪
+const sideTodayNote = (q) => (q.side_today ? `<p class="muted" style="font-size:11px;margin:2px 0 0">另有 ${q.side_today} 件已经排进今日任务，在上面勾</p>` : "");
 
 // 新结构的副本详情：里程碑一个个过，当前的展开列阶段任务（频次、这一阶段的进度、前置），过去的折叠，以后的只写名字和截止日
 // 编辑里能改里程碑（名字、截止日、目标值）和阶段任务（名字、频次、前置、删、拖动排序），底下加任务、加里程碑（quest-structure.md 第 4 节）
@@ -346,8 +348,8 @@ function taskRow(t) {
 /* ---------- 支线和商店（任务页去掉后放在首页，她 2026-11-01） ---------- */
 function sideBody(q) {
   return `<section class="col" style="gap:4px">
-      ${q.side.map((s) => `<div class="item"><span class="grow">${esc(s.title)}${prog(s)}</span><span class="gold" style="font-size:11px">+${s.points}</span>
-        <button type="button" class="btn" data-act="task" data-id="${s.id}" data-done="" data-points="${s.points}">完成</button></div>`).join("") || '<p class="muted">没有别的事。</p>'}</section>
+      ${q.side.map((s) => `<div class="item"><span class="grow">${esc(s.title)}${prog(s)}</span>${terrPick(s.id, s.terr)}<span class="gold" style="font-size:11px">+${s.points}</span>
+        <button type="button" class="btn" data-act="task" data-id="${s.id}" data-done="" data-points="${s.points}">完成</button></div>`).join("") || '<p class="muted">没有别的事。</p>'}${sideTodayNote(q)}</section>
       ${false ? `<section class="col" style="gap:4px"><b style="font-size:13px">暂停副本的</b>
       ${q.later.map((s) => `<div class="item"><span class="grow">${esc(s.title)} <span class="muted" style="font-size:11px">${esc(s.goal)}</span></span><span class="gold" style="font-size:11px">+${s.points}</span>
         <button type="button" class="btn" data-act="task" data-id="${s.id}" data-done="" data-points="${s.points}">完成</button></div>`).join("")}</section>` : ""}`;
@@ -375,6 +377,8 @@ function shopBody(q) {
 
 /* ---------- 领地地图和领地页（docs/design/territories.md；底图是她选的 Grok Imagine 第 2 张） ---------- */
 const TERRS = [["body", "健康"], ["career", "事业"], ["money", "财务"], ["social", "社交"], ["study", "学习"], ["academic", "学术"], ["life", "生活体验"]];
+// 待办归哪块领域：归过的随时能改（她 11-05：“荒原里面一条事业的不小心归成了生活体验，我都不知道怎么改”）。改了记她的锁，系统不改回；改完几秒内能撤销
+const terrPick = (id, cur) => `<select class="terrpick" data-change="domain" data-id="${id}" aria-label="改领域" title="归哪块领域，选了就改">${TERRS.map(([k, n]) => `<option value="${k}"${k === cur ? " selected" : ""}>${n}</option>`).join("")}<option value="waste"${!cur || cur === "waste" ? " selected" : ""}>${!cur || cur === "waste" ? "还没归类" : "放回荒原"}</option></select>`;
 // 卡的稀有度：边框不同，超稀有及以上有流光（2026-10-29 她要）
 // 每块领域一个小图标（2026-10-29 她说只用一个字有点尴尬）
 const TICON = {
@@ -581,11 +585,13 @@ function territoryPage() {
   const back = backBtn(S.terrBack === "bigmap" ? "地图" : ({ brain: "资料", main: "今日", quests: "任务" })[S.terrBack] || "赛季", 'data-act="terrback"');
   if (t.key === "waste") {
     return `<header class="row" style="flex-wrap:wrap"><h2 style="font-size:22px">荒原</h2><span class="pill p-none">${t.tasks.length} 件没归类</span><span style="margin-left:auto">${back}</span></header>
-      <span class="muted" style="font-size:13px">还没找到家的待办都在这。小伴 按标题先猜了一块，你点头或改掉，归好的就回到那块领域。</span>
+      <span class="muted" style="font-size:13px">还没找到家的待办都在这。小伴 按标题先猜了一块，你点头或改掉，归好的就回到那块领域。归错了：几秒内点底下的“撤销”，过后在下面“最近归好的”里再改。</span>
       <section class="panel col scrollbox tall">${t.tasks.map((x) => `<div class="item"><span class="grow">${esc(x.title)}${x.due ? `<span class="muted" style="display:block;font-size:11px">${esc(x.due)}</span>` : ""}</span>
         ${x.guess ? `<span class="muted" style="font-size:11px;color:var(--accent)">小伴 猜：${esc(TERRS.find((r) => r[0] === x.guess)[1])}</span>` : ""}
         <select data-change="domain" data-id="${x.id}" aria-label="归到哪个领域"><option value="">归到……</option>${TERRS.map(([k, n]) => `<option value="${k}"${k === x.guess ? " selected" : ""}>${n}</option>`).join("")}</select>
-        ${x.guess ? `<button type="button" class="btn gold" data-act="domain-ok" data-id="${x.id}" data-k="${x.guess}">确认</button>` : ""}</div>`).join("") || '<p class="muted">荒原清空啦，每件事都有家了。</p>'}</section>`;
+        ${x.guess ? `<button type="button" class="btn gold" data-act="domain-ok" data-id="${x.id}" data-k="${x.guess}">确认</button>` : ""}</div>`).join("") || '<p class="muted">荒原清空啦，每件事都有家了。</p>'}</section>
+      ${(t.recent || []).length ? `<section class="panel col"><div class="row" style="justify-content:space-between;flex-wrap:wrap"><h2>最近归好的</h2><span class="muted" style="font-size:11px">归错了在这里改，你改的系统不会改回去</span></div>
+        ${t.recent.map((x) => `<div class="item"><span class="grow">${esc(x.title)}<span class="muted" style="display:block;font-size:11px">${esc(x.at)} 归的</span></span>${terrPick(x.id, x.terr)}</div>`).join("")}</section>` : ""}`;
   }
   const summary = t.light === "warn" ? `${t.rows.filter((r) => r.light === "warn").map((r) => r.name).join("、")}落后于副本标准，保底线守住了。`
     : t.light === "bad" ? `${t.rows.filter((r) => r.light === "bad").map((r) => r.name).join("、")}跌破了保底线。`
@@ -1315,7 +1321,7 @@ function renderOverlayInner() {
       <div class="plancols">
         <section class="col"><div class="row" style="justify-content:space-between"><h2>待办</h2><span class="muted" style="font-size:11px">★ = 今日任务，不限件数</span></div>
           ${pl.todos.map((t) => `<div class="item"><button type="button" class="star ${t.star ? "on" : ""}" data-act="star" data-id="${t.id}" data-on="${t.star ? "" : 1}" aria-label="设为或取消今日任务">★</button>
-            <span class="grow"><span style="display:block">${esc(t.title)}</span><span class="muted" style="font-size:11px">${esc(t.sub)}${t.due ? " · " + esc(t.due.slice(5)) : ""}</span></span>
+            <span class="grow"><span style="display:block">${esc(t.title)}</span><span class="muted" style="font-size:11px">${esc(t.sub)}${t.due ? " · " + esc(t.due.slice(5)) : ""}</span> ${terrPick(t.id, t.terr)}</span>
             <button type="button" class="x" data-act="rename" data-id="${t.id}" data-title="${esc(t.title)}" aria-label="改名字">✎</button><button type="button" class="btn" data-act="postpone" data-id="${t.id}">推到明天</button><button type="button" class="x" data-act="deltask" data-id="${t.id}" aria-label="删除">×</button></div>`).join("") || '<p class="muted">没有待办</p>'}
           ${(pl.skipped || []).length ? `<div class="col" style="gap:4px;margin-top:6px"><b style="font-size:13px">今天没排进</b>${pl.skipped.map((x) => `<span style="font-size:12px">· ${esc(x.title)}<span class="muted">：${esc(x.why)}</span></span>`).join("")}</div>` : ""}
           <button type="button" class="btn gold" data-act="addtodo">＋ 加待办</button>
@@ -1392,7 +1398,7 @@ function renderOverlayInner() {
       ${(() => { const n = { parked: st.prep.filter((t) => t.state === "pending").length, routines: (st.prep_routines || []).length, trash: (st.prep_trash || []).length };
         const tab = (k, label) => `<button type="button" class="btn ${(S.prepTab || "") === k ? "gold" : ""}" data-act="preptab" data-tab="${k}">${label}</button>`;
         const later = st.prep.filter((t) => t.state !== "pending" && !prepShown(st, t)).length;
-        return `<div class="row preptabs" style="gap:6px;flex-wrap:wrap">${tab("", `今天 ${st.prep.length - n.parked - later}`)}${tab("later", `📋 还没轮到 ${later}`)}${tab("parked", `⏸ 先放着 ${n.parked}${(S.state || {}).parked_remind ? ' <i class="navdot" aria-label="今天还没看">·</i>' : ""}`)}${tab("routines", `🔁 长期工作 ${n.routines}`)}${tab("trash", `🗑 回收站 ${n.trash}`)}</div>`; })()}
+        return `<div class="row preptabs" style="gap:6px;flex-wrap:wrap">${tab("", `今天 ${st.prep.length - n.parked - later}`)}${tab("later", `📋 还没轮到 ${later}`)}${tab("parked", `⏸ 先放着 ${n.parked}${(S.state || {}).parked_remind ? ` <i class="navdot inline parkdot" aria-label="今天还没看">${S.state.parked_remind}</i>` : ""}`)}${tab("routines", `🔁 长期工作 ${n.routines}`)}${tab("trash", `🗑 回收站 ${n.trash}`)}</div>`; })()}
       ${S.prepTab && S.prepTab !== "later" ? "" : `${(st.prep_today || []).length && S.prepTab !== "later" ? `<div class="preptoday"><b style="font-size:13px">今天 小伴 打算先做</b>${st.prep_today.map((o, n) => { const t = st.prep.find((x) => x.id === o.id); return t ? `<span style="font-size:12px">${n + 1}. ${esc(t.title)}<span class="muted">${o.why ? "：" + esc(o.why) : ""}</span></span>` : ""; }).join("")}</div>` : ""}
       <div class="preplist">${st.prep.filter((t) => t.state !== "pending" && prepShown(st, t) === (S.prepTab !== "later")).map((t) => `<div class="prepitem ${S.prepOpen === t.id ? "open" : ""} ${t.state === "ready" ? "ready" : ""}" data-pid="${t.id}">
         <div class="row" style="gap:8px"><span class="drag" data-drag aria-label="拖动排序" title="按住拖动">⋮⋮</span><button type="button" class="x pstar ${t.star ? "on" : ""}" data-act="prepstar" data-id="${t.id}" data-on="${t.star ? "" : 1}" aria-label="${t.star ? "取消星星" : "点星星：今天必须做完"}" title="今天必须做完">${t.star ? "★" : "☆"}</button><button type="button" class="grow linkish" data-act="prepopen" data-id="${t.id}">${esc(t.title)}${t.summary ? `<span class="muted" style="display:block;font-size:11px">${esc(t.summary)}</span>` : ""}</button>
@@ -2257,6 +2263,7 @@ function meBoard(mt, rate) {
       ${sug}${upgs}</div>
     <div class="memap"><div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">${star ? '<span class="mekey">十个方面的星图</span>' : '<span class="mekey"><i class="c"></i>你确认过的<i class="h"></i>你说的<i class="s"></i>别的来源</span>'}
       <span class="chips"><button type="button" class="chip ${star ? "" : "on"}" data-act="me-star" data-k="">格子</button><button type="button" class="chip ${star ? "on" : ""}" data-act="me-star" data-k="1">星图</button></span></div>
+      <p class="medimnote"><b style="color:var(--text)">关于你的十个方面</b>：你是什么样的人；你在做的事（健康、事业、财务……）按赛季的七块领域分，在赛季页看。</p>
       ${star ? (drill ? sub(drill) : stars) : `<div class="metiles">${dims.map(tile).join("")}</div>`}
       <p class="muted melegend">${star ? (drill ? "每颗小星是这个方面里的一项，点一颗看那一项的记忆。" : "星越大，你说过的越多；绿色是厚的，金色是薄的，灰色是旧的，虚线圈还空着。点一颗星往里看。") : "厚：你说过的够用　薄：条数少或只有一种来源　旧：一个月没更新　空：还没说过。点一个方面看它的全部记忆"}</p></div></section>`;
 }

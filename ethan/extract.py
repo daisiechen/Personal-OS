@@ -167,7 +167,9 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
             owner = t.get("owner") or "mia"
             from . import naming
             title = naming.title(title)  # 标题式（docs/design/ui-spec.md 第 5 节）
-            tid = db.add_task(title, due=t.get("due"), promised_by_ethan=owner != "mia")
+            from . import prep
+            # 只有交给 小伴 的才是他的活；交给 Claude / Codex / Grok 的不是他答应的，也不进准备员（她 11-05：“这个他不是没答应么？”）
+            tid = db.add_task(title, due=t.get("due"), promised_by_ethan=owner == "ethan" and not prep.is_ops(title))
             db.conn.execute("UPDATE tasks SET owner = ?, source_type = 'chat', source_ref = ?, status = 'open' WHERE id = ?",
                             (owner, ref, tid))
             open_tasks[title] = {"id": tid, "title": title, "due": t.get("due")}

@@ -2,6 +2,7 @@
 
 以前 小伴 替她准备的事，来自他在聊天里“答应”的和每天回头看时从聊天里补的，常常和她这周真要做的对不上。现在每天一次：
 - 范围：未来 7 天的待办和当前里程碑的阶段任务里，她本人要做、没有前置挡着、还没开始的；
+  给开发会话 / Claude / Codex 的权限、放行、配置这类系统运维事务不挑（prep.is_ops，她 11-05）；
 - 由 小伴 判断哪几件他能提前替她做一部分：起草、查资料、比价、准备材料、订位前的准备；要她本人出面的不挑；
 - 挑中的（一天最多 3 件、同时最多 6 件在准备）记成他的准备任务，挂在同一个副本下、截止跟着那件走，并记下是替哪件准备的；
   进准备队列时先问她要不要（ethan/prep.py 原来的规矩：新记下的先问，两件隔 2 小时）。
@@ -41,7 +42,8 @@ def candidates(db, day: date) -> list:
                              "LEFT JOIN milestones m ON m.id = t.milestone_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
                              "AND COALESCE(g.status, 'active') = 'active'"):
         t = dict(r)
-        if t["id"] in helped or t.get("habit_id") or t.get("is_review") or stages.blocked(db, t):
+        from . import prep
+        if t["id"] in helped or t.get("habit_id") or t.get("is_review") or stages.blocked(db, t) or prep.is_ops(t["title"]):  # 系统运维的不帮（11-05）
             continue
         if t.get("start_day") and t["start_day"] > end:
             continue
@@ -79,7 +81,8 @@ def pick(db, router, day: date) -> list:
             tid = int(h["id"]) if str(h.get("id", "")).isdigit() else None
             from . import naming
             what = naming.title(h.get("what") or "")  # 标题式（docs/design/ui-spec.md 第 5 节）
-            if tid not in by_id or not what:
+            from . import prep
+            if tid not in by_id or not what or prep.is_ops(what):
                 continue
             t = by_id[tid]
             from . import locks

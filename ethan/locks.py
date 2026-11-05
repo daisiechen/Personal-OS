@@ -146,6 +146,8 @@ def record_action(db, action: str, p: dict, day: date, before: dict = None):
     if kind == "diary":
         if not str(p.get("text") or p.get("body") or "").strip():  # 清空保存 = 交还系统
             return release(db, "diary", ref)
+    if action == "task.domain" and p.get("undo") and not p.get("prev"):  # 撤销了一次归类、原来没归过：交还系统（小伴 猜 / 跟着副本）
+        return release(db, kind, ref, field)
     if action == "task.star" and not p.get("on"):
         field = "star"
     title = (before or {}).get("title")

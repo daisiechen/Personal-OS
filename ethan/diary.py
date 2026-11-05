@@ -8,16 +8,20 @@
   只当素材，不写成“我和 小伴 聊了什么”。
 - 第一人称“我”，像她自己写的日记，300–600 字，不编素材里没有的事。
 - 每晚整理那一轮写好前一天的；打开日记本时，发现开始以来哪天还没有，就在后台补写（前几天的就是这样重写的）。
-- 她自己改过的（source = 'her'）以后不再自动覆盖。语音：工作台里说一段，“直接加进去”原话追加，“帮我写进去”按她说的融进那一天。
+- 谁写的（source，2026-11-05）：'ethan' 系统写的、她没改（draft_text 存系统原稿）；'her_edited' 系统写的、她改过（只有改动的句子算她的话）；
+  'her' 她自己从空白写的。她改过的（her / her_edited）以后不再自动覆盖。语音：工作台里说一段，“直接加进去”原话追加，“帮我写进去”按她说的融进那一天。
 小伴 的聊天记忆 journal/<日期> 照旧留着，他回话时靠它想起来，不再放进日记本。
-运行：python3 -m ethan.diary --data <数据目录> [--day 2026-10-31] [--backfill]
+运行：python3 -m ethan.diary --data <数据目录> [--day 2026-10-31] [--backfill] [--audit-source]
 """
 
 import argparse
+import re
 import subprocess
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+
+from . import tx
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS diary (
     day TEXT PRIMARY KEY, body TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'auto', updated_at TEXT NOT NULL)"""
@@ -130,7 +134,7 @@ def fix(store, router, note_id: int) -> dict:
         body = _replace_once(d["body"], n["text"], new)
         if body == d["body"]:
             raise ValueError("原文里找不到那句")
-        db.conn.execute("UPDATE diary SET body = ?, updated_at = ? WHERE day = ?", (body, _now(), n["day"]))
+        _system_save(db, n["day"], body)  # 改的那句是模型写的，不算她的话（2026-11-05）
         status = "done"
     except Exception as e:
         new, status, memory_error, right = f"没改成：{type(e).__name__} {str(e)[:80]}", "failed", False, ""
@@ -147,8 +151,15 @@ def fix(store, router, note_id: int) -> dict:
     return {"status": status, "new_text": new, "ticket": ticket}
 
 
+SYSTEM = ("ethan", "auto")  # 系统写的、她没改过；'auto' 是 11-05 以前的叫法，照旧当系统写的
+HER = ("her", "her_edited")  # 有她的字：'her' 整篇是她自己写的，'her_edited' 是她在系统草稿上改的（改动的句子才是她的话）
+
+
 def ensure(db):
-    db.conn.execute(SCHEMA)
+    if tx.once(db, "diary"):
+        db.conn.execute(SCHEMA)
+        if "draft_text" not in {c[1] for c in db.conn.execute("PRAGMA table_info(diary)")}:  # 2026-11-05：保留系统原稿
+            db.conn.execute("ALTER TABLE diary ADD COLUMN draft_text TEXT")
 
 
 def _now() -> str:
@@ -161,7 +172,77 @@ def get(db, day: str) -> dict:
     return dict(r) if r else None
 
 
+# ---------- 哪些句子是她的话（2026-11-05：系统写的日记不能当成“她怎么说话”的证据） ----------
+_SENT = re.compile(r"[^。！？!?…\n]+(?:[。！？!?…]+[”’」』）)]*)?")
+
+
+def sentences(text: str) -> list:
+    """按句号、问号、叹号、换行切句；空白不敏感。"""
+    out = []
+    for m in _SENT.finditer(text or ""):
+        s = " ".join(m.group(0).split())
+        if s and any(ch.isalnum() for ch in s):
+            out.append(s)
+    return out
+
+
+def changes(draft: str, body: str) -> list:
+    """她在系统草稿上改了什么：[(改前, 改后)]，新增的句子改前是空，删掉的改后是空。按句子比。"""
+    import difflib
+    a, b = sentences(draft), sentences(body)
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "equal":
+            continue
+        old, new = a[i1:i2], b[j1:j2]
+        for k in range(max(len(old), len(new))):
+            out.append((old[k] if k < len(old) else "", new[k] if k < len(new) else ""))
+    return out
+
+
+def her_sentences(row: dict) -> list:
+    """这篇里哪些句子是她写的：'her' 整篇；'her_edited' 只算新增或改过的句子（草稿里没有的）；系统写的一句都不算。"""
+    if not row or not (row.get("body") or "").strip():
+        return []
+    if row.get("source") == "her":
+        return sentences(row["body"])
+    if row.get("source") == "her_edited":
+        draft = set(sentences(row.get("draft_text") or ""))
+        return [s for s in sentences(row["body"]) if s not in draft]
+    return []
+
+
+def change_summary(row: dict, limit: int = 2, width: int = 40) -> str:
+    """给 runlog：改了几句、前几句改前→改后（截短），以后归纳她的写作习惯用。"""
+    if not row or row.get("source") != "her_edited":
+        return ""
+    ch = changes(row.get("draft_text") or "", row.get("body") or "")
+    if not ch:
+        return ""
+    cut = lambda t: (t[:width] + "…") if len(t) > width else t
+    eg = "；".join(f"「{cut(a) or '（新加）'}」→「{cut(b) or '（删掉）'}」" for a, b in ch[:limit])
+    return f"改了 {len(ch)} 句：{eg}"
+
+
+def _system_save(db, day: str, body: str) -> dict:
+    """系统写的（自动写、按语音融进去、按批注改一句）：原稿记进 draft_text。
+    原来有她的字（'her' / 'her_edited'）的，她那些句子还算她的：source 记 'her_edited'，草稿里只放系统写的句子。"""
+    old = get(db, day)
+    mine = set(her_sentences(old))
+    kept = [s for s in sentences(body) if s in mine]
+    if kept:
+        source, draft = "her_edited", "\n".join(s for s in sentences(body) if s not in mine)
+    else:
+        source, draft = "ethan", body
+    db.conn.execute("INSERT OR REPLACE INTO diary (day, body, source, updated_at, draft_text) VALUES (?, ?, ?, ?, ?)",
+                    (day, body, source, _now(), draft[:8000]))
+    db.conn.commit()
+    return get(db, day)
+
+
 def save(db, day: str, body: str, source: str = "her") -> dict:
+    """source='her'：她在工作台上存（原来是系统写的 → 'her_edited'，草稿留着；原来是空或她自己写的 → 'her'）；
+    source='ethan'（或旧叫法 'auto'）：系统写的，原稿记进 draft_text。"""
     ensure(db)
     body = (body or "").strip()
     if not body:  # 存空的 = 不要这篇了，删掉让系统重写（她 2026-11-02：11-01 误存了一条空的，那天就一直空着）
@@ -169,9 +250,18 @@ def save(db, day: str, body: str, source: str = "her") -> dict:
             raise ValueError("日记是空的")
         db.conn.execute("DELETE FROM diary WHERE day = ?", (day,))
         db.conn.commit()
-        return {"day": day, "body": "", "source": "auto", "updated_at": _now()}
-    db.conn.execute("INSERT OR REPLACE INTO diary (day, body, source, updated_at) VALUES (?, ?, ?, ?)",
-                    (day, body[:8000], source, _now()))
+        return {"day": day, "body": "", "source": "auto", "updated_at": _now(), "draft_text": None}
+    body = body[:8000]
+    if source != "her":
+        return _system_save(db, day, body)
+    old = get(db, day)
+    if old and old["source"] in SYSTEM + ("her_edited",):
+        draft = old.get("draft_text") or (old["body"] if old["source"] in SYSTEM else "")  # 11-05 以前系统写的没存原稿：当时的正文就是原稿
+        src = old["source"] if old["source"] in SYSTEM and sentences(body) == sentences(draft) else "her_edited"  # 原样存回去不算改
+    else:
+        draft, src = None, "her"
+    db.conn.execute("INSERT OR REPLACE INTO diary (day, body, source, updated_at, draft_text) VALUES (?, ?, ?, ?, ?)",
+                    (day, body, src, _now(), draft))
     db.conn.commit()
     return get(db, day)
 
@@ -248,8 +338,8 @@ def write(store, router, day: date, force: bool = False) -> str:
     """自动写一天。她改过的不覆盖；没素材就不写。返回说明。"""
     db = store.db
     old = get(db, day.isoformat())
-    if old and (old["source"] == "her" or not force):
-        return "已经有了" if old["source"] != "her" else "她自己改过，不动"
+    if old and (old["source"] in HER or not force):
+        return "她自己改过，不动" if old["source"] in HER else "已经有了"
     m = materials(store, day)
     if not m:
         return "这天没有素材"
@@ -258,12 +348,13 @@ def write(store, router, day: date, force: bool = False) -> str:
     body = reply.text.strip()
     if not body:
         raise ValueError("模型没写出来")
-    save(db, day.isoformat(), body, source="auto")
+    save(db, day.isoformat(), body, source="ethan")
     return f"写好了 {len(body)} 字"
 
 
 def weave(store, router, day: str, note: str) -> dict:
-    """她补充的一段（多半是语音），按她说的融进那天的日记；还没有日记就当成开头。改完算她改过的。"""
+    """她补充的一段（多半是语音），按她说的融进那天的日记；还没有日记就当成开头（那就是她自己写的）。
+    融好的那篇是模型写的：记成系统写的（source='ethan'，原稿进 draft_text），不算她的原话；原来她自己写的句子还算她的。"""
     note = (note or "").strip()
     if not note:
         raise ValueError("没听到要加的内容")
@@ -274,7 +365,7 @@ def weave(store, router, day: str, note: str) -> dict:
     now = get(store.db, day)
     if (now or {}).get("body") != old["body"]:  # 等模型时这篇被改过了：照旧的写的会盖掉她刚改的，不存
         raise ValueError("这期间日记被改过了，没加进去，再补一次")
-    return save(store.db, day, reply.text.strip() or (old["body"] + "\n\n" + note))
+    return save(store.db, day, reply.text.strip() or (old["body"] + "\n\n" + note), source="ethan")
 
 
 def missing(store, today: date) -> list:
@@ -318,12 +409,91 @@ def backfill(store, router, today: date) -> dict:
     return out
 
 
+def audit_source(data) -> list:
+    """只读：以前被当成“她的原话”登记进记忆的日记里，哪些天其实可能是系统写的（2026-11-05 修之前，
+    按语音融进去的、按批注改过句子的、系统先写了初稿她再存的，都记成了 source='her'）。不改任何数据，给她决定要不要清。"""
+    import json
+    import sqlite3
+    data = Path(data)
+    path = data / "ethan.sqlite"
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        has = lambda t: bool(conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (t,)).fetchone())
+        if not has("evidence"):
+            return []
+        cols = {c[1] for c in conn.execute("PRAGMA table_info(evidence)")}
+        live = " AND deleted_at IS NULL" if "deleted_at" in cols else ""
+        days = {}
+        for r in conn.execute("SELECT id, source_ref FROM evidence WHERE source = 'workbench' AND source_ref LIKE 'diary:%' "
+                              f"AND source_ref NOT LIKE '%:edit-%'{live} ORDER BY id"):
+            days.setdefault(r["source_ref"][6:16], []).append(r["id"])
+        logs = []
+        try:
+            for line in (data / "workbench-log.jsonl").read_text(encoding="utf-8").splitlines():
+                try:
+                    logs.append(str(json.loads(line).get("text") or ""))
+                except ValueError:
+                    pass
+        except OSError:
+            pass
+        out = []
+        for day, ids in sorted(days.items()):
+            why = []
+            n = sum(t == f"补日记：{day}" for t in logs)
+            if n:
+                why.append(f"按语音融进去过 {n} 次（weave，融好的整篇是模型写的）")
+            if has("diary_notes"):
+                k = conn.execute("SELECT COUNT(*) FROM diary_notes WHERE day = ? AND status = 'done'", (day,)).fetchone()[0]
+                if k:
+                    why.append(f"按批注让 小伴 改过 {k} 句")
+            if has("run_log"):
+                r = conn.execute("SELECT reaction FROM run_log WHERE key = ?", (f"diary:{day}",)).fetchone()
+                if r and r[0] == "edited":
+                    why.append("runlog 记着这天是“小伴 写的初稿、她改了再存”")
+            saves = sum(t == f"改日记：{day}" for t in logs)
+            facts = 0  # 每晚整理从这几份里加了 / 改了几条说法（看整理记录，不直接读说法表）
+            if has("interview_digest"):
+                q = ",".join("?" * len(ids))
+                for (res,) in conn.execute(f"SELECT result FROM interview_digest WHERE evidence_id IN ({q})", ids):
+                    try:
+                        got = json.loads(res or "{}")
+                        facts += sum(int(got.get(k) or 0) for k in ("ADD", "UPDATE")) if isinstance(got, dict) else 0
+                    except (ValueError, TypeError):
+                        pass
+            row = conn.execute("SELECT source FROM diary WHERE day = ?", (day,)).fetchone() if has("diary") else None
+            out.append({"day": day, "evidence": ids, "facts": facts, "why": why, "saves": saves,
+                        "now": row["source"] if row else None, "suspect": bool(why)})
+        return out
+    finally:
+        conn.close()
+
+
+def _print_audit(items: list):
+    bad = [x for x in items if x["suspect"]]
+    print(f"当成她原话登记的日记：{len(items)} 天；疑似其实是系统写的：{len(bad)} 天（只读，没改任何数据）")
+    for x in bad:
+        print(f"- {x['day']}：登记了 {len(x['evidence'])} 份（证据 {','.join(map(str, x['evidence']))}），"
+              f"整理时加了 / 改了 {x['facts']} 条说法；她在工作台存过 {x['saves']} 次；现在 source={x['now'] or '（这天没日记了）'}")
+        for w in x["why"]:
+            print(f"    · {w}")
+    ok = [x["day"] for x in items if not x["suspect"]]
+    if ok:
+        print("看不出系统写过的（多半是她自己写的）：" + "、".join(ok))
+
+
 def main():
     p = argparse.ArgumentParser(description="我的日记：用她的口吻写她的一天")
     p.add_argument("--data", type=Path, required=True)
     p.add_argument("--day", type=date.fromisoformat)
     p.add_argument("--backfill", action="store_true")
+    p.add_argument("--audit-source", action="store_true", help="只读：列出以前被错当成她原话登记的日记")
     a = p.parse_args()
+    if a.audit_source:
+        _print_audit(audit_source(a.data))
+        return
     from .cli import build_router
     from .clock import her_tz
     from .memory import MemoryStore

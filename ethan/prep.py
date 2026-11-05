@@ -129,6 +129,18 @@ def is_secret(title: str) -> bool:
     return bool(SECRET.search(title or ""))
 
 
+# 给开发会话、Claude、Codex、Grok 的权限 / 放行 / 授权 / 配置这类系统运维事务：不是 小伴 替她准备的活，不进“小伴 帮我办”
+# （她 11-05：“小伴帮我办里面怎么还有一个放行Claude？这个他不是没答应么？而且也不用办啊，就算要办也是当时办了？”）
+_AGENTS = r"(Claude(\s*Code)?|Codex|开发会话|云端会话|服务器会话|Grok|MCP)"
+_OPS_ACTS = r"(放行|授权|权限|批准|允许|白名单|配置|设置|登录|密钥|令牌|token|API\s*key|安装|装上|开通|接入|连上)"
+OPS = re.compile(f"{_OPS_ACTS}.{{0,15}}{_AGENTS}|{_AGENTS}.{{0,15}}{_OPS_ACTS}", re.I)
+
+
+def is_ops(title: str) -> bool:
+    """系统运维事务（给 Claude / 开发会话的权限、放行、配置……）：开发会话当场办，不进准备员。"""
+    return bool(OPS.search(title or ""))
+
+
 def today_ids(db) -> list:
     """今天要做的：她点星星的在前，再是 小伴 今天通盘定的先后。团队页的“排队”只放这些（2026-10-29 她说不然排起来没完）。"""
     starred = stars(db)
@@ -147,7 +159,8 @@ def queue(db) -> list:
         "LEFT JOIN prep_work p ON p.task_id = t.id WHERE t.done = 0 AND t.promised_by_ethan = 1 "
         "AND COALESCE(g.status, 'active') != 'dropped'").fetchall()  # 放弃的副本不准备；暂停的也做，排在后面（2026-10-29 她定）
     # 新记下的先问她要不要再做（2026-10-31 她说 小伴 做了很多用不着的）；给她的惊喜不问，照常偷偷准备
-    items = [{**dict(r), "state": r["state"] or ("todo" if is_secret(r["title"]) else "ask")} for r in rows if not ROUTINE.search(r["title"])]
+    items = [{**dict(r), "state": r["state"] or ("todo" if is_secret(r["title"]) else "ask")} for r in rows
+             if not ROUTINE.search(r["title"]) and not is_ops(r["title"])]  # 系统运维的不算 小伴 帮她办的（11-05）
     pos = {r["task_id"]: r["pos"] for r in db.conn.execute("SELECT * FROM prep_order")}
     # 她拖过的按她排的；没排过的跟在后面，本赛季副本相关的先
     starred = stars(db)
@@ -428,7 +441,7 @@ def review(store, router, now: datetime = None) -> dict:
         titles = [x["title"] for x in items] + [t["title"] for t in db.open_tasks()]  # 她自己的待办里有的也不另加
         for a in (data.get("add") or [])[:3]:
             title = " ".join(str(a.get("title") or "").split())[:60]
-            if title and not ROUTINE.search(title) and not similar_task(title, titles):
+            if title and not ROUTINE.search(title) and not is_ops(title) and not similar_task(title, titles):
                 added.append(db.add_task(title, promised_by_ethan=True))
                 titles.append(title)
     db.conn.execute("INSERT OR REPLACE INTO prep_meta (key, value) VALUES ('review', ?)", (day,))

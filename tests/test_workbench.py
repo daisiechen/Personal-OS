@@ -909,10 +909,10 @@ class CardTest(unittest.TestCase):
         r = R()
         self.assertTrue(diary.write(self.store, r, day).startswith("写好了"))
         self.assertIn("第一人称", r.seen[0][0])
-        self.assertEqual(diary.get(self.store.db, day.isoformat())["source"], "auto")
+        self.assertEqual(diary.get(self.store.db, day.isoformat())["source"], "ethan")
         self.assertEqual(diary.write(self.store, r, day), "已经有了")
         got = diary.weave(self.store, r, day.isoformat(), "下午还喝了杯咖啡")
-        self.assertEqual(got["source"], "her")
+        self.assertEqual((got["source"], got["draft_text"]), ("ethan", got["body"]))  # 融好的是模型写的，不算她的原话（2026-11-05）
 
     def test_diary_materials_include_itinerary_people_and_lesson(self):
         """她 2026-11-02：日记像流水账，缺行程、思考、学到的、感受。素材补上日程、见了谁、小伴 教的知识点；提示词要求拆出内容、不写对话过程。"""

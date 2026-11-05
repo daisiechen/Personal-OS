@@ -91,6 +91,25 @@ const OVERLAYS = ['[data-act="prep"]', '[data-act="desk"]'];
     }
     await p.click('#nav [data-page="main"]');
     await p.waitForTimeout(800);
+    // “先放着”的红点有去处（她 11-05）：首页按钮上有，点进去“先放着”那栏上也有同样的数；点开看过就消失
+    const homeDot = await p.$('[data-act="prep"] .parkdot');
+    if (homeDot) {
+      const n = (await homeDot.innerText()).replace(/\D/g, "");
+      await p.click('[data-act="prep"]');
+      await p.waitForTimeout(600);
+      const tabDot = await p.$('#overlay [data-act="preptab"][data-tab="parked"] .navdot');
+      if (!tabDot) problems.push(`[${name}] 首页有“先放着”红点，点进去那栏上没有`);
+      else if ((await tabDot.innerText()).trim() !== n) problems.push(`[${name}] “先放着”红点首页 ${n}，里面 ${await tabDot.innerText()}`);
+      if (shots) await p.screenshot({ path: `${shots}/${name}-prep-parked-dot.png` });
+      if (tabDot) {
+        await tabDot.click();
+        await p.waitForTimeout(800);
+        if (shots) await p.screenshot({ path: `${shots}/${name}-prep-parked.png` });
+        if (await p.$('#overlay [data-act="preptab"][data-tab="parked"] .navdot')) problems.push(`[${name}] 看过“先放着”红点还在`);
+      }
+      await p.keyboard.press("Escape");
+      await p.waitForTimeout(400);
+    }
     for (const sel of OVERLAYS) {
       const el = await p.$(sel);
       if (!el) { problems.push(`[${name}] 首页没有 ${sel}`); continue; }

@@ -284,6 +284,8 @@ def _priority(ev: dict) -> tuple:
 
 
 def _context(text: str, ref: str = "") -> str:
+    if ref.startswith("diary:") and ":edit-" in ref:  # 她在系统草稿上改的句子（2026-11-05）
+        return f"在工作台 {ref[6:16]} 的日记里，改系统草稿时自己写的"
     if ref.startswith("diary:"):  # 她亲手写、存过的日记（1.5，S17）
         return f"在工作台 {ref[6:16]} 的日记里自己写的"
     if ref.startswith("wish:"):
@@ -427,6 +429,9 @@ def _digest_one(store, router, ev: dict, today: date = None) -> dict:
     ref = ev.get("source_ref") or ""
     if ref.startswith("sent:"):  # 她自己发出去的邮件（引用的别人的话已经去掉）
         text = "【她自己发出去的一封邮件，下面是她写的部分，整段都是她的回答（原话），没有提问；只提取关于她本人的，收信人的事不算】\n" + text
+    elif ref.startswith("diary:") and ":edit-" in ref:  # 系统替她写的日记、她改过：只有改动的句子是她的（2026-11-05）
+        text = ("【她在工作台上改了系统替她写的日记草稿。下面是她在系统草稿上改动的句子（新增或改过的），是她的原话，没有提问；"
+                "没改的句子是系统写的，不在这里，也不算她的话】\n") + text
     elif ref.startswith(("diary:", "wish:")):  # 工作台上她亲手写的：整段都是她的话，没有提问
         text = ("【她在工作台上亲手写的日记，下面整篇都是她的回答（原话），没有提问】\n" if ref.startswith("diary:")
                 else "【她在今日卡上写的心愿，下面整段都是她的回答（原话），没有提问】\n") + text
