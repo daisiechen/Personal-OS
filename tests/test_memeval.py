@@ -76,8 +76,17 @@ class MemEvalTest(unittest.TestCase):
                     self.n = getattr(self, "n", 0) + 1
                     self.answer = "你不是住 Camden 吗" if self.n == 1 else "你住 Islington 呀"
                 return super().complete(system, messages, purpose, images)
-        self.assertEqual(memeval.run(self.db, Flaky(""), "gate", self.store)["regressions"], [])
+        got = memeval.run(self.db, Flaky(""), "gate", self.store)
+        self.assertEqual(got["regressions"], [])
+        self.assertEqual(got["passed"], got["total"])  # 重跑过了就算过（11-05：曾按第一次的结果计分，显示 4/6）
         self.assertEqual(len(memeval.run(self.db, Router("你不是住 Camden 吗"), "gate", self.store)["regressions"]), 1)
+
+    def test_judge_takes_first_json_only(self):
+        class Two:
+            def complete(self, system, messages, purpose="chat", images=()):
+                from types import SimpleNamespace
+                return SimpleNamespace(text='{"ok": true, "why": "对"}\n{"ok": false}')
+        self.assertEqual(memeval._judge(Two(), "q", "a", {"right": "r"})[0], True)
 
     def test_retrieval_item_checks_the_key(self):
         fid = lifebase.add_fact(self.db, "body", "她对花生过敏", [self.ev])

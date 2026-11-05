@@ -323,7 +323,8 @@ def add_event(db, occurred_at: str, title: str, evidence_ids, created_by: str, s
 def add_fact(db, dimension: str, statement: str, evidence_ids, subject: str = "self", also_dims=(), territory: str = None,
              detail: str = None, tags=(), confidence: float = 0.6, importance: int = 3, valid_from: str = None,
              status: str = "active", visibility: str = None, kind: str = "fact", source_kind: str = None,
-             context: str = None, prop: str = None) -> int:
+             context: str = None, prop: str = None, locked: bool = False) -> int:
+    """locked：她亲口确认的，建的时候就锁上（2026-11-05 写作规范确认时用；双写触发器建说法时一起带上）。"""
     if dimension not in DIMENSIONS:
         raise ValueError(f"不认识的维度：{dimension}")
     also = [d for d in also_dims if d in DIMENSIONS and d != dimension][:3]
@@ -342,9 +343,10 @@ def add_fact(db, dimension: str, statement: str, evidence_ids, subject: str = "s
     from . import ontology
     ontology.object_for_ref(db, subject)  # 主语对应的对象先有（双写触发器靠它），跟着这次事务
     now = _now()
+    lock_col, lock_val = (", locked", ", 1") if locked else ("", "")
     cur = db.conn.execute(
         "INSERT INTO facts (dimension, also_dims, territory, subject, statement, detail, tags, confidence, importance, valid_from, "
-        "recorded_at, evidence_ids, status, last_confirmed_at, visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"recorded_at, evidence_ids, status, last_confirmed_at, visibility{lock_col}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?{lock_val})",
         (dimension, json.dumps(also), territory, subject, statement.strip()[:60], detail, json.dumps(list(tags), ensure_ascii=False),
          max(0.0, min(1.0, float(confidence))), max(1, min(5, int(importance))), valid_from, now, json.dumps(ids), status, now, vis))
     if "kind" in ensure_columns:

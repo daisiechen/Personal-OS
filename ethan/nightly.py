@@ -198,6 +198,11 @@ def main():
                 print(f"行为记录整理：{lifebase.write_behavior(store.db)}", flush=True)
             except Exception as e:
                 print(f"行为记录整理没成：{type(e).__name__} {str(e)[:200]}", flush=True)
+            try:  # 周日夜里：写作规范增量更新（新原料不够就跳过）、纠正攒够了提议开 skill（ethan/style.py、ethan/skills.py，她 11-05“提前做”）
+                from . import style
+                print(f"写作规范：{style.weekly(store, build_router(args.data, 50.0))}", flush=True)
+            except Exception as e:
+                print(f"写作规范没更新成：{type(e).__name__} {str(e)[:200]}", flush=True)
             try:  # 周日夜里：记忆检验题跑一圈，结果进周日周报（ethan/memeval.py）
                 from . import memeval
                 got = memeval.run(store.db, build_router(args.data, 50.0), "weekly", store)

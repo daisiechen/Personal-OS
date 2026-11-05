@@ -146,13 +146,24 @@ def request_reply(db, rid: int, note: str = "") -> dict:
     return {"ok": True, "msg": "交给Dais了，草稿写好会出现在这里"}
 
 
+def _style(db) -> str:
+    """Dais 起草回复用的表达方式（2026-11-05）：只给她确认过的写作规范的规则本身（工作上 + 通用），不给出处原句；
+    只管怎么说，不涉及能说什么（那个照对外开关）。没有确认过的就空。"""
+    try:
+        from . import style
+        return style.style_block(db, "twin", audience="work", quotes=False)
+    except Exception:
+        return ""
+
+
 def reply_requests(db, status: str) -> dict:
     ensure_triage(db)
     if status == "pending":
         rows = db.conn.execute("SELECT * FROM visitor_messages WHERE reply_status = 'pending' ORDER BY id LIMIT 50").fetchall()
+        style_text = _style(db) if rows else ""
         items = [{"request_id": r["request_id"], "message_id": r["message_id"], "email": r["email"] or "", "contact": r["contact"] or "",
                   "name": r["name"] or "", "message": r["message"], "instruction": r["desk_note"] or "", "lang": r["lang"] or "",
-                  "at": r["received_at"]} for r in rows if can_reply(r)]
+                  "at": r["received_at"], "style": style_text} for r in rows if can_reply(r)]
     elif status == "approved":  # 只放邮件渠道的；手动的她自己发
         rows = db.conn.execute("SELECT * FROM visitor_messages WHERE reply_status = 'approved' AND reply_channel = 'email' ORDER BY id LIMIT 50")
         items = [{"request_id": r["request_id"], "message_id": r["message_id"], "email": r["email"], "subject": r["draft_subject"] or "",

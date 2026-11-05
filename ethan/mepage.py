@@ -282,6 +282,12 @@ def resolve(db, pid: int, action: str, pick: int = None, text: str = "", type_: 
         return {"ok": False, "msg": "这件已经定过了"}
     if r["kind"] == "disclose":
         return _resolve_disclose(db, r, action, text)
+    if r["kind"] == "style":  # 写作规范草稿：逐条对 / 不对 / 改（ethan/style.py，她 11-05“提前做”），pick 是规则编号
+        from . import style
+        return style.resolve(db, r, action, pick, text)
+    if r["kind"] == "skill":  # 新 skill 草稿 / 提议开 skill（ethan/skills.py）：批准才生效
+        from . import skills
+        return skills.resolve(db, r, action, text)
     opts, fids = json.loads(r["options"]), json.loads(r["fact_ids"])
     today = her_today().isoformat()
     confirm_from = db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM confirmations").fetchone()[0]

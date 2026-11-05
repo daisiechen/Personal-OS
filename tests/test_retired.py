@@ -97,5 +97,15 @@ class RetiredTest(unittest.TestCase):
         self.assertNotIn('know not in (None, "disclosure", "fact", "preference", "goal")', mu)
         self.assertTrue(all("tier" in u for u in memusers.USERS.values()))
 
+    def test_diary_reads_only_writing_style(self):  # 11-05 写作规范 v1（style-and-skills.md 第 3 节）：日记不再登记第 2 题，只读写作规范
+        from ethan import memusers
+        self.assertEqual(memusers.USERS["diary"]["questions"], [])
+        self.assertFalse(memusers.may_use("diary", "search"))
+        self.assertFalse(memusers.may_use("diary", "portrait"))
+        self.assertTrue(memusers.may_use("diary", "writing_style"))
+        diary = (ROOT / "ethan/diary.py").read_text(encoding="utf-8")
+        self.assertNotIn("memsearch.search(", diary)
+        self.assertNotIn("portrait.chat_text(", diary)
+
 if __name__ == "__main__":
     unittest.main()

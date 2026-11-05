@@ -238,8 +238,9 @@ def write_draft(store, router, rid: int) -> str:
     version, system = llm.load_prompt("mail_reply")
     about = portrait.chat_text(db, "mail")[:3000]  # 背景摘要还走画像（经历的说法还薄，ontology-plan 3.1 先补对方是谁、她的要求）
     known = _mail_questions(db, r)
+    how = _mail_how(db)
     user = (f"原邮件\n发件人：{r['sender']}\n主题：{r['subject']}\n正文开头：\n{r['body']}\n\n"
-            f"她的交代：{r['desk_note'] or '（没有）'}\n\n" + (f"{known}\n\n" if known else "") +
+            f"她的交代：{r['desk_note'] or '（没有）'}\n\n" + (f"{known}\n\n" if known else "") + (f"{how}\n\n" if how else "") +
             f"关于她（背景，用得上才用）：\n{about or '（无）'}")
     reply = router.complete(system, [{"role": "user", "content": user}], purpose="mail-reply")
     text = reply.text.strip()
@@ -254,6 +255,16 @@ def write_draft(store, router, rid: int) -> str:
                     (text, zh, _now(), "draft" if text else "open", rid))
     db.conn.commit()
     return text
+
+
+def _mail_how(db) -> str:
+    """怎么写（2026-11-05）：她批准了“替你回邮件” skill 就按它（通用方法 + 当场重新查的她的做法和授权）；
+    没批准就只带她确认过的写作规范。草稿都不注入。"""
+    try:
+        from . import skills, style
+        return skills.prompt_for(db, "mail_reply") or style.style_block(db, "mail")
+    except Exception:
+        return ""
 
 
 def _mail_questions(db, r) -> str:

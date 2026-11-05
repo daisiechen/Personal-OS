@@ -19,6 +19,7 @@
 """
 
 import json
+import re
 from datetime import date, datetime, timezone
 
 from . import lifebase, memusers, ontology
@@ -34,6 +35,8 @@ def _now() -> str:
 
 def _out(db, fn, user, status, items=(), note=""):
     who = memusers.check(user)
+    if not memusers.may_use(user, fn):
+        status, items, note = "forbidden", (), ""  # 只登记了读某几项的（日记只读写作规范，2026-11-05）
     shown = "unknown" if status == "forbidden" else status  # 没权限和没有一样回答（contracts 1.6 节），真实情况只记在使用记录里
     try:
         db.conn.execute(LOG)
@@ -126,7 +129,7 @@ def preferences(db, user: str, topic: str = None, today: date = None) -> dict:
     if blocked:
         return _out(db, "preferences", user, blocked)
     day = (today or lifebase_today()).isoformat()
-    rows = _self_statements(db, "(property IN ('dim:preferences', 'preference') OR kind = 'preference')")
+    rows = _self_statements(db, "(property IN ('dim:preferences', 'preference') OR kind = 'preference') AND property != 'writing_style'")  # 写作规范走 writing_style
     who = memusers.check(user)
     items, hidden = [], 0
     for r in rows:
@@ -1204,6 +1207,103 @@ def said_not_todo(db, user: str, today: date = None, days: int = 7) -> dict:
     if not items:
         return _out(db, "said_not_todo", user, "unknown", note=f"最近 {days} 天没找到说过要做、还没进待办的")
     return _out(db, "said_not_todo", user, "answer", items, "只列出来，不自动建待办")
+
+
+# ---------- 写作规范（ontology.md 3.2，她 11-05“提前做”；docs/design/style-and-skills.md） ----------
+STYLE_CHAT_PER_DAY = 6  # 聊天原话抽样：每天最多几句、一共最多几句（不全量）
+STYLE_CHAT_MIN = 6  # 太短的（“好”“嗯嗯”）不要
+
+
+def style_materials(db, user: str, chat_limit: int = 80) -> dict:
+    """写作规范的原料：**只取她自己写的**——
+    - mail：她发出去的邮件（Gmail“已发送”，引用的别人的话收的时候就去掉了）；
+    - diary：她从空白自己写的日记（source='her'）整篇；
+    - pair：她在系统草稿上改的句子，改前 → 改后（最强信号；新加的句子 kind='added'，删掉的系统句子 kind='deleted'）；
+    - liked：日记里她用荧光笔标出的句子（系统写的，她喜欢）；disliked：她批注“写得不好 / 不像我”的句子（系统写的，她不喜欢）；
+    - chat：聊天里她的原话，抽样（每天最多 STYLE_CHAT_PER_DAY 句，一共 chat_limit 句，最近的先）。
+    系统写的、她没改的日记一句都不进。只给“写作规范”和系统维护。"""
+    blocked = _gate(db, user)
+    if blocked:
+        return _out(db, "style_materials", user, blocked)
+    if user != "style" and not memusers.check(user).get("all"):
+        return _out(db, "style_materials", user, "forbidden")
+    import hashlib
+    from . import diary
+    h = lambda t: hashlib.sha1(t.encode("utf-8")).hexdigest()[:12]
+    lifebase.ensure(db)
+    items = []
+    for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'sent' AND deleted_at IS NULL AND text IS NOT NULL "
+                       "ORDER BY occurred_at DESC, id DESC LIMIT 60"):
+        head, _, body = (r["text"] or "").partition("\n")
+        body = body.strip() if head.startswith("主题：") else (r["text"] or "").strip()
+        if body:
+            items.append({"ref": f"sent:{r['id']}", "kind": "mail", "text": body[:1500], "subject": head[3:80] if head.startswith("主题：") else "",
+                          "at": r["occurred_at"], "evidence": r["id"]})
+    diary.ensure(db)
+    ev_of = {}
+    for r in _rows(db, "SELECT id, source_ref FROM evidence WHERE source = 'workbench' AND source_ref LIKE 'diary:%' AND deleted_at IS NULL"):
+        ev_of.setdefault(r["source_ref"][6:16], []).append(r["id"])
+    for r in _rows(db, "SELECT * FROM diary WHERE source IN ('her', 'her_edited') AND TRIM(body) != '' ORDER BY day DESC LIMIT 60"):
+        ev = (ev_of.get(r["day"]) or [None])[-1]
+        if r["source"] == "her":
+            items.append({"ref": f"diary:{r['day']}:{h(r['body'])}", "kind": "diary", "text": r["body"][:2000], "at": r["day"], "evidence": ev})
+            continue
+        for before, after in diary.changes(r.get("draft_text") or "", r["body"]):
+            kind = "pair" if before and after else "added" if after else "deleted"
+            items.append({"ref": f"pair:{r['day']}:{h(before + '→' + after)}", "kind": kind, "before": before, "text": after or before,
+                          "at": r["day"], "evidence": ev if after else None})
+    for r in _rows(db, "SELECT id, day, text FROM diary_marks ORDER BY id DESC LIMIT 60"):
+        items.append({"ref": f"liked:{r['id']}", "kind": "liked", "text": r["text"], "at": r["day"], "evidence": None})
+    for r in _rows(db, "SELECT id, day, text, note FROM diary_notes ORDER BY id DESC LIMIT 100"):
+        if STYLE_BAD.search(r["note"] or ""):
+            items.append({"ref": f"disliked:{r['id']}", "kind": "disliked", "text": r["text"], "note": r["note"][:200], "at": r["day"], "evidence": None})
+    per_day, n = {}, 0
+    for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'chat' AND source_ref LIKE 'raw:%' AND deleted_at IS NULL "
+                       "AND text LIKE 'mia：%' ORDER BY id DESC LIMIT 3000"):
+        words = " ".join((r["text"] or "")[len("mia："):].split())
+        day = (r["occurred_at"] or "")[:10]
+        if len(words) < STYLE_CHAT_MIN or per_day.get(day, 0) >= STYLE_CHAT_PER_DAY or n >= chat_limit:
+            continue
+        per_day[day] = per_day.get(day, 0) + 1
+        n += 1
+        items.append({"ref": f"chat:{r['id']}", "kind": "chat", "text": words[:300], "at": r["occurred_at"], "evidence": r["id"]})
+    if not items:
+        return _out(db, "style_materials", user, "unknown", note="还没有她自己写的文字")
+    return _out(db, "style_materials", user, "answer", items)
+
+
+STYLE_BAD = re.compile(r"写得不好|不像我|不是我的(语气|口吻|说法)|我不会这么(说|写)|别这么写|不要这么写|太(啰嗦|肉麻|鸡汤|书面|正式|官方)|生硬|别扭|矫情")
+
+
+def writing_style(db, user: str, audience: str = None) -> dict:
+    """她**确认过**的写作规范（说法 property = writing_style，review = accepted）；草稿、她说不对的都不给。
+    audience（friend 朋友 / elder 长辈 / work 工作）：只给通用的和这一类的。
+    对外的（Dais）只给规则本身，不给出处原句（原句里是她写过的内容），也不按对外开关挡——规范只管怎么说，不涉及内容权限（她 11-05 定）。"""
+    blocked = _gate(db, user)
+    if blocked:
+        return _out(db, "writing_style", user, blocked)
+    outside = memusers.external(user)
+    day = lifebase_today().isoformat()
+    rows = _self_statements(db, "property = 'writing_style' AND review = 'accepted'")
+    meta = {r["statement_id"]: r for r in _rows(db, "SELECT * FROM style_rules WHERE status = 'confirmed' AND statement_id IS NOT NULL")}
+    items = []
+    for r in rows:
+        m = meta.get(r["id"])
+        if not _current(r, day) or (m is None and r["said_by"] not in HER_OWN):
+            continue
+        aud = (m or {}).get("audience") or "all"
+        if audience and aud not in ("all", audience):
+            continue
+        if outside and lifebase.CONTACT.search(r["value_text"] or ""):
+            continue
+        item = {"statement": r["id"], "value": r["value_text"], "category": (m or {}).get("category") or "other", "audience": aud,
+                "words": json.loads((m or {}).get("words") or "[]"), "said_by": r["said_by"]}
+        if not outside:
+            item["quotes"] = [q.get("text") for q in json.loads((m or {}).get("quotes") or "[]")][:3]
+        items.append(item)
+    if not items:
+        return _out(db, "writing_style", user, "unknown", note="还没有她确认过的写作规范")
+    return _out(db, "writing_style", user, "answer", items)
 
 
 # ---------- 题号 → 函数（能力题清单 capability-questions.md；第 20、21 题首版不做） ----------

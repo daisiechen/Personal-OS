@@ -30,8 +30,10 @@ class PermissionTest(unittest.TestCase):
         key = f"fact:{h}"
         self.assertIn(key, self.keys("截止", "ethan"))
         self.assertIn(key, self.keys("截止", "me_page"))
-        for user in ("planner", "prep", "mail", "diary"):
+        for user in ("planner", "prep", "mail"):
             self.assertNotIn(key, self.keys("截止", user), user)
+        with self.assertRaises(ValueError):  # 日记 11-05 起只登记了读写作规范，连检索都不能用
+            self.keys("截止", "diary")
         memsearch.refresh(self.db)
         found = memsearch.search(self.db, ["截止"], user="ethan", log=False)
         self.assertIn("我的猜测", memsearch.lines(found))  # 小伴 看到的标着是猜测

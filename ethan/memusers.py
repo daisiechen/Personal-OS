@@ -31,12 +31,13 @@ USERS = {
                 "since": "2026-10-31", "questions": [1, 4, 6, 8, 9, 13, 22, 27]},
     "prep": {"tier": "internal", "name": "准备工作", "level": "private", "uses": "替她办事要用的偏好和事实", "where": "准备的东西、调研",
              "since": "2026-10-31", "questions": [3, 4, 12, 13, 22, 27]},
-    "mail": {"tier": "internal", "name": "邮件起草", "level": "private", "uses": "她的背景、和对方的往来", "where": "“邮件和留言”里的回复草稿",
-             "since": "2026-10-31", "questions": [3, 4, 12, 13]},
+    "mail": {"tier": "internal", "name": "邮件起草", "level": "private", "uses": "她的背景、和对方的往来、她确认过的写作规范、批准过的“替你回邮件” skill",
+             "where": "“邮件和留言”里的回复草稿", "since": "2026-10-31", "questions": [3, 4, 5, 12, 13]},
     "site": {"tier": "public", "name": "主页文案 / 自媒体", "level": "public", "uses": "标了“上主页”的公开内容", "where": "主页、内容草稿",
              "since": "2026-10-31", "questions": [14, 15]},
-    "diary": {"tier": "internal", "name": "我的日记", "level": "private", "uses": "那天她自己在聊天里说的话、完成的事、出门、工作时长", "where": "日记本（用她的口吻写她的一天）",
-              "since": "2026-11-01", "questions": [2]},
+    # 日记照旧不读记忆（只读当天原始记录），2026-11-05 只多读一项：她确认过的写作规范（onto_query.writing_style），别的记忆一律不给（memory_only 把关）
+    "diary": {"tier": "internal", "name": "我的日记", "level": "private", "uses": "那天她自己在聊天里说的话、完成的事、出门、工作时长；她确认过的写作规范",
+              "where": "日记本（用她的口吻写她的一天）", "since": "2026-11-01", "questions": [], "memory_only": ["writing_style"]},
     "me_page": {"tier": "internal", "name": "属性分数", "level": "private", "uses": "全部", "where": "7 项属性、画像展示", "since": "2026-10-31", "all": True,
                 "questions": [7, 11, 17, 18, 19, 23]},
     "gaps": {"tier": "internal", "name": "补缺口提问", "level": "private", "uses": "每个方面有几条说法、她的聊天和文件里有没有提过某个话题（只判断有没有，不读出内容）",
@@ -51,12 +52,17 @@ USERS = {
     "patrol": {"tier": "internal", "name": "巡检和维修工", "level": "private", "uses": "改动记录、她否掉的事、生效的决定、纠错单、说过要做的事",
                "where": "系统巡检（ethan/checkup.py）、开发会话修问题", "since": "2026-11-04", "internal": True,
                "questions": [23, 24, 25, 28]},
+    # 写作规范（docs/design/style-and-skills.md，她 11-05：“提前做”）：只读她自己写的（发出的邮件、她写的日记、她改草稿的改前→改后、
+    # 荧光笔和“写得不好”的批注、聊天里她的原话抽样），经 onto_query.style_materials；归纳出的规范她逐条确认才生效
+    "style": {"tier": "internal", "name": "写作规范", "level": "private", "internal": True,
+              "uses": "她自己写的文字：发出的邮件、她写的日记、改系统草稿时改动的句子、荧光笔和批注、聊天里她的原话（抽样）",
+              "where": "归纳“你的写作规范”草稿（ethan/style.py），每周日夜里增量更新", "since": "2026-11-05", "questions": [2]},
     "system": {"tier": "internal", "name": "系统维护", "level": "private", "uses": "全部", "where": "每晚整理、每周复盘、题集、命令行", "since": "2026-10-31",
                "internal": True, "all": True, "questions": []},
 }
 # “我”页上按实体看（她 2026-10-31：“你放的应该是在我们这个体系里面的实体”）：计划器、准备、邮件起草、属性分数都是 OS 在做的事；
 # Dais和主页文案都是个人主页。登记表照旧按用途细分（进出闸门、统计口径不变），页面上合并。新登记的用途要归到一个实体里。
-ENTITIES = {"ethan": ("小伴", ["ethan", "gaps"]), "twin": ("Dais", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "relations"])}
+ENTITIES = {"ethan": ("小伴", ["ethan", "gaps"]), "twin": ("Dais", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "relations", "style"])}
 
 
 def entity_of(user: str) -> str:
@@ -139,6 +145,19 @@ def check(user: str) -> dict:
     if user not in USERS:
         raise ValueError(f"记忆使用者“{user}”没登记：先在 ethan/memusers.py 的 USERS 里加一行（AGENTS.md）")
     return USERS[user]
+
+
+def may_use(user: str, what: str) -> bool:
+    """登记了 memory_only 的使用者只能用那几项（比如日记只读写作规范）；what 是 onto_query 的函数名，或 "search"（检索）、"portrait"（画像）。"""
+    only = check(user).get("memory_only")
+    return only is None or what in only
+
+
+def need(user: str, what: str) -> dict:
+    who = check(user)
+    if not may_use(user, what):
+        raise ValueError(f"“{who['name']}”只登记了读 {who['memory_only']}，不能用 {what}（ethan/memusers.py）")
+    return who
 
 
 def ensure(db):

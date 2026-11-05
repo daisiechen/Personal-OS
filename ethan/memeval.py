@@ -94,7 +94,8 @@ def _judge(router, question: str, answer: str, expect: dict) -> tuple:
     text = router.complete(JUDGE, [{"role": "user", "content": f"今天是 {her_today().isoformat()}（回答里的“昨天”“前天”按这个算）\n"
                                                                f"问题：{question}\n回答：{answer}\n【正确说法】{expect['right']}\n"
                                                                    f"【错误说法】{expect.get('wrong') or '（无）'}"}], purpose="memeval-judge").text
-    data = json.loads(text[text.find("{"):text.rfind("}") + 1])
+    start = text.find("{")
+    data, _ = json.JSONDecoder().raw_decode(text[start:]) if start >= 0 else ({}, 0)  # 只取第一段 JSON（判分模型有时多吐一段）
     return bool(data.get("ok")), str(data.get("why") or "")[:120]
 
 
@@ -153,9 +154,6 @@ def run(db, router, kind: str = "weekly", store=None) -> dict:
             continue
         except Exception as e:
             ok, note = False, f"{type(e).__name__}: {str(e)[:100]}"
-        layer = by_layer.setdefault(it["layer"], {"total": 0, "passed": 0})
-        layer["total"] += 1
-        layer["passed"] += 1 if ok else 0
         if not ok and kind == "gate" and it["last_pass"] == 1:
             # 闸门上以前过、这次没过：模型回答和判分都有随机性，再跑两次，有一次过就不算退步
             # （2026-11-01 照片那题回答基本对、判分说“含糊”，把整批上线退回了；真退步会三次都不过）
@@ -166,6 +164,9 @@ def run(db, router, kind: str = "weekly", store=None) -> dict:
                     continue
                 if ok:
                     break
+        layer = by_layer.setdefault(it["layer"], {"total": 0, "passed": 0})  # 重跑之后再计分（11-05：重跑过了却按没过算）
+        layer["total"] += 1
+        layer["passed"] += 1 if ok else 0
         if not ok:
             failed.append({"id": it["id"], "layer": it["layer"], "task": it["task"], "note": note})
             if it["last_pass"] == 1:

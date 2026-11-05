@@ -213,7 +213,7 @@ def rebuild_blocks(db, router, force: bool = False) -> int:
 def chat_text(db, user: str = None, skip=()) -> str:
     """给使用者看的画像：按维度分小节。没有就空。user 必须在登记表里（ethan/memusers.py），每次读都记一笔。"""
     from . import memsearch, memusers
-    who = memusers.check(user)
+    who = memusers.need(user, "portrait")  # 只登记了读某几项的（日记只读写作规范）不能读画像
     if lifebase.on_hold(db) and not who.get("all"):
         return ""  # 记忆暂停中
     if memusers.external(user):

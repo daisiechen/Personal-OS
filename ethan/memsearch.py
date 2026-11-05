@@ -434,7 +434,7 @@ def search(db, queries, scene: str = "chat", limit: int = None, max_level: str =
     对外的使用者（合作方、公开两档）不按可见级别，按对外开关（lifebase.disclose）：只给“可以说”的关于她的说法和她批准的原句；
     原始记录、事件、收藏一律不给。传了 asked（列表）的，“问我”那几类的命中记进去（{"key", "category"}），不给内容。"""
     from . import memusers
-    who = memusers.check(user)
+    who = memusers.need(user, "search")  # 只登记了读某几项的（日记只读写作规范）不能检索
     if lifebase.on_hold(db) and not who.get("all"):
         return []  # 记忆暂停中（恢复后核不清删除记录，她 11-03 选先不用）
     started = time.time()

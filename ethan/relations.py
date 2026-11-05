@@ -280,6 +280,10 @@ def card_from_text(router, db, name: str, st: dict, text: str, ref: str = "") ->
     """一个人的交接记录 → 人物卡草稿（校验过的 dict；两次都不合格返回 None）。题集 tests/evals/person_card.jsonl 用的也是这个。"""
     from . import llm
     version, system = llm.load_prompt("person_card")
+    from . import style
+    block = style.style_block(db, "relations", quotes=False) if db is not None else ""
+    if block:
+        system += "\n\n写 draft 时照着她的写作规范（按对方是朋友、长辈还是工作上的人选口吻）：\n" + block
     head = (f"这个人：{name}\n统计：最近一次联系 {st.get('last') or '不知道'}；最近 90 天 {st.get('n90', 0)} 条、一年 {st.get('n365', 0)} 条；"
             f"她说的占 {round(100 * float(st.get('her_share') or 0))}%；共同群：{'、'.join(st.get('groups') or []) or '没有'}\n\n聊天记录：\n")
     return llm.structured(router, db, "person_card", system, head + text, CARD_SCHEMA, check=lambda d: _check(d, text),

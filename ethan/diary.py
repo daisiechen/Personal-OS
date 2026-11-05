@@ -38,6 +38,7 @@ PROMPT = """你在替 Mia 写她自己的日记。用她的口吻、第一人称
   5. 感受：身体和心情，用她自己的说法。
 - 可以有一点情绪和小感想，但别鸡汤、别总结人生；工作的细节点到为止，不抄技术术语。
 - 300–700 字，几段短段落，不要标题、不要列表、不要日期抬头。
+- 后面如果附了“她确认过的写作规范”，用词、句子长短、标点照着它写（只管怎么说，不改素材里的事）。
 只输出日记正文。"""
 WEAVE = """下面是 Mia 某一天的日记（她的口吻，第一人称“我”），和她刚刚补充的一段话（多半是语音转的文字）。
 把补充的内容自然地写进这篇日记里：放到合适的位置，用同样的口吻；补充和原文冲突的，以补充为准。原文其他内容不要删、不要改意思。
@@ -334,6 +335,13 @@ def materials(store, day: date) -> str:
     return "\n\n".join(parts)
 
 
+def with_style(db, prompt: str) -> str:
+    """日记照旧不读记忆，只多读一项：她确认过的写作规范（2026-11-05，memusers 里 diary 只登记了这一项）。草稿不注入。"""
+    from . import style
+    block = style.style_block(db, "diary")
+    return prompt + ("\n\n" + block if block else "")
+
+
 def write(store, router, day: date, force: bool = False) -> str:
     """自动写一天。她改过的不覆盖；没素材就不写。返回说明。"""
     db = store.db
@@ -343,7 +351,7 @@ def write(store, router, day: date, force: bool = False) -> str:
     m = materials(store, day)
     if not m:
         return "这天没有素材"
-    reply = router.complete(PROMPT, [{"role": "user", "content": f"日期：{day.isoformat()}（周{'一二三四五六日'[day.weekday()]}）\n\n{m}"}],
+    reply = router.complete(with_style(db, PROMPT), [{"role": "user", "content": f"日期：{day.isoformat()}（周{'一二三四五六日'[day.weekday()]}）\n\n{m}"}],
                             purpose="diary")
     body = reply.text.strip()
     if not body:
@@ -361,7 +369,7 @@ def weave(store, router, day: str, note: str) -> dict:
     old = get(store.db, day)
     if not old or not old["body"]:
         return save(store.db, day, note)
-    reply = router.complete(WEAVE, [{"role": "user", "content": f"## 原来的日记\n{old['body']}\n\n## 她补充的\n{note}"}], purpose="diary")
+    reply = router.complete(with_style(store.db, WEAVE), [{"role": "user", "content": f"## 原来的日记\n{old['body']}\n\n## 她补充的\n{note}"}], purpose="diary")
     now = get(store.db, day)
     if (now or {}).get("body") != old["body"]:  # 等模型时这篇被改过了：照旧的写的会盖掉她刚改的，不存
         raise ValueError("这期间日记被改过了，没加进去，再补一次")

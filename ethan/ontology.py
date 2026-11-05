@@ -91,6 +91,8 @@ PROPERTIES = (
     ("application_status", "申请和办理进度", "text", "many", None, ["self"], "resources", "on_use"),
     ("account_status", "账户和服务开通", "text", "many", None, ["self"], "resources", "on_use"),
     ("appointment", "预约和订单", "text", "many", None, ["self"], None, "on_use"),
+    # 写作规范（ontology.md 3.2，她 11-05“提前做”，ethan/style.py）：一条一句规则；没确认的是假设（候选），她确认的是偏好、锁住
+    ("writing_style", "写作规范", "text", "many", None, ["self"], None, "quarter"),
 )
 BACKGROUND = ("studied_at", "worked_at", "project", "skill")
 # 迁移第 2 步（她 11-03 同意）：旧记忆只分了 10 个方面，没有细属性，先给每个方面配一个“总的”属性（多值），

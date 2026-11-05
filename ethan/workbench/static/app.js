@@ -2344,6 +2344,24 @@ function meOverlay() {
           <button type="button" class="btn" data-act="me-no" data-id="${x.id}">不说</button></div>
         <div class="meown"><input data-mef="${k}text" placeholder="改一下再说，比如：她在伦敦" value="${esc((S.meF || {})[k + "text"] || "")}">
           <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="long">用我写的</button></div></div>`; };
+    const styleCard = (x) => `<div class="mepair mestyle"><div class="q"><span class="kind k-long">写作</span>${esc(x.question)}</div>
+        <p class="muted" style="font-size:12px;margin:4px 0 6px">从你发的邮件、你写和改过的日记、你在聊天里的话归纳的。逐条看：对的生效，以后 小伴 写日记、起草邮件、人物卡里那句、Dais 回留言都照着写；不对的以后不再提。</p>
+        ${x.options.map((o) => { const k = "s" + o.rule_id;
+          return `<div class="meopt"><div><b style="font-weight:600">${esc(o.text)}</b>${o.words && o.words.length ? ` <span class="muted">（${esc(o.words.join("、"))}）</span>` : ""}
+            <div class="src">${esc(o.category)} · ${esc(o.audience)} · ${esc(o.src)}</div>
+            ${(o.quotes || []).map((q) => `<div class="src">「${esc(q.text)}」— ${esc(q.from)}</div>`).join("")}
+            <div class="row" style="gap:8px;margin-top:6px;flex-wrap:wrap"><button type="button" class="btn gold" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="yes">对</button>
+              <button type="button" class="btn" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="no">不对</button></div>
+            <div class="meown"><input data-mef="${k}text" placeholder="改一下：写成你认的那句" value="${esc((S.meF || {})[k + "text"] || "")}">
+              <button type="button" class="btn" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="own">用我写的</button></div></div></div>`; }).join("")}</div>`;
+    const skillCard = (x) => { const k = "p" + x.id, o = x.options[0] || {}, draft = o.step === "draft";
+      return `<div class="mepair meskill"><div class="q"><span class="kind k-long">skill</span>${esc(x.question)}</div>
+        <div class="meopt"><div><div class="src">${esc(o.src || o.why || "")}</div>
+          ${draft && o.body ? `<details style="margin-top:6px"><summary class="muted" style="font-size:13px;cursor:pointer">看草稿</summary><pre style="white-space:pre-wrap;font-size:12px;line-height:1.6">${esc(o.body)}</pre></details>` : ""}</div></div>
+        <div class="row" style="gap:8px;margin-top:8px"><button type="button" class="btn gold" data-act="me-yes" data-id="${x.id}">${draft ? "批准，用起来" : "开一个，先给我看草稿"}</button><button type="button" class="btn" data-act="me-no" data-id="${x.id}">不要</button></div>
+        ${draft ? `<div class="meown"><input data-mef="${k}text" placeholder="再加一条要求，比如：给教授的信都用英文" value="${esc((S.meF || {})[k + "text"] || "")}">
+          <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="long">加上再批准</button></div>` : ""}</div>`; };
+    const card = (x) => x.kind === "disclose" ? outside(x) : x.kind === "style" ? styleCard(x) : x.kind === "skill" ? skillCard(x) : one(x);
     const decide = (items || []).filter((x) => !x.gap), asks = (items || []).filter((x) => x.gap);
     const ask = (x) => { const k = "p" + x.id;
       return `<div class="mepair"><div class="q">${esc(x.question)}</div>
@@ -2351,7 +2369,7 @@ function meOverlay() {
           <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="long">记下</button><button type="button" class="btn" data-act="me-skip" data-id="${x.id}">不想答</button></div></div>`; };
     return `<section class="sheet mesheet" aria-label="待你定"><div class="row" style="justify-content:space-between"><h2 style="font-size:18px">待你定${items ? " " + decide.length + " 件" : ""}</h2>${close}</div>
       <p class="muted" style="font-size:12px">长期的按“现在一般是怎样”定；那一次的按“那天实际发生了什么”定。定了就锁定，所有使用者都按这个来；小伴 在聊天里问你、你回了，这里也会少一件。</p>
-      ${items ? decide.map((x) => x.kind === "disclose" ? outside(x) : one(x)).join("") || '<p class="muted">没有要你定的。</p>' : '<p class="muted">加载中……</p>'}
+      ${items ? decide.map(card).join("") || '<p class="muted">没有要你定的。</p>' : '<p class="muted">加载中……</p>'}
       ${asks.length ? `<details class="measks"><summary class="muted" style="font-size:13px;cursor:pointer">小伴 想多了解你的 ${asks.length} 个问题（不用在这里答，他会在聊天里顺口问；想先写也行）</summary>${asks.map(ask).join("")}</details>` : ""}</section>`;
   }
   if (S.overlay === "me-ask") {
@@ -2500,6 +2518,11 @@ document.addEventListener("click", (ev) => {
     meAct("me.policy", { tier: t, category: k, mode: v }).then((res) => { if (!res) r.mode = old; else r.changed = r.mode !== r.default || r.changed; renderOverlay(); });
   }
   else if (a === "me-always") meAct("me.resolve", { id, how: "always" }, async () => { await meLoad("pending"); await refresh(); });
+  else if (a === "me-style") {  // 写作规范草稿逐条定（ethan/style.py）：data-i 是规则编号
+    const v = el.dataset.v, k = "s" + el.dataset.i, body = { id, how: v, pick: Number(el.dataset.i) };
+    if (v === "own") { if (!meF(k + "text")) return showUndo("先写一句改好的"); body.text = meF(k + "text"); }
+    meAct("me.resolve", body, async () => { await meLoad("pending"); await refresh(); });
+  }
   else if (["me-pick", "me-yes", "me-no", "me-own", "me-both"].includes(a)) {
     const k = "p" + id, body = { id };
     if (a === "me-pick") Object.assign(body, { how: "pick", pick: Number(el.dataset.i), since: meF(k + "since") || null, until: meF(k + "until") || null });
