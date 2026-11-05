@@ -58,9 +58,17 @@ def record(db, slots, source: str) -> int:
     return n
 
 
+DAY_START = "05:00"  # 一天从早上 5 点算起：凌晨 0–5 点还算前一晚（她 2026-11-01：“昨晚的 2 小时”不该算进今天）
+
+
+def day_range(day: date) -> tuple:
+    """这一天的格子范围：当天 05:00（含）到第二天 05:00（不含）。"""
+    return f"{day.isoformat()}T{DAY_START}", f"{(day + timedelta(days=1)).isoformat()}T{DAY_START}"
+
+
 def hours(db, day: date) -> float:
     ensure(db)
-    n = db.conn.execute("SELECT COUNT(*) FROM work_slots WHERE slot LIKE ?", (day.isoformat() + "%",)).fetchone()[0]
+    n = db.conn.execute("SELECT COUNT(*) FROM work_slots WHERE slot >= ? AND slot < ?", day_range(day)).fetchone()[0]
     return round(n * SLOT_MIN / 60, 1)
 
 
@@ -144,6 +152,75 @@ def flush_codex(opener=urllib.request.urlopen, spool: Path = None) -> int:
     return sent
 
 
+CURFEW_URL = "https://ethan.example.com/cloud/curfew"
+CURFEW_STATE = Path.home() / ".ethan-curfew.json"
+CURFEW_EVERY = 15 * 60  # 11 点后还在用：每 15 分钟再弹一次（她 2026-10-31：弹全屏提醒，不锁屏）
+FULLSCREEN = r"""
+ObjC.import('Cocoa');
+var app = $.NSApplication.sharedApplication;
+app.setActivationPolicy(1);
+var f = $.NSScreen.mainScreen.frame;
+var w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(f, 0, 2, false);
+w.setLevel(1000); w.setOpaque(false); w.setIgnoresMouseEvents(false);
+w.setBackgroundColor($.NSColor.colorWithCalibratedRedGreenBlueAlpha(0.07, 0.08, 0.17, 0.95));
+var W = Math.min(f.size.width - 160, 1100), X = (f.size.width - W) / 2;
+function label(text, size, y, h, r, g, b) {  // 自动换行、居中，宽度限在屏幕中间（2026-11-01 她截图：一行太长显示不全）
+  var t = $.NSTextField.wrappingLabelWithString(text);
+  t.setFont($.NSFont.boldSystemFontOfSize(size)); t.setTextColor($.NSColor.colorWithCalibratedRedGreenBlueAlpha(r, g, b, 1));
+  t.setAlignment(2); t.setFrame($.NSMakeRect(X, y, W, h));
+  w.contentView.addSubview(t);
+}
+label(__TITLE__, 44, f.size.height / 2 + 40, 70, 0.89, 0.75, 0.42);
+label(__MSG__, 22, f.size.height / 2 - 60, 90, 0.95, 0.93, 0.88);
+label("点任意处关掉。还在用的话，15 分钟后会再提醒。", 16, f.size.height / 2 - 120, 30, 0.67, 0.66, 0.8);
+app.activateIgnoringOtherApps(true); w.makeKeyAndOrderFront(null);
+var end = Date.now() + 60000;
+while (Date.now() < end) {
+  var e = app.nextEventMatchingMaskUntilDateInModeDequeue(0xFFFFFFFF, $.NSDate.dateWithTimeIntervalSinceNow(0.2), $.NSDefaultRunLoopMode, true);
+  if (e && !e.isNil()) { var ty = e.type; if (ty == 1 || ty == 10 || ty == 3) break; app.sendEvent(e); }
+}
+w.orderOut(null);
+"""
+
+
+def curfew_check(active: bool, now: float = None, opener=urllib.request.urlopen, run=subprocess.run) -> str:
+    """问服务器现在该不该收工：9 点、10 点弹一条通知；11 点后还在用就弹全屏提醒（每 15 分钟一次），不锁屏。"""
+    import time as _t
+    now = now or _t.time()
+    if not active:
+        return ""
+    req = urllib.request.Request(CURFEW_URL, headers={"User-Agent": "ethan-worktime", "Authorization": f"Bearer {token()}"})
+    try:
+        with opener(req, timeout=10) as r:
+            c = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return ""
+    try:
+        st = json.loads(CURFEW_STATE.read_text())
+    except (OSError, ValueError):
+        st = {}
+    phase = c.get("phase", "ok")
+    night = datetime.now().strftime("%Y-%m-%d") if datetime.now().hour >= 5 else (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    done = ""
+    if phase in ("remind", "persuade") and st.get(phase) != night:
+        text = {"remind": "9 点了，开始收尾吧，别再开新的了。", "persuade": "10 点了，今天到这儿吧，去做点工作以外的事。"}[phase]
+        run(["osascript", "-e", f'display notification "{text}" with title "小伴"'], capture_output=True, timeout=20)
+        st[phase] = night
+        done = "通知"
+    elif c.get("stop") and now - float(st.get("full_at", 0)) >= CURFEW_EVERY:
+        full = c.get("message") or "已经 11 点了，今天到这儿。"
+        head, _, rest = full.partition("。")  # 第一句做大标题，其余换行小字（2026-11-01：一行太长显示不全）
+        title, msg = json.dumps(head + "。", ensure_ascii=False), json.dumps(rest.strip(), ensure_ascii=False)
+        out = run(["osascript", "-l", "JavaScript", "-e", FULLSCREEN.replace("__TITLE__", title).replace("__MSG__", msg)],
+                  capture_output=True, timeout=75)
+        if getattr(out, "returncode", 0) != 0:  # 全屏没弹出来就退回系统提醒框
+            run(["osascript", "-e", f"display alert \"小伴\" message {json.dumps(full, ensure_ascii=False)}"], capture_output=True, timeout=75)
+        st["full_at"] = now
+        done = "全屏提醒"
+    CURFEW_STATE.write_text(json.dumps(st))
+    return done
+
+
 def once(now: datetime = None, idle=idle_seconds, opener=urllib.request.urlopen) -> str:
     """看一眼：这 5 分钟动过键鼠就记一格；连同之前没发出去的一起发。"""
     now = now or datetime.now(timezone.utc)
@@ -151,7 +228,8 @@ def once(now: datetime = None, idle=idle_seconds, opener=urllib.request.urlopen)
         pending = json.loads(PENDING.read_text())
     except (OSError, ValueError):
         pending = []
-    if idle() < SLOT_MIN * 60:
+    active = idle() < SLOT_MIN * 60
+    if active:
         pending.append(slot_of(now))
     pending = sorted(set(pending))[-2000:]
     if pending and send(pending, opener):
@@ -161,7 +239,11 @@ def once(now: datetime = None, idle=idle_seconds, opener=urllib.request.urlopen)
         codex = flush_codex(opener)
     except Exception:
         codex = 0
-    return f"待发 {len(pending)} 格" + (f"，替 Codex 报到 {codex} 条" if codex else "")
+    try:
+        curfew = curfew_check(active, opener=opener)
+    except Exception:
+        curfew = ""
+    return f"待发 {len(pending)} 格" + (f"，替 Codex 报到 {codex} 条" if codex else "") + (f"，{curfew}" if curfew else "")
 
 
 def install() -> str:
@@ -180,7 +262,40 @@ def install() -> str:
 """)
     subprocess.run(["launchctl", "unload", str(PLIST)], capture_output=True)
     subprocess.run(["launchctl", "load", str(PLIST)], check=True)
-    return f"装好了：{PLIST}，每 5 分钟记一次。不想记了：launchctl unload {PLIST}"
+    codex = install_codex_guard()
+    return f"装好了：{PLIST}，每 5 分钟记一次（11 点后还在用会弹全屏提醒）。{codex}不想记了：launchctl unload {PLIST}"
+
+
+CODEX_GUARD = """# ethan-curfew 开始：晚上 11 点后开新的 codex 先问一句（python3 -m ethan.worktime --install 装的，她 2026-10-31 定）
+# 她原来给 codex 设了别名：先记下别名的内容再取消，不然 zsh 报 defining function based on alias（2026-11-01）
+__ethan_codex_alias="${aliases[codex]:-${BASH_ALIASES[codex]:-}}"
+unalias codex 2>/dev/null
+function codex {
+  local t r
+  t=$(python3 -c 'import json,os;print(json.load(open(os.path.expanduser("~/.claude/settings.json")))["env"]["ETHAN_HOOK_TOKEN"])' 2>/dev/null)
+  if [ -n "$t" ]; then
+    r=$(curl -s -m 4 -H "Authorization: Bearer $t" https://ethan.example.com/cloud/curfew)
+    if printf '%s' "$r" | python3 -c 'import json,sys;sys.exit(0 if json.load(sys.stdin).get("stop") else 1)' 2>/dev/null; then
+      printf '%s' "$r" | python3 -c 'import json,sys;print(json.load(sys.stdin).get("message",""))'
+      return 1
+    fi
+  fi
+  if [ -n "$__ethan_codex_alias" ]; then
+    eval "$__ethan_codex_alias \\"\\$@\\""
+  else
+    command codex "$@"
+  fi
+}
+# ethan-curfew 结束
+"""
+
+
+def install_codex_guard(rc: Path = None) -> str:
+    rc = rc or Path.home() / ".zshrc"
+    old = rc.read_text(encoding="utf-8") if rc.exists() else ""
+    old = re.sub(r"# ethan-curfew 开始.*?# ethan-curfew 结束\n", "", old, flags=re.S)
+    rc.write_text(old.rstrip("\n") + "\n\n" + CODEX_GUARD, encoding="utf-8")
+    return f"终端里的 codex 也装好了 11 点检查（{rc}，新开的终端窗口生效）。"
 
 
 def copy_token(run=subprocess.run) -> str:

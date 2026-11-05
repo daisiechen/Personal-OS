@@ -29,8 +29,15 @@ PROMPT = """你是 Mia 的私人助理 小伴，在整理她的第二大脑。�
 - ask：绝大多数写 null，你自己整理就好。只有你拿不准、必须她本人定的才写一句话说清要她做什么
   （比如 Grok 给了两个方案要她选、这条和你知道的她的情况冲突、要花钱的决定）。
 - topic：如果它属于一个值得长期攒的专题（比如“伦敦小众去处”“研究素材”“高蛋白菜谱”），写专题名，否则写 null。
+- intent：她分享 / 收藏这条多半是想干嘛。她发链接给你或 Grok 时一般不会明说目的（她 2026-11-04：“我想去的地方都会给grok发链接让他帮我记住，
+  只是我没明着跟他说是这个目的而已，他要自己能从我分享的内容里识别我分享的目的”），你自己判断：
+  go = 想去（一家店、餐厅、咖啡馆、展、演出、市集、活动、景点，在伦敦或能当天来回）；try = 想试（一节课、一项运动、一种玩法、舞蹈课）；
+  travel = 想去旅行的城市或国家；learn = 想看懂的知识；buy = 想买的东西；other = 都不是。拿不准就按内容最像的那个写。
+- place：intent 是 go / try / travel 时，写 {"name": "店名或地点名", "area": "伦敦哪一区或哪个城市"}，内容里看不出来就写 null，不要编。
 
-只输出一个 JSON 数组，不要别的文字：[{"id": 编号, "summary": "...", "tags": ["..."], "territory": "life", "keep": true, "ask": null, "topic": "伦敦小众去处"}]"""
+只输出一个 JSON 数组，不要别的文字：[{"id": 编号, "summary": "...", "tags": ["..."], "territory": "life", "keep": true, "ask": null, "topic": "伦敦小众去处",
+  "intent": "go", "place": {"name": "...", "area": "..."}}]"""
+INTENT_TAG = {"go": "想去", "try": "想试", "travel": "旅行"}  # 11-04：识别出的目的变成标签，brain.ideas 按它挑
 
 
 def pending(db, limit: int):
@@ -75,9 +82,17 @@ def apply(db, items, results) -> int:
                       "topic": (str(r["topic"])[:20] if r.get("topic") else None)})
         if ask:
             extra["ask"] = ask
+        intent = str(r.get("intent") or "").strip()
+        if intent in ("go", "try", "travel", "learn", "buy", "other"):
+            extra["intent"] = intent
+        pl = r.get("place") if isinstance(r.get("place"), dict) else None
+        if pl and not extra.get("place") and str(pl.get("name") or "").strip():  # Grok 收藏日报自带的地点不覆盖
+            extra["place"] = {"name": str(pl["name"])[:60], "area": str(pl.get("area") or "")[:40]}
         sets, args = ["extra = ?"], [json.dumps(extra, ensure_ascii=False)]
         if not row["edited"]:  # 她没动过的，才补标签和领地
             tags = [str(t).strip()[:12] for t in (r.get("tags") or []) if str(t).strip()][:5]
+            if INTENT_TAG.get(intent):
+                tags = [INTENT_TAG[intent]] + [t for t in tags if t != INTENT_TAG[intent]]
             old = json.loads(row["tags"] or "[]")
             sets.append("tags = ?"), args.append(json.dumps(list(dict.fromkeys(old + tags))[:8], ensure_ascii=False))
             if r.get("territory") in territory.NAME:
@@ -161,7 +176,15 @@ def main():
     from .cli import build_router
     store = MemoryStore(args.data)
     try:
-        print(f"整理了 {run(store, build_router(args.data, 50.0), args.batches)} 条", flush=True)
+        router = build_router(args.data, 50.0)
+        try:  # 她发的文件先存进记忆（2026-10-30），再整理
+            from . import files
+            n = len(files.process(store, router))
+            if n:
+                print(f"存进记忆的文件 {n} 个", flush=True)
+        except Exception as e:
+            print(f"[files] 没存成：{type(e).__name__} {str(e)[:200]}", flush=True)
+        print(f"整理了 {run(store, router, args.batches)} 条", flush=True)
     finally:
         store.close()
 

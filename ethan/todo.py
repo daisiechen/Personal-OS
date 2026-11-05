@@ -9,6 +9,7 @@ import re
 from datetime import date
 
 from . import quests
+from .clock import her_today
 
 LIST_WORDS = ("待办", "清单", "todo", "/todo")
 ADD = re.compile(r"^(?:加待办|/todo add|/add)\s*(.+)$", re.S)
@@ -77,7 +78,7 @@ def handle_callback(db, data: str, today: date = None) -> str:
     item_id = int(raw_id)
     if kind == "t":
         if action == "done":
-            gain = quests.complete_task(db, item_id, today or date.today())
+            gain = quests.complete_task(db, item_id, today or her_today())
             return f"完成一件！+{gain} 分" if gain else "完成一件！"
         if action == "del":
             db.delete_task(item_id)

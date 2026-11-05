@@ -1,0 +1,9 @@
+[Unit]
+Description=每 10 分钟看一眼有没有没整理完的大批资料（部署重启打断后自动接着整理）
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+
+[Install]
+WantedBy=timers.target

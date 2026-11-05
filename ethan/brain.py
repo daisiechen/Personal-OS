@@ -45,11 +45,11 @@ CREATE TABLE IF NOT EXISTS brain_sync (source TEXT PRIMARY KEY, cursor TEXT);
 """
 # 分类按 MECE 排（2026-10-29 她要每张卡都有处可去、分类有逻辑）：
 # 类型按“从哪来”分三组，每条只属于一种；状态每条只有一个；区域七块加“还没归类”。
-KINDS = {"link": "你发的链接", "saved": "你的收藏", "grok": "Grok 情报",     # 外面来的资料
+KINDS = {"link": "你发的链接", "file": "你发的文件", "saved": "你的收藏", "grok": "Grok 情报",     # 外面来的资料
 # 2026-10-29 她定：Grok 从她收藏夹、点赞里整理的算“你的收藏”；只有交代给它的调研回来的才叫“Grok 情报”
          "person": "人物卡", "wish": "心愿", "learned": "学过的",               # 关于你的
          "knowledge": "知识卡", "wiki": "记忆和 Wiki"}                          # 小伴 整理出来的
-KIND_GROUPS = [("外面来的", ["link", "saved", "grok"]), ("关于你的", ["person", "wish", "learned"]),
+KIND_GROUPS = [("外面来的", ["link", "file", "saved", "grok"]), ("关于你的", ["person", "wish", "learned"]),
                ("小伴 整理的", ["knowledge", "wiki"])]
 # ask = 小伴 拿不准、要她本人定的（页面和导航上有红点）；new = 小伴 还没整理；kept = 在用；archived = 备查
 STATUSES = ("ask", "new", "kept", "archived", "trash")
@@ -72,6 +72,9 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+SUMMARY_MAX = 20000  # Grok 回报原文整段留着（她 11-04：“调研内容被截断了”）；给 小伴 提示词用时另外截短
+
+
 def _put(db, kind, ref, title, *, url=None, source=None, summary=None, note=None, tags=(), terr=None,
          status="new", extra=None, happened_at=None):
     """新的就插入；已有的只在她没动过时更新内容，归属、标签、状态以她改的为准。"""
@@ -82,14 +85,14 @@ def _put(db, kind, ref, title, *, url=None, source=None, summary=None, note=None
         db.conn.execute(
             "INSERT INTO brain_items (kind, ref, title, url, source, summary, note, tags, territory, status, extra, "
             "happened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (kind, ref, title, url, source, (summary or "")[:1200], (note or "")[:400],
+            (kind, ref, title, url, source, (summary or "")[:SUMMARY_MAX], (note or "")[:400],
              json.dumps(list(tags), ensure_ascii=False), terr, status, json.dumps(extra or {}, ensure_ascii=False),
              happened_at, _now(), _now()))
         return 1
     if not row["edited"]:  # 来源更新了就跟着更新，小伴 写的摘要、专题（extra 里的 ai_*、topic）留着
         merged = {**json.loads(row["extra"] or "{}"), **(extra or {})}
         db.conn.execute("UPDATE brain_items SET title = ?, summary = ?, extra = ? WHERE id = ?",
-                        (title, (summary or "")[:1200], json.dumps(merged, ensure_ascii=False), row["id"]))
+                        (title, (summary or "")[:SUMMARY_MAX], json.dumps(merged, ensure_ascii=False), row["id"]))
     return 0
 
 
@@ -199,7 +202,7 @@ def sync(store) -> int:
             else:
                 kind = "saved" if FROM_SAVED.search(text[:300]) else "grok"
                 source = "Grok 整理你的收藏" if kind == "saved" else "Grok 调研"
-            added += _put(db, kind, ref, first[:80], source=source, summary=body[:1200], happened_at=e.get("at"))
+            added += _put(db, kind, ref, first[:80], source=source, summary=body[:SUMMARY_MAX], happened_at=e.get("at"))
     _set_cursor(db, "inbox", last)
     for r in db.conn.execute("SELECT id, summary FROM brain_items WHERE kind = 'grok' AND edited = 0 AND COALESCE(source, '') = 'Grok 调研'").fetchall():  # 以前收进来的也按新规矩分
         if FROM_SAVED.search((r["summary"] or "")[:300]):
@@ -346,17 +349,41 @@ def purge(db, item_id: int) -> bool:
     return True
 
 
+def refill_grok(store) -> int:
+    """以前存进来时截在 1200 字的 Grok 回报，从收件箱原文补全（只补已有、她没改过的，不新加）。返回补了几条。"""
+    db = store.db
+    ensure(db)
+    n = 0
+    for _, e in _days(Path(store.root) / "inbox", ""):
+        text = e.get("text", "")
+        if e.get("path") != "/grok/result" or text.startswith((CLOUD_MARK, "【英语陪练】", "【开工】", SAVED_MARK)):
+            continue
+        text = re.sub(r"【回执\s*G\d+】\s*", "", text, count=1)
+        ref = "grok:" + hashlib.sha1((e.get("at", "") + text).encode()).hexdigest()[:16]
+        said = SOURCE_LINE.match(text)
+        body = (text[said.end():] if said else text)[:SUMMARY_MAX]
+        cur = db.conn.execute("UPDATE brain_items SET summary = ? WHERE ref = ? AND edited = 0 AND length(COALESCE(summary, '')) < length(?)",
+                              (body, ref, body))
+        n += cur.rowcount
+    db.conn.commit()
+    return n
+
+
 def ideas(db, limit: int = 8) -> list:
-    """给计划器：她收藏里能去做的（地点、玩法、旅行），没进回收站的，新的在前。"""
+    """给计划器、傍晚出门、周末推荐：她收藏里能去做的（地点、玩法、旅行，或整理时认出她“想去 / 想试”的），没进回收站的，新的在前。
+    她发链接时一般不明说目的（11-04），整理时（brain_enrich 的 intent）自己认出来打上“想去 / 想试”标签。"""
     ensure(db)
     rows = db.conn.execute("SELECT * FROM brain_items WHERE kind IN ('saved', 'link') AND status IN ('new', 'kept') "
-                           "AND (tags LIKE '%地点%' OR tags LIKE '%玩法%' OR tags LIKE '%旅行%') "
+                           "AND (tags LIKE '%地点%' OR tags LIKE '%玩法%' OR tags LIKE '%旅行%' OR tags LIKE '%想去%' OR tags LIKE '%想试%' "
+                           "OR extra LIKE '%\"intent\": \"go\"%' OR extra LIKE '%\"intent\": \"try\"%') "
                            "ORDER BY COALESCE(happened_at, created_at) DESC LIMIT ?", (limit,))
     out = []
     for r in map(_row, rows):
         place = r["extra"].get("place") or {}
-        out.append({"title": r["title"], "where": "，".join(x for x in (place.get("name"), place.get("area"), place.get("price")) if x),
-                    "use": r["extra"].get("use", "")})
+        out.append({"id": r["id"], "title": r["title"], "url": r.get("url") or "",
+                    "where": "，".join(x for x in (place.get("name"), place.get("area"), place.get("price")) if x),
+                    "area": place.get("area") or "", "use": r["extra"].get("use", ""), "intent": r["extra"].get("intent", ""),
+                    "tags": r["tags"]})
     return out
 
 

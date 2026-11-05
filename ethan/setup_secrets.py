@@ -74,6 +74,8 @@ def write_secrets(config_dir: Path, answers: dict, backup_key: str = "") -> dict
         env["INBOX_TOKEN_GROK"] = secrets.token_urlsafe(32)
     if not env.get("INBOX_TOKEN_CLOUD"):  # Claude 云端会话找 Grok 用，自动生成，Mia 抄进云端环境设置
         env["INBOX_TOKEN_CLOUD"] = secrets.token_urlsafe(32)
+    if not env.get("INBOX_TOKEN_SITE"):  # 个人主页中转（Cloudflare Worker）用，自动生成，Mia 存进 Cloudflare 机密
+        env["INBOX_TOKEN_SITE"] = secrets.token_urlsafe(32)
     if not env.get("INBOX_TOKEN_FANCY"):  # DemoApp 推举报提醒用，自动生成，Mia 抄进 DemoApp 部署配置的 ETHAN_MODERATION_TOKEN
         env["INBOX_TOKEN_FANCY"] = secrets.token_urlsafe(32)
 
@@ -116,6 +118,7 @@ def main():
     print("服务启动后，在 Telegram 给新 bot 发送：/start " + env["ETHAN_PAIRING_CODE"])
     print(f"\nGrok 回报用的密钥（填进 Grok Bot，不要发在聊天里）：{env['INBOX_TOKEN_GROK']}")
     print(f"\n云端会话用的密钥（填进 Claude 云端环境设置的 ETHAN_CLOUD_TOKEN，不要发在聊天里）：{env['INBOX_TOKEN_CLOUD']}")
+    print(f"\n个人主页中转用的密钥（存进 Cloudflare Worker mia-me 的机密，不要发在聊天里）：{env['INBOX_TOKEN_SITE']}")
     print(f"\nDemoApp 举报提醒用的密钥（填进 DemoApp 部署配置的 ETHAN_MODERATION_TOKEN，不要发在聊天里）：{env['INBOX_TOKEN_FANCY']}")
 
 

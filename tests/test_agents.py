@@ -212,10 +212,6 @@ class InboxAgentTest(unittest.TestCase):
         self.assertEqual(agents.load_sessions(self.store.root)["sessions"][0]["title"], "DemoApp")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class LiveWorkTest(unittest.TestCase):
     """2026-10-29 她说团队页漏活、失败怎么判：她叫停的算放弃不扣分；小伴 派给 Grok 还没回的算在干。"""
 
@@ -291,3 +287,55 @@ class SelfStartedExpiryTest(unittest.TestCase):
             self.assertEqual(agents.expire_self_started(store.db, datetime.now(timezone.utc) + timedelta(hours=13)), [tid])
             self.assertEqual(agents.get(store.db, tid)["status"], "failed")
             store.close()
+
+
+class JudgeReviewTest(LiveWorkTest):
+    def test_misreport_and_fail_from_review(self):
+        """2026-10-30 她说“待你审查”里有些是误报：能选误报（流转到下一步）或失败。"""
+        from datetime import datetime, timedelta, timezone
+        from ethan.core.router import Settings
+        from ethan.workbench.api import Workbench
+        wb = Workbench(self.store, Settings(self.root / "s.json"))
+        a = agents.add(self.db, "claude", "改团队页", size=1)
+        b = agents.add(self.db, "claude", "修巡检", size=1)
+        for t in (a, b):
+            agents.update(self.db, t, status="review")
+        self.assertTrue(wb.act("agent.misreport", {"id": a})["ok"])
+        self.assertEqual(agents.get(self.db, a)["status"], "accepted")
+        self.assertTrue(wb.act("agent.fail", {"id": b})["ok"])
+        self.assertEqual(agents.get(self.db, b)["status"], "failed")
+        now = datetime.now(timezone.utc)
+        agents.record_report(self.root, {"agent": "claude", "id": "s1", "title": "开发会话", "state": "review_ready"}, now)
+        agents.record_report(self.root, {"agent": "codex", "id": "s2", "title": "DemoApp", "state": "review_ready"}, now)
+        keys = {s["key"] for s in agents.load_sessions(self.root, now)["sessions"]}
+        self.assertEqual(keys, {"claude:s1", "codex:s2"})
+        self.assertTrue(wb.act("agent.misreport", {"key": "claude:s1"})["ok"])
+        self.assertTrue(wb.act("agent.fail", {"key": "codex:s2", "agent": "codex", "title": "DemoApp"})["ok"])
+        self.assertEqual(agents.load_sessions(self.root, now)["sessions"], [])
+        self.assertTrue(any(t["title"] == "DemoApp" and t["status"] == "failed" for t in agents.listing(self.db)))
+        later = now + timedelta(minutes=5)  # 下一轮再报到，重新出现
+        agents.record_report(self.root, {"agent": "claude", "id": "s1", "title": "开发会话", "state": "review_ready"}, later)
+        self.assertEqual([s["key"] for s in agents.load_sessions(self.root, later)["sessions"]], ["claude:s1"])
+
+class ArchiveTest(LiveWorkTest):
+    def test_archive_failed_and_review(self):
+        """2026-10-30 她问失败的 7 天后去哪、能不能直接归档：失败的照算失败收进归档，等审查的不审了算放弃再归档。"""
+        from ethan.core.router import Settings
+        from ethan.workbench.api import Workbench
+        wb = Workbench(self.store, Settings(self.root / "s.json"))
+        f = agents.add(self.db, "codex", "坏掉的活", size=1)
+        agents.update(self.db, f, status="failed", finished_at=agents.now())
+        r = agents.add(self.db, "claude", "不用审的", size=1)
+        agents.update(self.db, r, status="review")
+        self.assertTrue(wb.act("agent.archive", {"id": f})["ok"])
+        self.assertTrue(wb.act("agent.archive", {"id": r})["ok"])
+        page = wb.team_page()
+        shown = {x["id"] for c in page["columns"] for x in c["tasks"]}
+        self.assertFalse({f, r} & shown)
+        self.assertEqual({x["id"] for x in page["archive"]} & {f, r}, {f, r})
+        self.assertEqual(agents.get(self.db, f)["status"], "failed")
+        self.assertEqual(agents.get(self.db, r)["status"], "dropped")
+
+
+if __name__ == "__main__":
+    unittest.main()

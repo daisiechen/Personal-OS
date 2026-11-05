@@ -30,7 +30,7 @@ class QuestTest(unittest.TestCase):
         quests.seed(self.db)
         titles = [h["title"] for h in quests.habits(self.db)]
         self.assertEqual(len(titles), 7)
-        self.assertEqual([r["cost"] for r in quests.rewards(self.db)], [300, 800, 2000])
+        self.assertEqual([r["cost"] for r in quests.rewards(self.db)], [2500, 10000, 30000])
         self.assertFalse(quests.due_today(quests.habit_by_title(self.db, "训练"), date(2026, 11, 1)))  # 周日不练
 
     def test_hard_step_and_undo_task(self):
@@ -111,12 +111,12 @@ class QuestTest(unittest.TestCase):
         small = quests.rewards(self.db)[0]
         ok, msg = quests.redeem(self.db, small["id"], MON)
         self.assertFalse(ok)
-        self.assertIn("还差 300 分", msg)
-        quests.award(self.db, 320, "测试", MON)
+        self.assertIn("还差 2500 分", msg)
+        quests.award(self.db, 2520, "测试", MON)
         ok, _ = quests.redeem(self.db, small["id"], MON)
         self.assertTrue(ok)
         self.assertEqual(quests.totals(self.db)["balance"], 20)
-        self.assertEqual(quests.totals(self.db)["earned"], 320)  # 兑换不减经验
+        self.assertEqual(quests.totals(self.db)["earned"], 2520)  # 兑换不减经验
         pending = quests.pending_redemptions(self.db)
         self.assertEqual(len(pending), 1)
         self.assertTrue(quests.deliver(self.db, pending[0]["id"], "写了一封信"))
@@ -124,10 +124,36 @@ class QuestTest(unittest.TestCase):
 
     def test_levels(self):
         self.assertEqual(quests.totals(self.db)["level"], 1)
-        quests.award(self.db, 100, "x", MON)
+        quests.award(self.db, 500, "x", MON)  # 2026-10-31：从 L 级升到 L+1 要 L × 500
         self.assertEqual((quests.totals(self.db)["level"], quests.totals(self.db)["title"]), (2, "起步的人"))
-        quests.award(self.db, 200, "x", MON)
+        quests.award(self.db, 999, "x", MON)
+        self.assertEqual(quests.totals(self.db)["level"], 2)
+        quests.award(self.db, 1, "x", MON)
         self.assertEqual(quests.totals(self.db)["level"], 3)
+
+    def test_cutover_keeps_her_level(self):  # 她到了 Lv.5 不降级，之后按新规则
+        quests.award(self.db, 1200, "x", MON)
+        quests.cutover(self.db)
+        self.db.conn.execute("INSERT INTO game_meta (key, value) VALUES ('level_cutover', '{\"earned\": 1200, \"level\": 5}')")
+        self.assertEqual((quests.totals(self.db)["level"], quests.totals(self.db)["next_level_at"]), (5, 3700))
+        quests.award(self.db, 2500, "x", MON)
+        self.assertEqual((quests.totals(self.db)["level"], quests.totals(self.db)["next_level_at"]), (6, 6700))
+        self.assertEqual(quests.level_for(600, quests.cutover(self.db))[0], 4)  # 切换前的历史按老规则
+
+    def test_project_goal_handed_to_agent_leaves_todo_and_plan(self):  # 2026-10-31 她定
+        from ethan.planner import quest_facts
+        gid = self.db.add_goal("DemoApp 上线", "year", status="active")
+        quests.add_breakdown(self.db, gid, [{"title": "自己走一遍", "size": "M"}], draft=False)
+        self.assertIn(gid, quests.main_quests(self.db))
+        self.db.conn.execute("UPDATE goals SET handled_by = 'agent' WHERE id = ?", (gid,))
+        self.assertNotIn(gid, quests.main_quests(self.db))
+        facts = quest_facts(self.db)
+        self.assertNotIn(gid, facts["main"])
+        self.assertNotIn(gid, [g["goal_id"] for g in facts["needs_breakdown"]])
+
+    def test_email_chores_score_zero(self):
+        self.assertEqual(quests.task_points({"source_type": "email", "quest": "main"}), 0)
+        self.assertEqual(quests.task_points({"source_type": "chat"}), quests.SIDE_POINTS)
 
     def test_habit_add_drop(self):
         quests.add_habit(self.db, "每天喝 2 升水")
@@ -166,23 +192,23 @@ class GameViewTest(unittest.TestCase):
         self.assertIn("· 积分 110 ·", text)
 
     def test_shop_needs_two_taps(self):
-        quests.award(self.db, 400, "x", MON)
+        quests.award(self.db, 2600, "x", MON)
         text, kb = game_view.render(self.db, "shop", MON)
-        self.assertIn("积分 400", text)
+        self.assertIn("积分 2600", text)
         rid = quests.rewards(self.db)[0]["id"]
         toast, view = game_view.handle(self.db, f"qs:r:{rid}", MON)
-        self.assertEqual(quests.totals(self.db)["balance"], 400)  # 第一次只是选
+        self.assertEqual(quests.totals(self.db)["balance"], 2600)  # 第一次只是选
         confirm, kb = game_view.render(self.db, view, MON)
-        self.assertIn("确认用 300 分兑换", confirm)
+        self.assertIn("确认用 2500 分兑换", confirm)
         toast, view = game_view.handle(self.db, f"qs:rc:{rid}", MON)
         self.assertEqual(quests.totals(self.db)["balance"], 100)
         self.assertIn("正在策划：小惊喜", game_view.render(self.db, view, MON)[0])
 
     def test_progress_page(self):
-        quests.award(self.db, 150, "测试得分", MON)
+        quests.award(self.db, 650, "测试得分", MON)
         text, _ = game_view.render(self.db, "progress", MON)
         self.assertIn("Lv2 起步的人", text)
-        self.assertIn("+150 测试得分", text)
+        self.assertIn("+650 测试得分", text)
 
 
 if __name__ == "__main__":

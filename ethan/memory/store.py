@@ -6,6 +6,7 @@ from pathlib import Path
 from .db import StructuredDB
 from .raw import RawLog
 from .wiki import Wiki
+from ..clock import her_today
 
 
 class MemoryStore:
@@ -26,9 +27,16 @@ class MemoryStore:
     def close(self):
         self.db.close()
 
+    def _relations(self, today) -> str:
+        try:
+            from .. import relations
+            return relations.chat_hint(self.db, today)
+        except Exception:
+            return ""
+
     def load_context(self, today: date = None, recent_messages: int = 30) -> dict:
         """每次对话开头调用，返回常驻层的今日简报。"""
-        today = today or date.today()
+        today = today or her_today()
         about = self.wiki.read("about-mia")["body"] if self.wiki.exists("about-mia") else ""
         return {
             "today": today.isoformat(),
@@ -41,6 +49,7 @@ class MemoryStore:
             "open_tasks": self.db.open_tasks(),
             "review_items": self.db.due_learning_items(today),
             "people_to_contact": self.db.people_to_contact(today),
+            "relations": self._relations(today),
             "open_wishes": self.db.open_wishes(),
             "recent_messages": self.raw.recent(recent_messages),
         }

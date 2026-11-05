@@ -15,7 +15,7 @@ from .grok import LOG_FILE
 STATE = "grok-relay.json"
 CHAT_CHANNELS = ("telegram", "weixin", "claude")  # Claude 会话里交代的，Grok 办完也在 Telegram 转告
 WINDOW = timedelta(hours=12)  # 交代出去 12 小时内回来的才算这件事的回报
-SKIP = ("【惊喜灵感", "【连通测试", "【Claude 会话】", "【准备 #", "【收藏日报】", "【开工】")  # 开发会话托 Grok 的事、准备员托查的、收藏日报都不直接转告她
+SKIP = ("【本周谈资", "【周末推荐", "【惊喜灵感", "【连通测试", "【Claude 会话】", "【准备 #", "【收藏日报】", "【开工】")  # 开发会话托 Grok 的事、准备员托查的、收藏日报都不直接转告她
 
 
 def _at(text: str) -> datetime:

@@ -40,7 +40,7 @@ def unsupported(name: str) -> str:
 
 
 def document_suffix(kind: str, name: str) -> str:
-    return {"pdf": ".pdf", "image": ".jpg"}.get(kind) or Path(name).suffix or ".txt"
+    return {"pdf": ".pdf", "image": ".jpg", "zip": ".zip"}.get(kind) or Path(name).suffix or ".txt"
 
 
 def read_document(path: Path, name: str, kind: str, notes: list) -> list:
@@ -48,6 +48,14 @@ def read_document(path: Path, name: str, kind: str, notes: list) -> list:
     if kind == "image":
         notes.append("【图片】")
         return [path]
+    if kind == "zip":  # 不在这里打开：文件那边（ethan/files.py）顺带交给 ethan/grokexport.py，是 Grok 的导出就导进记忆
+        notes.append(f"【压缩包 {name}，已收下：是 Grok 的数据导出的话，小伴 会自动把里面她说的话导进记忆；别的压缩包先存着】")
+        try:
+            from .. import grokexport
+            grokexport.kick(Path(path).parents[2], "--scan")  # media/<日期>/<文件> → 数据目录
+        except Exception:
+            pass
+        return []
     if kind == "pdf":
         notes.append(f"【PDF 文件 {name}，已附上，先用 Read 整份打开；整份太大读不了再用 pages 按页分段读】")
         return [path]
@@ -73,6 +81,8 @@ def file_kind(doc: dict) -> str:
         return "pdf"
     if suffix == ".docx" or mime.endswith("wordprocessingml.document"):
         return "docx"
+    if suffix == ".zip" or mime in ("application/zip", "application/x-zip-compressed"):
+        return "zip"  # 多半是 Grok Bot App 的数据导出（ethan/grokexport.py 会自动导进记忆）
     if mime.startswith("text/") or suffix in TEXT_SUFFIXES or mime == "application/json":
         return "text"
     return "other"

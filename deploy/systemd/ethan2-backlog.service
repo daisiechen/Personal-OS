@@ -1,0 +1,16 @@
+[Unit]
+Description=小伴 v2 大批整理接着跑：微信等整段对话整理成说法、人物卡（ethan/interviews.py --digest-all、ethan/relations.py --organize-all；各自有文件锁，没活就马上退出；每轮每步最多 30 分钟，下一轮接着跑）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ethan
+Group=ethan
+WorkingDirectory=/home/ethan/Personal-OS
+EnvironmentFile=/home/ethan/.config/ethan/ethan.env
+Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
+# 经 ethan.jobs 留痕（2026-11-04 统一巡检：以前没登记，挂了体检看不到）；两步都跑，哪步失败整体算失败
+# 每步最多 30 分钟（Codex 评审 P2 第 10 条，11-05：以前第一步几小时不结束，人物卡永远轮不到），两步轮流推进
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name backlog -- /bin/sh -c '/usr/bin/python3 -m ethan.interviews --data /home/ethan/data --digest-all --max-minutes 30; a=$$?; /usr/bin/python3 -m ethan.relations --data /home/ethan/data --organize-all --max-minutes 30 && exit $$a'
+TimeoutStartSec=infinity

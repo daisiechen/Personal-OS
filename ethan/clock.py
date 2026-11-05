@@ -22,6 +22,11 @@ def her_now(settings=None, now: datetime = None) -> datetime:
     return utc_now(now).astimezone(her_tz(settings))
 
 
+def her_today(settings=None, now: datetime = None):
+    """她的“今天”（按她的时区，0 点起算；docs/design/system-rules.md 第 5 节）。不要用 date.today()：那是服务器的日期。"""
+    return her_now(settings, now).date()
+
+
 def home_now(now: datetime = None) -> datetime:
     return utc_now(now).astimezone(HOME_TZ)
 

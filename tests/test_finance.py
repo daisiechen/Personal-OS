@@ -43,7 +43,7 @@ class FinanceTest(unittest.TestCase):
         self.assertEqual((bocom["bank"], bocom["amount"]), ("bocom", -12.0))
         self.assertEqual(finance.record_cmb(self.db, "招商银行信用卡：您尾号0001消费人民币8.00元", NOW)["bank"], "cmb")
         self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 49.9})
-        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "每月花销")
+        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "本周花销")
         self.assertIn("¥50", row["actual"])
         self.assertEqual(row["light"], "ok")  # 有数就亮，不再显示等数据
         from ethan.core.router import Settings
@@ -51,16 +51,20 @@ class FinanceTest(unittest.TestCase):
         wb = Workbench(self.store, Settings(self.root / "settings.json"))
         self.assertTrue(wb.act("money.budget", {"amount": "40"})["ok"])
         self.assertEqual(wb.territory_page("money")["budget"]["now"], 40.0)
-        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "每月花销")
+        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "本周花销")
         self.assertEqual(row["light"], "bad")  # 超预算变红
         # 定了就锁住本月：再改只从下个月起生效
         self.assertIn("起生效", wb.act("money.budget", {"amount": "8000"})["msg"])
         plan = territory.budget_plan(self.db, datetime.now().date())
         self.assertEqual((plan["now"], plan["next"]), (40.0, 8000.0))
+        # 2026-11-01 她定：改的时候选立即生效，这个月就按新的算，下个月那条也跟着改
+        self.assertIn("这个月开始", wb.act("money.budget", {"amount": "9000", "when": "now"})["msg"])
+        plan = territory.budget_plan(self.db, datetime.now().date())
+        self.assertEqual((plan["now"], plan["next"]), (9000.0, None))
         self.assertFalse(wb.act("money.budget", {"amount": ""})["ok"])  # 不能清空
         # 英镑花销按汇率折成人民币一起算
         finance.add(self.db, "monzo", NOW, -10, "GBP", merchant="Pret", ext_id="monzo:t1")
-        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "每月花销")
+        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "本周花销")
         self.assertIn(f"¥{49.9 + 10 * finance.FX_FALLBACK:,.0f}", row["actual"])
         rate = finance.refresh_fx(self.db, opener=lambda *a, **k: io.BytesIO(b'{"rates": {"CNY": 9.1}}'))
         self.assertEqual((rate, finance.fx_rate(self.db)), (9.1, 9.1))
@@ -104,7 +108,7 @@ class FinanceTest(unittest.TestCase):
         self.assertEqual(agent.parse_reply(reply)["bubbles"], ["记好啦"])
         self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 56.8})
         self.assertFalse(finance.has_source(self.db, "sms"))  # 聊天里记的一笔不算“银行卡接通了”
-        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "每月花销")
+        row = next(r for r in territory.health(self.db, "money", MONDAY, True) if r["name"] == "本周花销")
         self.assertIn("¥57", row["actual"])  # 但花销照算
 
     def test_only_unparsed_does_not_count_as_connected(self):
@@ -120,6 +124,19 @@ class FinanceTest(unittest.TestCase):
         repay = finance.record_cmb(self.db, f"您账户0000于{MONDAY.month}月{MONDAY.day}日11:00信用卡还款支出5000.00元", NOW, "95555@message.cmbchina.com")
         self.assertEqual(repay["amount"], -5000.0)
         self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 123.45})  # 还信用卡不算花销
+
+    def test_cmb_daily_digest_email_split_into_rows(self):
+        """2026-11-01：招行信用卡“每日信用管家”一封列前一天好几笔，原来只认一封一笔，11 笔一笔没记上。外币照原币记。"""
+        body = ("尊敬的客户，截至昨日最后一笔交易，您的额度和积分信息如下：可用额度&nbsp;￥51,694.10 积分余额 3,608 "
+                "2026/10/30&nbsp;您的消费明细如下： 01:13:25 GBP 51.98 尾号**67 消费 Dishoom Carnaby Lon-Apple Pay:6790 "
+                "03:16:41 EUR 72.00 尾号**67 消费 Europ Assistance PARIS FR 11:12:33 GBP 6.00 尾号**67 消费 TfL Travel Charge TFL-Apple Pay:6790")
+        rows = finance.parse_cmb_digest(body)
+        self.assertEqual([(r["currency"], r["amount"], r["merchant"]) for r in rows],
+                         [("GBP", -51.98, "Dishoom Carnaby Lon"), ("EUR", -72.0, "Europ Assistance PARIS FR"), ("GBP", -6.0, "TfL Travel Charge TFL")])
+        self.assertEqual(finance.record_cmb_digest(self.db, body, "招商银行信用卡 <c@message.cmbchina.com>"), 3)
+        self.assertEqual(finance.record_cmb_digest(self.db, body, "招商银行信用卡 <c@message.cmbchina.com>"), 0)  # 同一封再来不重复
+        self.assertEqual(self.db.conn.execute("SELECT day FROM transactions WHERE merchant LIKE 'Dishoom%'").fetchone()[0], "2026-10-29")  # 北京 01:13 = 伦敦前一天
+        self.assertEqual(finance.parse_cmb_digest("您账户0000于10月28日12:30快捷支付29.90元"), [])
 
     def test_refund_same_subject_and_london_day(self):
         from zoneinfo import ZoneInfo

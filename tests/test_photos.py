@@ -50,6 +50,8 @@ class PhotoTest(unittest.TestCase):
         self.assertEqual(len(files), 4)
         self.assertTrue(Path(files[0]).read_bytes().startswith(b"\x89PNG"))
         self.assertIn("不出现任何人脸", maker.prompts[0])
+        self.assertIn("不要自己添加", maker.prompts[0])  # 不再自己往画面里塞杯子（2026-10-31）
+        self.assertNotIn("第二个杯子", maker.prompts[0])
         self.assertEqual(len(cam.take([(False, "第二天")], date(2026, 11, 3))[0]), 1)
 
     def test_falls_back_to_next_service_and_records_cost(self):
@@ -126,6 +128,10 @@ class TelegramPhotoTest(unittest.TestCase):
             ch.respond_batch(42, [{"text": "想看看你那边", "message_id": 1}])
             self.assertEqual([p["text"] for m, p in api.calls if m == "sendMessage"], ["给你看"])
             self.assertEqual(uploads, [("sendPhoto", "photo", b"\x89PNG")])
+            seen = photos.recent_seen(store.root)  # 他看过自己发的照片，下次聊天带着实际画面（2026-10-31）
+            self.assertEqual(seen[0]["asked_for"], "窗外的雨")
+            self.assertTrue(seen[0]["seen"])
+            self.assertIn("实际画面", build_system_prompt("人设", {"today": "2026-11-02", "photos_seen": seen}))
             store.close()
 
     def test_without_photographer_she_is_told(self):

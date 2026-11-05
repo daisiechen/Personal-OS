@@ -1,0 +1,9 @@
+[Unit]
+Description=每 10 分钟收一次新邮件（服务器直接收，电脑关机也不停）
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=10min
+
+[Install]
+WantedBy=timers.target

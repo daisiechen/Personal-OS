@@ -98,6 +98,15 @@ class TodoTest(unittest.TestCase):
         self.assertIn("♡2. 学陶艺", text)
         self.assertIn("open_tasks", backend.seen[-1])
 
+    def test_placeholder_and_standing_rules_are_not_recorded(self):
+        """2026-10-31 [待办 无] 建出一条“无”；“她订票之前先查退改”是长期规矩，不是一件事（她 11-01）。"""
+        backend = Backend("好\n[待办 无][答应 她订票、订位、订活动之前，先查清退改和迟到规则][答应 以后每次订之前先查退改]")
+        ethan = Ethan(self.store, Router(backend, Ledger(self.root / "l"), Settings(self.root / "s.json")), persona="人设")
+        ethan.respond("cli", "嗯", today=date(2026, 10, 31))
+        titles = [t["title"] for t in self.db.open_tasks()]
+        self.assertNotIn("无", titles)
+        self.assertFalse([t for t in titles if "退改" in t])
+
 
 class TelegramTodoTest(TodoTest):
     def channel(self, api):

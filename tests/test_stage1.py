@@ -191,6 +191,10 @@ class TodoDedupeTest(unittest.TestCase):
         self.assertTrue(similar_task("回房东的邮件", ["回房东邮件"]))
         self.assertTrue(similar_task("买袜子和手套", ["买袜子"]))
         self.assertFalse(similar_task("交论文", ["改论文"]))
+        # 2026-10-30：换了语序的同一件事（线上三条“学生证明”待办）
+        self.assertTrue(similar_task("发学生证明邮件", ["发邮件给学校申请新的学生证明"]))
+        self.assertFalse(similar_task("找 某商学院 学生服务处开新的学生证明", ["发邮件给学校申请新的学生证明"]))
+        self.assertFalse(similar_task("订去巴黎的车票", ["订巴黎的酒店"]))
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             tid = store.db.add_task("回房东邮件")
@@ -199,6 +203,11 @@ class TodoDedupeTest(unittest.TestCase):
             rows = [dict(r) for r in store.db.conn.execute("SELECT title, due FROM tasks")]
             self.assertEqual(rows, [{"title": "回房东邮件说退租", "due": "2026-11-05"}])
             self.assertEqual(parse_reply(f"好 [待办改 #{tid} 回房东邮件说退租]")["bubbles"], ["好"])
+            # 带几点的“待办”其实是日程（她 2026-11-01：送别活动是日程，要什么待办）
+            ethan.note_records("[待办 11/12 11:00 某商学院 交换生送别活动（Garden Room） @2026-11-12]")
+            from ethan import events
+            self.assertEqual(events.for_day(store.db, date(2026, 11, 12))[0][:3], ("11:00", "13:00", "某商学院 交换生送别活动（Garden Room）"))
+            self.assertEqual(store.db.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0], 1)
             store.close()
 
 

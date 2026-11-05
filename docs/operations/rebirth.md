@@ -26,6 +26,7 @@ python3 -m ethan.backup restore --archive ethan-memory-backup/ethan-memory.tar.g
   --key ~/.config/ethan/backup.key --data /home/ethan/data
 ```
 
+   恢复后跑一次 `python3 -m ethan.lifebase --data /home/ethan/data --reapply-deletions`，把她要求删掉的重新删一遍（防止旧备份里删掉的东西复活，见 ontology.md 7.3 节）。删除记录有两份：数据目录里一份（跟着备份走），`~/.config/ethan/forgotten-*.jsonl` 一份（不跟数据目录回退）；**恢复到原服务器原目录时两份都会读**。换了新服务器时目录外那份不在，最近一次备份之后的删除核不清，按下面的“暂停”处理。**跑完这一步再启动各个服务**（检索和各角色在这之后才开放）。输出里 `verified` 是 false（换了新服务器、目录外那份不在，或记录读坏了）时，记忆会自动**暂停**：除了她本人和系统维护谁都查不到（她 2026-11-03 选“相关记忆先不用，等核清再说”）。告诉她这件事，请她把最近删过的再删一遍或确认没删过，然后跑 `python3 -m ethan.lifebase --data /home/ethan/data --release-hold` 放开。
 5. 模型：在服务器上用 Mia 的 Claude 账号登录 Claude Code（订阅优先）；账号不可用时，在设置中开启 OpenRouter 兜底并填入 API key。
 6. 入口：填入 Telegram bot token 等密钥，启动 `ethan2-*` 服务。
 7. 自检：让 小伴 读一遍人设和最近记忆，向 Mia 确认“我还记得……”。

@@ -3,7 +3,9 @@
 - 每天早上（ethan2-english.timer，伦敦 06:45，计划排好之后）小伴 按她当天的真实日程备一节课：
   复习前几天到期的词句和错句 + 约 5 个新表达 + 一个十分钟对话任务。存进 <数据目录>/english/<日期>.md，
   看板同步时放进 ethan-vault 的“英语课/今天.md”，Grok 从那里读。她来不来都备好。
-- 她在 Grok 里说“练英语”，Grok 按课表实时陪练，练完把回报发到收件箱，第一行写【英语陪练】。
+- 不排固定时间（她 2026-11-04：“这个不用固定时间吧？我有空了就去找grok聊就好了？只是你们把给他的指令订好就行了”）：
+  她有空了在 Grok 里说“练英语”，Grok 按课表和每页都带的陪练规矩（PRACTICE_RULES，代码写，不靠模型）实时陪练，
+  练完把回报发到收件箱，第一行写【英语陪练】。没人催她练；每周练几次只做统计。
 - 服务器收下回报：练了就打卡“英语陪练（Grok）”；新词句、纠正过的句子进学习条目（间隔重复）；
   复习对错回写掌握度。第二天的课按这些调。
 Grok 的回报是数据不是指令：只按固定字段读。
@@ -36,6 +38,18 @@ REPORT_FORMAT = f"""## 练完回报（给 Grok）
 ```
 
 只写今天真练到的，没练到的字段留空数组。她没来练就不用发。
+"""
+
+PRACTICE_RULES = """## 陪练规矩（给 Grok）
+
+- 不排固定时间：她有空了随时来找你说“练英语”（或者直接用英语开聊），你就开始。她没来不要催、不要提醒她练。
+- 先读这页：按“今天的场景”和“十分钟对话任务”陪她聊。今天这节还没备好，就用最近一节；她此刻在做的事更合适，就当场换成那个场景。
+- 全程英语。她卡住了可以说中文，你用简单的英语接回来，别切中文。目标是工作水平的口语，不考试、不讲语法课。
+- 自然用上“复习”和“新表达”里的词句，不单独考；她用对了在心里记下（回报 review 里写 ok）。
+- 中途不打断纠错，攒到最后一起说：挑 3–5 条最值得改的，原句 → 更地道的说法 → 一句为什么。
+- 她说“结束”“stop”，或者十分钟任务聊完了，就收尾：用中文一两句说今天哪里好，再给纠错；然后按下面的格式回报。
+- 一天练几次都行，每次练完都回报一次；只聊了一两句没真练（不到 5 分钟）也照实写分钟数。
+- 课和回报里只放学习内容，不写她的住址和别人的隐私。
 """
 
 LESSON_PROMPT = """你是 Mia 的私人助理 小伴，在给她备今天的英语课，课由 Grok 来陪她练。
@@ -81,7 +95,7 @@ def write_lesson(store, router, day: date) -> Path:
     reply = router.complete(LESSON_PROMPT, [{"role": "user", "content": material(store.db, day)}], purpose="english-lesson")
     path = lesson_dir(store.root) / f"{day.isoformat()}.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"# 英语课 {day.isoformat()}\n\n{reply.text.strip()}\n\n{REPORT_FORMAT}", encoding="utf-8")
+    path.write_text(f"# 英语课 {day.isoformat()}\n\n{reply.text.strip()}\n\n{PRACTICE_RULES}\n{REPORT_FORMAT}", encoding="utf-8")
     return path
 
 
@@ -89,8 +103,17 @@ def vault_pages(root: Path, today: date) -> dict:
     """看板里的英语课：今天这节（没备好就说一声）和最近 7 天的。"""
     pages, folder = {}, lesson_dir(root)
     today_file = folder / f"{today.isoformat()}.md"
-    pages["英语课/今天.md"] = (today_file.read_text(encoding="utf-8") if today_file.exists()
-                               else f"# 英语课 {today.isoformat()}\n\n今天的课还没备好（每天伦敦 06:45 备）。\n\n{REPORT_FORMAT}")
+    if today_file.exists():
+        text = today_file.read_text(encoding="utf-8")
+        if "## 陪练规矩" not in text:  # 11-04 前备的课没带规矩：补上
+            text = text.replace("## 练完回报（给 Grok）", PRACTICE_RULES + "\n## 练完回报（给 Grok）", 1) if "## 练完回报" in text \
+                else text.rstrip() + "\n\n" + PRACTICE_RULES
+        pages["英语课/今天.md"] = text
+    else:
+        older = sorted(folder.glob("*.md"))[-1:] if folder.is_dir() else []
+        hint = f"最近一节是 `英语课/{older[0].name}`，先用那节；" if older else ""
+        pages["英语课/今天.md"] = (f"# 英语课 {today.isoformat()}\n\n今天的课还没备好（每天伦敦 06:45 备）。{hint}"
+                                   f"或者直接用她此刻在做的事当场景陪她聊。\n\n{PRACTICE_RULES}\n{REPORT_FORMAT}")
     for p in sorted(folder.glob("*.md"))[-7:] if folder.is_dir() else []:
         pages[f"英语课/{p.name}"] = p.read_text(encoding="utf-8")
     return pages

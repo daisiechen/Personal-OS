@@ -52,6 +52,9 @@ class SetupSecretsTest(unittest.TestCase):
         self.assertGreaterEqual(len(first["INBOX_TOKEN_FANCY"]), 40)  # DemoApp 举报提醒的钥匙：自动生成、独立、回车保留
         self.assertNotIn(first["INBOX_TOKEN_FANCY"], (first["INBOX_TOKEN_GROK"], first["INBOX_TOKEN_CLOUD"]))
         self.assertEqual(second["INBOX_TOKEN_FANCY"], first["INBOX_TOKEN_FANCY"])
+        self.assertGreaterEqual(len(first["INBOX_TOKEN_SITE"]), 40)  # 个人主页中转的钥匙：自动生成、独立、再跑保留
+        self.assertNotIn(first["INBOX_TOKEN_SITE"], (first["INBOX_TOKEN_GROK"], first["INBOX_TOKEN_CLOUD"], first["INBOX_TOKEN_FANCY"]))
+        self.assertEqual(second["INBOX_TOKEN_SITE"], first["INBOX_TOKEN_SITE"])
         self.assertEqual((self.dir / "backup.key").read_text(), KEY)
 
     def test_fancy_token_can_be_pasted_and_is_validated(self):

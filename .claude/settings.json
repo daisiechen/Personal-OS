@@ -37,7 +37,44 @@
       "Bash(python3 -m ethan.cloud:*)",
       "Bash(python3 -m ethan.season_report:*)",
       "Bash(grep:*)",
-      "Bash(sed -n:*)"
+      "Bash(sed -n:*)",
+      "Bash(python3 -m ethan.caltidy:*)",
+      "Bash(python3 -m ethan.events:*)",
+      "Bash(python3 -m ethan.memsearch:*)",
+      "Bash(python3 -m ethan.memeval:*)",
+      "Bash(python3 -m ethan.mepage:*)",
+      "Bash(python3 -m ethan.onto_query:*)",
+      "Bash(python3 -m ethan.evals:*)",
+      "Bash(python3 -m ethan.interviews:*)",
+      "Bash(python3 -m ethan.jobs:*)",
+      "Bash(sqlite3:*)",
+      "Bash(cat /home/ethan/data/calendar-dupes.json)",
+      "Bash(ps:*)",
+      "Bash(uptime)",
+      "Bash(uname:*)",
+      "Bash(which:*)",
+      "Bash(node -v)",
+      "Bash(node --version)",
+      "Bash(python3 --version)",
+      "Bash(claude --version)",
+      "Bash(codex --version)",
+      "Bash(systemctl list-units:*)",
+      "Bash(systemctl list-unit-files:*)",
+      "Bash(systemctl --user status:*)",
+      "Bash(systemctl --user list-units:*)",
+      "Bash(free -m)",
+      "Bash(du:*)",
+      "Bash(cat /etc/os-release)",
+      "Bash(dpkg -l:*)",
+      "Bash(sudo -n true)",
+      "Bash(sudo -n /usr/bin/apt-get install -y bubblewrap socat)",
+      "Bash(ssh my-other-server:*)",
+      "Bash(ssh beijing:*)",
+      "Bash(scp:*)",
+      "Bash(rsync:*)",
+      "Bash(curl -s:*)",
+      "Bash(curl -sS:*)",
+      "Bash(npx cumora@0.18.9:*)"
     ],
     "deny": [
       "Read(/home/ethan/.config/**)",
@@ -73,6 +110,15 @@
             "type": "command",
             "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; curl -s -m 5 -A ethan-hook -H \"Authorization: Bearer $t\" -H \"Content-Type: application/json\" --data-binary @- \"https://ethan.example.com/cloud/agent/hook?where=cloud\" >/dev/null 2>&1 || true",
             "async": true
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"$CLAUDE_CODE_REMOTE\" = true ] || exit 0; case \"$(cat)\" in *queued-remote-notifications*|*定时巡检*) exit 0;; esac; t=\"${ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}\"; [ -n \"$t\" ] || exit 0; r=$(curl -s -m 4 -A ethan-curfew -H \"Authorization: Bearer $t\" \"https://ethan.example.com/cloud/curfew\") || exit 0; printf '%s' \"$r\" | python3 -c 'import json,sys\ntry:\n d=json.load(sys.stdin)\nexcept Exception:\n sys.exit(0)\nif d.get(\"stop\"):\n print(d.get(\"message\") or \"已经 11 点了，今天到这儿。\", file=sys.stderr); sys.exit(2)'",
+            "timeout": 8
           }
         ]
       }

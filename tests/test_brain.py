@@ -56,6 +56,20 @@ class BrainTest(unittest.TestCase):
         self.assertEqual([x["title"] for x in kinds["grok"]], ["伦敦本周展览：V&A 新展开幕"])  # 开发会话的事不进大脑
         self.assertNotIn("【收藏日报】2026-10-30", [x["title"] for x in kinds["grok"]])
 
+    def test_long_grok_report_kept_whole_and_old_ones_refilled(self):
+        """Grok 回报不截在 1200 字（她 11-04：“调研内容被截断了”）；以前截了的从收件箱补全，她改过的不动。"""
+        long = "【来源：Grok 调研任务】\n总管调研\n" + "结论。" * 1500
+        at = NOW.isoformat()
+        with open(self.root / "inbox" / f"{NOW.date().isoformat()}.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": at, "path": "/grok/result", "label": "Grok", "text": long}, ensure_ascii=False) + "\n")
+        brain.sync(self.store)
+        row = self.db.conn.execute("SELECT id, summary FROM brain_items WHERE title = '总管调研'").fetchone()
+        self.assertGreater(len(row["summary"]), 4000)
+        self.db.conn.execute("UPDATE brain_items SET summary = substr(summary, 1, 1200) WHERE id = ?", (row["id"],))  # 模拟以前截断的
+        self.assertEqual(brain.refill_grok(self.store), 1)
+        self.assertGreater(len(self.db.conn.execute("SELECT summary FROM brain_items WHERE id = ?", (row["id"],)).fetchone()[0]), 4000)
+        self.assertEqual(brain.refill_grok(self.store), 0)  # 补过不再补
+
     def test_her_edits_win_and_purge_only_from_trash(self):
         brain.sync(self.store)
         it = brain.search(self.db, "new", q="屋顶")[0]
@@ -92,7 +106,7 @@ class BrainTest(unittest.TestCase):
         ctx = self.store and __import__("ethan.core.agent", fromlist=["build_system_prompt"])
         text = ctx.build_system_prompt("人设", {"today": "2026-10-29", "fresh_saved": brain.fresh_saved(self.db)})
         self.assertIn("她最近新收藏的", text)
-        self.assertEqual(brain.ideas(self.db)[0]["where"], "Sky Garden，City，免费")  # 计划器挑新体验时用
+        self.assertIn("Sky Garden，City，免费", [i["where"] for i in brain.ideas(self.db)])  # 计划器挑新体验时用
 
 
 class EnrichTest(BrainTest):

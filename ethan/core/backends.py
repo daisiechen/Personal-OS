@@ -59,8 +59,22 @@ class SubscriptionBackend:
     def complete(self, system: str, messages: list, images=()) -> Reply:
         env = dict(os.environ)
         env.pop("ANTHROPIC_API_KEY", None)  # 有 API key 时会压过订阅登录
+        # 提示词写进临时文件再传路径（11-04：记忆多了，整段放在命令行参数里超过系统上限，“Argument list too long”，小伴 回不了）
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile("w", suffix=".txt", prefix="ethan-sys-", delete=False, encoding="utf-8")
+        tmp.write(system)
+        tmp.close()
+        try:
+            return self._run(env, system, tmp.name, messages, images)
+        finally:
+            try:
+                os.unlink(tmp.name)
+            except OSError:
+                pass
+
+    def _run(self, env, system, sys_file, messages, images, use_file: bool = True) -> Reply:
         cmd = [self.claude_bin, "-p", "--output-format", "json", "--model", self.model,
-               "--system-prompt", system]
+               *(["--system-prompt-file", sys_file] if use_file else ["--system-prompt", system])]
         prompt = _flatten(messages)
         if images:
             # 只开放 Read，且只允许读本轮图片和 PDF 所在目录，读不到密钥等其他文件；PDF 页数多要分几次读
@@ -77,6 +91,8 @@ class SubscriptionBackend:
         except (OSError, subprocess.TimeoutExpired) as e:
             raise BackendUnavailable(f"claude 调用失败：{e}") from e
         if proc.returncode != 0:
+            if use_file and "system-prompt-file" in (proc.stderr or "") and len(system.encode("utf-8")) < 100_000:
+                return self._run(env, system, sys_file, messages, images, use_file=False)  # 老版本不认这个参数
             raise BackendUnavailable(f"claude 退出码 {proc.returncode}：{proc.stderr[:200]}")
         try:
             result = json.loads(proc.stdout)

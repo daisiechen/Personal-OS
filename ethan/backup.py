@@ -37,7 +37,7 @@ def pack(data: Path) -> bytes:
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
         for path in sorted(Path(data).rglob("*")):
-            if not path.is_file() or path.suffix in (".sqlite-journal", ".sqlite-wal") or ".bak-auto-" in path.name:
+            if not path.is_file() or path.suffix in (".sqlite-journal", ".sqlite-wal", ".sqlite-shm") or ".bak-auto-" in path.name:
                 continue  # 自动部署前的数据库副本不进备份（数据库本身已经在里面了）
             arcname = path.relative_to(data).as_posix()
             content = _snapshot_sqlite(path) if path.suffix == ".sqlite" else path.read_bytes()

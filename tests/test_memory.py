@@ -141,3 +141,31 @@ class RawAndContextTest(MemoryTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TaskIdsNotReusedTest(unittest.TestCase):
+    """她 2026-11-02 点头修：删掉的待办编号会被新待办拿去（#208 从“测体脂”变成“完成工作台改版”），翻旧记录对不上。"""
+
+    def test_old_db_rebuilt_and_ids_keep_growing(self):
+        import sqlite3
+        import tempfile
+        from pathlib import Path
+        from ethan.memory.db import StructuredDB
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "ethan.db"
+            c = sqlite3.connect(path)
+            c.executescript("CREATE TABLE tasks (id INTEGER PRIMARY KEY, goal_id INTEGER, title TEXT NOT NULL, due TEXT, "
+                            "done INTEGER NOT NULL DEFAULT 0, promised_by_ethan INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, done_at TEXT, extra TEXT);"
+                            "INSERT INTO tasks (id, title, created_at, extra) VALUES (5, '五', 'x', 'keep'), (9, '九', 'x', NULL);")
+            c.commit()
+            c.close()
+            db = StructuredDB(path)
+            self.assertIn("AUTOINCREMENT", db.conn.execute("SELECT sql FROM sqlite_master WHERE name = 'tasks'").fetchone()[0])
+            self.assertEqual(db.conn.execute("SELECT extra FROM tasks WHERE id = 5").fetchone()[0], "keep")
+            db.delete_task(9)
+            new = db.add_task("新的")
+            self.assertEqual(new, 10)
+            db.close()
+            db = StructuredDB(path)  # 再开一次不重建
+            self.assertEqual(db.add_task("再一个"), 11)
+            db.close()

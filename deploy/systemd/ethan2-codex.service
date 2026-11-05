@@ -9,7 +9,7 @@ User=ethan
 Group=ethan
 WorkingDirectory=/home/ethan/Personal-OS
 Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/usr/bin/python3 -m ethan.codex_runner --data /home/ethan/data --repo /home/ethan/Personal-OS
+ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name codex -- /usr/bin/python3 -m ethan.codex_runner --data /home/ethan/data --repo /home/ethan/Personal-OS
 # 机器只有 2 核 1.9G：一次只跑一件（oneshot 没跑完不会再开），内存超了宁可杀掉 Codex 也不拖垮 小伴
 MemoryMax=900M
 TimeoutStartSec=4h

@@ -5,6 +5,8 @@
 
 用法：
   python3 -m ethan.cloud grok "要 Grok 办的事"
+  python3 -m ethan.cloud interview --session "2- 个人主页" --scene "聊过往的访谈" --file 访谈.md   （她的访谈原话进 小伴 的记忆）
+  python3 -m ethan.cloud file --session "开发会话" --name 简历.pdf --file 简历.txt   （她在会话里直接给的文件，先转成文字）
   python3 -m ethan.cloud results [--since 2026-10-27T12:00:00+00:00]
   python3 -m ethan.cloud agent-add --title 标题 --spec-file 要求.md --verify "python3 -m unittest ..." --size 2 [--project 工作台]
   python3 -m ethan.cloud agent-list [--status review]
@@ -56,6 +58,19 @@ class CloudClient:
             except ValueError:
                 return {"ok": False, "error": f"HTTP {e.code}"}
 
+    def interview(self, session: str, scene: str, text: str, fmt: str = None, at: str = None, agent: str = None, key: str = None) -> dict:
+        """fmt="transcript"：整段对话（每行【她】/【某某】，ethan/interviews.py）；不写就是旧的“问/答”（服务器也会自己认）。"""
+        body = {"session": session, "scene": scene, "text": text}
+        body.update({k: v for k, v in (("format", fmt), ("at", at), ("agent", agent), ("key", key)) if v})
+        return self._call("POST", "/cloud/interview", body)
+
+    def file(self, session: str, name: str, text: str) -> dict:
+        return self._call("POST", "/cloud/interview", {"kind": "file", "session": session, "name": name, "text": text})
+
+    def people_stats(self, people: list) -> dict:
+        """微信私聊统计（ethan/wechatexport.py 算好的，ethan/relations.py 收）。"""
+        return self._call("POST", "/cloud/people_stats", {"people": people})
+
     def send(self, task: str) -> dict:
         return self._call("POST", "/cloud/grok", {"task": task})
 
@@ -97,6 +112,14 @@ def main(argv=None, env=os.environ):
     parser = argparse.ArgumentParser(description="云端会话找 Grok、给 agent 派活")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("grok").add_argument("task")
+    iv = sub.add_parser("interview")  # 她在这个会话里的访谈原话交给 小伴 的记忆（ethan/interviews.py）
+    iv.add_argument("--session", required=True)
+    iv.add_argument("--scene", default="")
+    iv.add_argument("--file", type=Path, required=True)
+    fl = sub.add_parser("file")  # 她在这个会话里直接给的文件（先转成文字），算她提供的资料
+    fl.add_argument("--session", required=True)
+    fl.add_argument("--name", required=True)
+    fl.add_argument("--file", type=Path, required=True)
     sub.add_parser("results").add_argument("--since", default="")
     a = sub.add_parser("agent-add")
     a.add_argument("--agent", default="codex")
@@ -132,6 +155,7 @@ def main(argv=None, env=os.environ):
     d.add_argument("--work-seconds", type=float, default=0)
     d.add_argument("--reworks", type=int, default=0)
     sub.add_parser("scoreboard")
+    sub.add_parser("health")  # 系统巡检（ethan/checkup.py）
     sub.add_parser("sessions-push").add_argument("file", type=Path)
     sub.add_parser("sessions")
     mp = sub.add_parser("map-get")
@@ -143,7 +167,11 @@ def main(argv=None, env=os.environ):
         print("缺少 ETHAN_CLOUD_TOKEN：请她在云端环境设置里加上（值是服务器上的 INBOX_TOKEN_CLOUD）", file=sys.stderr)
         return 2
     client = CloudClient(token, env.get("ETHAN_URL", DEFAULT_URL))
-    if args.cmd == "grok":
+    if args.cmd == "file":
+        out = client.file(args.session, args.name, args.file.read_text(encoding="utf-8"))
+    elif args.cmd == "interview":
+        out = client.interview(args.session, args.scene, args.file.read_text(encoding="utf-8"))
+    elif args.cmd == "grok":
         out = client.send(args.task)
     elif args.cmd == "results":
         out = client.results(args.since)
@@ -152,6 +180,8 @@ def main(argv=None, env=os.environ):
         out = client._call("POST", "/cloud/agent/tasks", {"agent": args.agent, "title": args.title, "spec": spec,
                                                            "verify": args.verify, "size": args.size,
                                                            "project": args.project})
+    elif args.cmd == "health":
+        out = client._call("GET", "/cloud/health")
     elif args.cmd == "agent-list":
         out = client._call("GET", "/cloud/agent/tasks" + (f"?status={args.status}" if args.status else ""))
     elif args.cmd == "agent-get":

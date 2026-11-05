@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import lifelog, places_log, worktime
+from .clock import her_today
 
 ORDER = {"bad": 0, "warn": 1, "ok": 2, "none": 3}
 TERRITORIES = [  # (key, 名字, 数据库里的领地名)；身体区域 2026-10-29 她改叫“健康”，库里还记“身体”
@@ -70,6 +71,8 @@ def _paced(actual, quest_target, floor_target, elapsed: int, has_quest: bool) ->
     if actual is None:
         return "none"
     elapsed -= 1
+    if elapsed <= 0 and not actual:  # 周一：还没到该做的时候，不算达标也不算落后（她 2026-11-02：本周 0 次怎么是达标）
+        return "none"
     if has_quest and quest_target is not None:
         if actual >= quest_target * elapsed / 7 - 1e-9:
             return "ok"
@@ -77,8 +80,30 @@ def _paced(actual, quest_target, floor_target, elapsed: int, has_quest: bool) ->
     return "ok" if actual >= floor_target * elapsed / 7 - 1e-9 else "bad"
 
 
-def _row(name, quest, floor, actual_text, light, note=""):
-    return {"name": name, "quest": quest, "floor": floor, "actual": actual_text, "light": light, "note": note}
+def cognitive_days(db, start: date, day: date):
+    """认知拓展：聊到新话题（[话题]）或 小伴 教了一个知识点（ethan/lessons.py，每天一个）的天数；都没记录过是 None。"""
+    days = set()
+    if lifelog.has(db, "topic"):
+        lifelog.ensure(db)
+        days |= {r[0] for r in db.conn.execute("SELECT DISTINCT day FROM life_log WHERE kind = 'topic' AND day >= ? AND day <= ?",
+                                                (start.isoformat(), day.isoformat()))}
+    has_lessons = db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'lessons'").fetchone()
+    if has_lessons:
+        days |= {r[0][:10] for r in db.conn.execute("SELECT taught_at FROM lessons WHERE taught_at >= ? AND taught_at < ?",
+                                                    (start.isoformat(), (day + timedelta(days=1)).isoformat()))}
+    if not days and not lifelog.has(db, "topic") and not (has_lessons and db.conn.execute("SELECT 1 FROM lessons WHERE taught_at IS NOT NULL").fetchone()):
+        return None
+    return len(days)
+
+
+def _row(name, quest, floor, actual_text, light, note="", edit=None, log=None):
+    """edit：保底旁边放 ✎（budget = 改每月预算）；log：这一项旁边放“＋ 记一笔”（社交的见面、新朋友、联系，她 2026-11-01）。"""
+    out = {"name": name, "quest": quest, "floor": floor, "actual": actual_text, "light": light, "note": note}
+    if edit:
+        out["edit"] = edit
+    if log:
+        out["log"] = log
+    return out
 
 
 def _weights(db, day: date, days: int = 28) -> list:
@@ -136,8 +161,8 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
         n = _habit_days(db, "英语陪练（Grok）", start, day)
         rows.append(_row("英语陪练（Grok）", "—", "每周 5 次", f"{n} 次" if n is not None else "—",
                          _paced(n, None, 5, elapsed, False), "" if n is not None else "还没开"))
-        if lifelog.has(db, "topic"):
-            n = lifelog.count(db, "topic", start, day, distinct_days=True)
+        n = cognitive_days(db, start, day)
+        if n is not None:
             rows.append(_row("认知拓展", "—", "每天 1 个话题", f"{n} 天", _paced(n, None, 7, elapsed, False)))
         else:
             rows.append(_row("认知拓展", "—", "每天 1 个话题", "—", "none", "小伴 聊到新话题会记下来"))
@@ -158,46 +183,68 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
             w = worktime.week_row(db, day)
             rows.append(_row("本人工作时长", "—", "每天不超过 8 小时", f"今天 {w['today']:g} 小时 · 本周最长 {w['max']:g} · 日均 {w['avg']:g}",
                              w["light"], "超过 8 小时黄、超过 10 小时红；目标一周比一周少"))
+            try:  # 工作狂指数和效率（ethan/workaholic.py，她 2026-10-31 要）：这周到今天 vs 上周同样几天
+                from . import workaholic
+                c = workaholic.compare(db, day)
+                t, l = c["this"], c["last"]
+                arrow = lambda a, b, lower=False: "" if b in (None, 0) or a is None else ("↓" if a < b else "↑" if a > b else "持平")
+                b = workaholic.band(t["index"])  # 健康区间 20–49（她 2026-11-01）
+                rows.append(_row("工作狂指数", "—", f"健康区间 {workaholic.HEALTHY[0]}–{workaholic.HEALTHY[1]}", f"本周 {t['index']}（{b['label']}，上周同期 {l['index']}）{arrow(t['index'], l['index'])}",
+                                 b["light"],
+                                 f"晚上 9 点后 {t['late']:g} 小时 · 周末 {t['weekend']:g} 小时"))
+                rows.append(_row("效率 =（事业经验 + 学术经验）÷ 工作小时", "—", "时长往下、产出稳住、效率往上",
+                                 f"本周 {t['efficiency'] if t['efficiency'] is not None else '—'}（上周同期 {l['efficiency'] if l['efficiency'] is not None else '—'}）",
+                                 "none", f"产出 {t['output']['points']} 经验 · 验收通过的交付 {t['output']['accepted']} 件 · 工作 {t['hours']:g} 小时"))
+            except Exception as e:
+                print(f"[territory] 工作狂指数没算出来：{type(e).__name__} {e}", flush=True)
         else:
             rows.append(_row("本人工作时长", "—", "每天不超过 8 小时", "—", "none", "等 Mac 上的记录脚本"))
         rows += [
                  _row("小红书 + Instagram 发帖", "每周各 2 条", "—", "—", "none", "等接账号")]
     elif key == "money":
+        # 健康线按周看，花销也按本周算（她 2026-11-01：本周回顾里写“每月花销”口径对不上）；保底是月预算按天数折成一周
         from . import finance
+        import calendar
         if finance.has_source(db, "monzo") or finance.has_source(db, "sms") or finance.has_source(db, "chat"):
-            spent = finance.month_spend(db, day)
-            text = " + ".join(f"{'£' if c == 'GBP' else '¥' if c == 'CNY' else c + ' '}{v:,.0f}" for c, v in spent.items()) or "0"
+            fmt = lambda d: " + ".join(f"{'£' if c == 'GBP' else '¥' if c == 'CNY' else c + ' '}{v:,.0f}" for c, v in d.items()) or "0"
+            week, month = finance.spend_between(db, start, day), finance.month_spend(db, day)
             budget = settings_budget(db, day)
-            if budget:  # 预算只有一个数（2026-10-29 她定），别的币种按汇率折过来一起算
+            rate = finance.fx_rate(db)
+            last_day = db.conn.execute("SELECT MAX(day) FROM transactions WHERE amount < 0").fetchone()[0]
+            stale = f"最近一笔扣款是 {last_day[5:]}" if last_day and last_day < (day - timedelta(days=2)).isoformat() else ""
+            if budget:
                 cur, cap = next(iter(budget.items()))
-                rate = finance.fx_rate(db)
-                total = finance.convert(spent, cur, rate)
                 sym = "£" if cur == "GBP" else "¥"
-                if len(spent) > 1 or (spent and cur not in spent):
-                    text = f"{sym}{total:,.0f}（{text}，按 £1≈¥{rate:.2f}）"
-                light = "bad" if total > cap else "warn" if total > cap * day.day / 30 else "ok"
-                rows.append(_row("每月花销", "—", f"不超 {sym}{cap:,.0f}", f"本月 {text}", light))
+                wcap = cap * 7 / calendar.monthrange(day.year, day.month)[1]
+                wt, mt = finance.convert(week, cur, rate), finance.convert(month, cur, rate)
+                light = "bad" if wt > wcap or mt > cap else "warn" if wt > wcap * elapsed / 7 else "ok"
+                rows.append(_row("本周花销", "—", f"每周不超 {sym}{wcap:,.0f}", f"本周 {sym}{wt:,.0f}", light,
+                                 "；".join(x for x in (f"本月累计 {sym}{mt:,.0f} / 预算 {sym}{cap:,.0f}", stale) if x), edit="budget"))
             else:
-                rows.append(_row("每月花销", "—", "不超预算", f"本月 {text}", "ok",
-                                 "还没定每月预算：在下面“每月预算”里填一下，超了会变红"))
+                rows.append(_row("本周花销", "—", "按每月预算折算", f"本周 {fmt(week)}", "ok",
+                                 "；".join(x for x in (f"本月累计 {fmt(month)}", stale, "还没定每月预算：点保底旁边的 ✎ 填一下") if x), edit="budget"))
         else:
-            rows.append(_row("每月花销", "—", "不超预算", "—", "none", "等接 Monzo 和招行（docs/operations/finance.md）"))
+            rows.append(_row("本周花销", "—", "按每月预算折算", "—", "none", "等接 Monzo 和招行（docs/operations/finance.md）", edit="budget"))
     elif key == "social":
         if lifelog.has(db, "meet") or lifelog.has(db, "new_friend") or lifelog.has(db, "contact"):
             met = lifelog.count(db, "meet", start, day)
             rows.append(_row("和朋友见面", "—", "每周 1 次", f"{met} 次", "ok" if met >= 1 else ("warn" if elapsed >= 5 else "ok"),
-                             "" if met else "这周还没见" if elapsed >= 5 else "这周还有时间"))
+                             "" if met else "这周还没见" if elapsed >= 5 else "这周还有时间", log="meet"))
             month = day.replace(day=1)
             new = lifelog.count(db, "new_friend", month, day)
             rows.append(_row("认识新朋友", "—", "每月 3–4 个", f"本月 {new} 个",
-                             "ok" if new >= 3 or day.day < 20 else ("warn" if new >= 1 else "bad")))
+                             "ok" if new >= 3 or day.day < 20 else ("warn" if new >= 1 else "bad"), log="new_friend"))
+            set_up = db.conn.execute("SELECT COUNT(*) FROM people WHERE contact_every_days IS NOT NULL").fetchone()[0]
             due = [p for p in db.people_to_contact(day) if "long_no_contact" in p["reasons"]]
-            rows.append(_row("联系重要的人", "—", "按各自频率", f"{len(due)} 个该联系了" if due else "都联系过",
-                             "ok" if not due else "warn" if len(due) <= 2 else "bad", "、".join(p["name"] for p in due[:4])))
+            if not set_up:  # 还没定要联系谁、多久一次，不能说“都联系过”（她 2026-11-02）
+                rows.append(_row("联系重要的人", "—", "按各自频率", "—", "none", "还没定要联系谁：跟 小伴 说谁、多久联系一次", log="contact"))
+            else:
+                rows.append(_row("联系重要的人", "—", "按各自频率", f"{len(due)} 个该联系了" if due else "都联系过",
+                                 "ok" if not due else "warn" if len(due) <= 2 else "bad", "、".join(p["name"] for p in due[:4]), log="contact"))
         else:
-            rows += [_row("和朋友见面", "—", "每周 1 次", "—", "none", "小伴 聊到见了谁会记下来"),
-                     _row("认识新朋友", "—", "每月 3–4 个", "—", "none", "小伴 聊到认识新朋友会记下来"),
-                     _row("联系重要的人", "—", "按各自频率", "—", "none", "人物卡里设好多久联系一次")]
+            rows += [_row("和朋友见面", "—", "每周 1 次", "—", "none", "点＋记一笔，或者跟 小伴 说", log="meet"),
+                     _row("认识新朋友", "—", "每月 3–4 个", "—", "none", "点＋记一笔，或者跟 小伴 说", log="new_friend"),
+                     _row("联系重要的人", "—", "按各自频率", "—", "none", "点＋记一笔；人物卡里设好多久联系一次", log="contact")]
     elif key == "academic":
         if lifelog.has(db, "research"):
             mins = lifelog.total(db, "research", start, day)
@@ -208,13 +255,36 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
     return rows
 
 
+def spend_curve(db, day: date) -> dict:
+    """财务页的曲线（她 2026-11-02）：本周和上周每天累计花了多少、本月累计；按预算的币种（没有预算按英镑）折算。"""
+    from . import finance
+    import calendar
+    budget = settings_budget(db, day)
+    cur, cap = next(iter(budget.items())) if budget else ("GBP", None)
+    rate = finance.fx_rate(db)
+    monday = day - timedelta(days=day.weekday())
+
+    def cum(start, upto):
+        out, total = [], 0.0
+        for n in range(7):
+            d = start + timedelta(days=n)
+            if d > upto:
+                break
+            total += finance.convert(finance.spend_between(db, d, d), cur, rate)
+            out.append(round(total))
+        return out
+    return {"cur": "£" if cur == "GBP" else "¥", "this": cum(monday, day), "last": cum(monday - timedelta(days=7), day),
+            "month": round(finance.convert(finance.month_spend(db, day), cur, rate)), "cap_month": cap,
+            "cap_week": round(cap * 7 / calendar.monthrange(day.year, day.month)[1]) if cap else None}
+
+
 BUDGET_SQL = "CREATE TABLE IF NOT EXISTS budget_plan (month TEXT PRIMARY KEY, amount REAL NOT NULL, set_at TEXT NOT NULL)"
 
 
 def budget_plan(db, day: date = None) -> dict:
     """每月预算（2026-10-29 她定）：只按人民币算，定了就要遵守——这个月的锁定，改的只从下个月起生效。
     返回 {"now": 本月预算或 None, "next": 下个月起的新预算或 None}。"""
-    day = day or date.today()
+    day = day or her_today()
     db.conn.execute(BUDGET_SQL)
     month, nxt = day.strftime("%Y-%m"), (day.replace(day=28) + timedelta(days=4)).strftime("%Y-%m")
     if not db.conn.execute("SELECT 1 FROM budget_plan LIMIT 1").fetchone():  # 以前存在 budgets 表里的，算本月的
@@ -229,11 +299,15 @@ def budget_plan(db, day: date = None) -> dict:
             "next_month": nxt}
 
 
-def set_budget(db, amount: float, day: date = None) -> str:
-    """还没定过就从本月生效；本月已经定了，就只改下个月起的。返回生效的月份。"""
-    day = day or date.today()
+def set_budget(db, amount: float, day: date = None, when: str = None) -> str:
+    """when = "now" 本月就生效，"next" 下个月起；不传时按老规矩：还没定过就本月，定过就下个月（2026-11-01 她说改的时候让她选）。返回生效的月份。"""
+    day = day or her_today()
     plan = budget_plan(db, day)
-    month = day.strftime("%Y-%m") if plan["now"] is None else plan["next_month"]
+    if when not in ("now", "next"):
+        when = "now" if plan["now"] is None else "next"
+    month = day.strftime("%Y-%m") if when == "now" else plan["next_month"]
+    if when == "now":  # 本月改了，下个月起的那条（如果之前定过）也跟着改，免得下个月又跳回去
+        db.conn.execute("DELETE FROM budget_plan WHERE month = ?", (plan["next_month"],))
     db.conn.execute("INSERT INTO budget_plan (month, amount, set_at) VALUES (?, ?, ?) ON CONFLICT(month) DO UPDATE SET "
                     "amount = excluded.amount, set_at = excluded.set_at", (month, amount, day.isoformat()))
     db.conn.commit()
@@ -256,7 +330,8 @@ def explore_stats(root: Path) -> dict:
         for r in sheets.get(name, []):
             if r.get("状态") == "已结束" and r.get("国家"):
                 countries.add(r["国家"])
-    goals = sheets.get("Goal", [])
+    # 2026-11-01 她更新了探索地图：原来的“Goal”表改成“成就”表（成就 / 状态 / 成就内容），人生体验是其中“成就 = 人生体验”的几行
+    goals = sheets.get("Goal") or [{"Goal": r.get("成就内容"), "状态": r.get("状态")} for r in sheets.get("成就", []) if r.get("成就") == "人生体验"]
     china = sum(1 for r in sheets.get("中国", []) if r.get("状态") == "已结束")
     return {"countries": len(countries), "china": china,
             "goals_done": sum(1 for g in goals if g.get("状态") == "已结束"),

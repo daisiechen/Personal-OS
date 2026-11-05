@@ -81,6 +81,25 @@ class AutoDeployTest(unittest.TestCase):
         log = (self.data / "deploy-log.jsonl").read_text().splitlines()
         self.assertEqual(len(log), 1)
 
+    def test_failed_migration_is_not_plain_live(self):
+        """Codex 评审 11-05：数据改动失败时结果不能只写“已上线”，要写明哪个出错，巡检当失败报。"""
+        server = FakeServer()
+
+        def call(cmd, cwd=None):
+            if "ethan.migrate" in cmd:
+                server.calls.append(cmd)
+                raise StepFailed("出错的：20261105_b", "20261105_a：成功 好了\n20261105_b：失败 KeyError: 'x'\n出错的：20261105_b")
+            return server(cmd, cwd)
+        record = self.deployer(call).once()
+        self.assertEqual(record["result"], "已上线，但数据改动出错：20261105_b")
+        self.assertEqual(server.head, NEW)  # 代码不退回（数据改动撤不回，见 autodeploy 文件头）
+        self.assertIn("KeyError", record["migrations"])
+        from ethan import checkup, syscheck
+        self.assertFalse(syscheck.deploy_info(self.data)["ok"])
+        got = {p["what"]: p["detail"] for p in checkup.problems(self.data, None, services=False, meminfo=self.data / "没有")}
+        self.assertIn("20261105_b", got["数据改动"])
+        self.assertNotIn("自动上线", got)  # 只报一条
+
     def test_rollback_problem_is_reported(self):
         server = FakeServer(fail_on="systemctl restart")
         record = self.deployer(server).once()
@@ -106,3 +125,29 @@ class AutoDeployTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 加的）：不带作者的数据改动和调研文档，相关测试跳过
+    import inspect
+    import unittest as _u
+    keep = _u.TestSuite()
+
+    def walk(suite):
+        for t in suite:
+            if isinstance(t, _u.TestSuite):
+                walk(t)
+                continue
+            try:
+                src = inspect.getsource(getattr(t, t._testMethodName))
+            except (OSError, TypeError, AttributeError):
+                src = ""
+            try:
+                setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
+            except (OSError, TypeError):
+                setup = ""
+            if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
+                continue
+            keep.addTest(t)
+    walk(tests)
+    return keep

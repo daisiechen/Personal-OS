@@ -82,7 +82,7 @@ class SurpriseOnceTest(NudgeTest):
         """拆了惊喜，小伴 主动揭晓一次；第二天不会再“刚拆开”一遍（2026-10-29 自查）。"""
         from ethan import quests
         quests.seed(self.db)
-        quests.award(self.db, 300, "测试", MONDAY)
+        quests.award(self.db, 2500, "测试", MONDAY)
         small = self.db.conn.execute("SELECT id FROM rewards WHERE tier = '小'").fetchone()["id"]
         quests.redeem(self.db, small, MONDAY)
         key, _ = nudges.due(self.db, at(10), {})
@@ -93,12 +93,64 @@ class SurpriseOnceTest(NudgeTest):
 
 
 class SurpriseInChatTest(NudgeTest):
+    def test_ethan_checks_back_and_confirms_surprise(self):
+        """2026-11-01 她说别让她点“兑现了”：揭晓两天后 小伴 问一句玩了没有，由他记兑现。"""
+        from datetime import datetime
+        from ethan import quests
+        quests.seed(self.db)
+        quests.award(self.db, 2500, "测试", MONDAY)
+        small = self.db.conn.execute("SELECT id FROM rewards WHERE tier = '小'").fetchone()["id"]
+        quests.redeem(self.db, small, MONDAY)
+        r = quests.pending_redemptions(self.db)[0]
+        noon = datetime(2026, 11, 5, 12, 0)
+        self.assertIsNone(nudges._surprise_check(self.db, noon, {}))  # 还没揭晓过
+        nudges.mark_told(self.db, [nudges.redeem_key(r)])
+        self.db.conn.execute("UPDATE nudge_once SET at = '2026-11-02 10:00:00'")
+        key, why = nudges._surprise_check(self.db, noon, {})
+        self.assertIn("已兑现", why)
+        nudges.mark_told(self.db, [key])
+        self.assertIsNone(nudges._surprise_check(self.db, noon, {}))  # 同一轮只问一次
+        quests.deliver(self.db, r["id"], "玩得很开心")
+        self.assertIsNone(nudges._surprise_check(self.db, datetime(2026, 11, 9, 12, 0), {}))
+
+    def test_asks_about_every_prep_item_spaced_out(self):
+        """2026-11-01：小伴 记下要替她查体态评估，没来问她。她说“所有都问，但别同一时间问”：一次一件，隔 2 小时。"""
+        from datetime import datetime
+        t1 = self.db.add_task("查伦敦能做 physio 体态评估的诊所", promised_by_ethan=True)
+        t2 = self.db.add_task("比较芬兰租车", promised_by_ethan=True)
+        noon = datetime(2026, 11, 2, 12, 0)
+        self.db.conn.execute("UPDATE tasks SET done = 1 WHERE promised_by_ethan = 1 AND id NOT IN (?, ?)", (t1, t2))
+        key, why = nudges._prep_ask(self.db, noon, {})
+        self.assertIn(key, (f"prep-ask:{t1}", f"prep-ask:{t2}"))
+        self.assertIn("准备 #", why)
+        self.assertIsNone(nudges._prep_ask(self.db, noon, {key: "已发送"}))  # 同一轮只问一件
+        nudges.mark_told(self.db, [key])
+        self.assertIsNone(nudges._prep_ask(self.db, noon, {}))  # 刚问过，隔 2 小时才问下一件
+        self.db.conn.execute("UPDATE nudge_once SET at = datetime('now', '-3 hours') WHERE key = ?", (key,))
+        key2, _ = nudges._prep_ask(self.db, noon, {})
+        self.assertNotEqual(key2, key)
+        self.assertIsNone(nudges._prep_ask(self.db, datetime(2026, 11, 2, 22, 0), {}))  # 晚上不问
+
+    def test_evening_asks_what_is_left_to_check_in(self):
+        """2026-11-01：她常忘了打卡。9 点后 小伴 问一句还有哪几项，问过之后她回“做了”就能替她打卡。"""
+        from datetime import datetime
+        from ethan import quests
+        quests.seed(self.db)
+        evening = datetime(2026, 11, 2, 21, 30)
+        self.assertIsNone(nudges._checkin(self.db, datetime(2026, 11, 2, 15, 0), {}))  # 白天不问
+        key, why = nudges._checkin(self.db, evening, {})
+        self.assertIn("[打卡", why)
+        self.assertFalse(nudges.checkin_asked_recently(self.db))
+        nudges.mark_told(self.db, [key])
+        self.assertTrue(nudges.checkin_asked_recently(self.db))
+        self.assertIsNone(nudges._checkin(self.db, evening, {}))  # 一晚只问一次
+
     def test_chatting_ethan_brings_up_untold_surprise(self):
         """她正聊着天时主动消息会被“刚聊过”挡住，所以聊天里 小伴 要主动提没说过的惊喜（2026-10-29 线上）。"""
         from ethan import quests
         from ethan.core.agent import build_system_prompt
         quests.seed(self.db)
-        quests.award(self.db, 300, "测试", MONDAY)
+        quests.award(self.db, 2500, "测试", MONDAY)
         small = self.db.conn.execute("SELECT id FROM rewards WHERE tier = '小'").fetchone()["id"]
         quests.redeem(self.db, small, MONDAY)
         r = quests.pending_redemptions(self.db)[0]

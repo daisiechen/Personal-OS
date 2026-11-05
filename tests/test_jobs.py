@@ -24,6 +24,16 @@ class JobsTest(unittest.TestCase):
             self.assertFalse(later["英语备课"]["ok"])  # 三天没跑
             self.assertIn("该跑没跑", later["英语备课"]["detail"])
 
+    def test_failed_eval_detail_names_the_failing_task_not_the_last_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = "extract_realtime：通过 80%（及格线 85%） ✗\n  ✗ a1：todos 漏了\n  ✗ a2：x\n" + \
+                  "fact_ops：通过 95%（及格线 90%）\nmail_classify：通过 100%（及格线 90%）\nvisitor_triage：通过 100%（及格线 85%）\n"
+            bad = lambda cmd, **kw: SimpleNamespace(returncode=1, stdout=out, stderr="")
+            jobs.run(Path(d), "evals", ["x"], runner=bad)
+            row = {r["name"]: r for r in jobs.health(Path(d))}["题集评测"]
+            self.assertFalse(row["ok"])
+            self.assertIn("extract_realtime", row["detail"])
+
     def test_every_timer_job_goes_through_the_recorder(self):
         root = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
         for name in ("backup", "brain", "english", "planner", "prep", "proactive", "vault", "weekly"):

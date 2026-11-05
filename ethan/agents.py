@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 );
 """
 LIST_FIELDS = ("id", "agent", "project", "title", "size", "status", "reworks", "created_at", "finished_at",
-               "reviewed_at", "verify_ok", "tokens_in", "tokens_out", "cost_usd", "work_seconds", "rating")
+               "reviewed_at", "verify_ok", "tokens_in", "tokens_out", "cost_usd", "work_seconds", "rating", "archived_at")
 
 
 def now() -> str:
@@ -62,6 +62,21 @@ def now() -> str:
 
 def ensure(db):
     db.conn.executescript(SCHEMA)
+    cols = {r[1] for r in db.conn.execute("PRAGMA table_info(agent_tasks)")}
+    if "archived_at" not in cols:  # 她直接点“归档”的时间（2026-10-30）
+        db.conn.execute("ALTER TABLE agent_tasks ADD COLUMN archived_at TEXT")
+
+
+def archive(db, tid: int) -> dict:
+    """她直接归档（2026-10-30）：失败的照样算失败，只是收进归档；还在等审查的不审了，算放弃（不扣分）再归档。"""
+    ensure(db)
+    t = get(db, tid)
+    if t is None:
+        raise ValueError("没有这件活")
+    if t["status"] in ("queued", "running", "review"):
+        update(db, tid, status="dropped", finished_at=now(), review_note=t.get("review_note") or "她没审，直接归档")
+    update(db, tid, archived_at=now())
+    return get(db, tid)
 
 
 def add(db, agent: str, title: str, spec: str = "", verify: str = "", size: int = 1, project: str = "",
@@ -165,12 +180,14 @@ def review(db, tid: int, decision: str, note: str = "") -> dict:
         raise ValueError(f"这件活现在是 {t['status']}，不能审查")
     if decision == "accept":
         update(db, tid, status="accepted", reviewed_at=now(), review_note=note)
+    elif decision == "fail":  # 她看了判失败（2026-10-30 她要在“待你审查”里能直接选误报或失败）
+        update(db, tid, status="failed", finished_at=now(), reviewed_at=now(), review_note=note or "她判失败")
     elif decision == "reject":
         spec = t["spec"] + (f"\n\n【第 {t['reworks'] + 1} 次返工，审查意见】{note}" if note else "")
         update(db, tid, status="queued", reworks=t["reworks"] + 1, spec=spec, review_note=note, patch="",
                verify_ok=None, retry_after=None)
     else:
-        raise ValueError("decision 只能是 accept 或 reject")
+        raise ValueError("decision 只能是 accept、reject 或 fail")
     return get(db, tid)
 
 
@@ -234,7 +251,7 @@ def grok_live(root, hours: int = 48) -> dict:
     # 按记号配对（2026-10-29 她说 Grok 在干活看板上没显示：以前谁先回来就算哪件做完，收藏日报一来就把在干的抵掉了）：
     # 【回执 G…】对 小伴 派的那件，【准备 #编号】对准备员那件；没记号的旧任务才按先后配，收藏日报、英语陪练、开发会话的回报不抵。
     waiting, done, started = list(sent), [], []
-    own = ("【收藏日报】", "【英语陪练】", "【Claude 会话】", "【惊喜灵感", "【连通测试")
+    own = ("【收藏日报】", "【英语陪练】", "【本周谈资", "【周末推荐", "【Claude 会话】", "【惊喜灵感", "【连通测试")
     for b in back:
         text = str(b.get("text", "")).strip()
         if text.startswith("【开工】"):  # Grok 自己报的开工（她在 Grok 里直接交代的活）
@@ -443,9 +460,12 @@ def _hook_sessions(root, now: datetime = None) -> list:
         data = json.loads((Path(root) / HOOKS_FILE).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
+    dismissed = _dismissed(root)
     out = []
-    for s in data.values():
+    for key, s in data.items():
         if s.get("state") == "ended":
+            continue
+        if dismissed.get(key) and dismissed[key] == s.get("updated_at"):  # 她判了误报或失败的这一轮，等它下次再报才重新出现
             continue
         title = s.get("project") or ("" if s.get("agent") else "会话")
         if s.get("first"):
@@ -455,9 +475,41 @@ def _hook_sessions(root, now: datetime = None) -> list:
             state = "idle"  # 一轮做完等她看，半天没动就当空闲，不老挂在看板上
         if state == "working" and s.get("updated_at", "") < (now - timedelta(hours=6)).isoformat():
             state = "idle"  # 6 小时没动静的“在干”多半是会话断了没报结束
-        out.append({"title": title or "会话", "state": state, "where": s.get("where", "cloud"), "agent": s.get("agent", "claude"),
+        out.append({"key": key, "title": title or "会话", "state": state, "where": s.get("where", "cloud"), "agent": s.get("agent", "claude"),
                     "updated_at": s.get("updated_at", ""), "summary": s.get("summary", "")})
     return out
+
+
+DISMISSED_FILE = "session-dismissed.json"
+
+
+def _dismissed(root) -> dict:
+    try:
+        return json.loads((Path(root) / DISMISSED_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def dismiss_session(root, key: str) -> bool:
+    """团队页“待你审查”里某个会话这一轮是误报：先从看板上拿掉，它下次报到（新的一轮）再出现。"""
+    try:
+        data = json.loads((Path(root) / HOOKS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if key not in data:
+        return False
+    marks = _dismissed(root)
+    marks[key] = data[key].get("updated_at", "")
+    (Path(root) / DISMISSED_FILE).write_text(json.dumps(marks, ensure_ascii=False), encoding="utf-8")
+    return True
+
+
+def fail_session(db, root, key: str, title: str, agent: str = "claude", note: str = "") -> int:
+    """她判这一轮失败：记一件失败的活（算进成绩单），再从看板上拿掉。"""
+    tid = add(db, agent, title[:80] or "会话", created_by="mia")
+    update(db, tid, status="failed", started_at=now(), finished_at=now(), reviewed_at=now(), review_note=note or "她判失败")
+    dismiss_session(root, key)
+    return tid
 
 
 def save_sessions(root, sessions: list, now: datetime = None) -> int:

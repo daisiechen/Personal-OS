@@ -8,6 +8,7 @@
   GET  /api/quests            任务页
   GET  /api/team              团队页（agent 成绩单和任务看板）
   GET  /api/map               领地地图；GET /api/territory?k=body 领地页（k=waste 是荒原）
+  GET  /api/relations         “关系”页：该联系、生日、待回复三张清单和人物卡
   GET  /api/brain?tab=new|all|archived|trash&q=&kind=&k=  第二大脑
   POST /api/act               她的操作：{"action": "habit.check", ...}
   GET  /img/avatar/day|night  两张头像；/img/card/<日期> 今日卡
@@ -34,6 +35,7 @@ from .api import Workbench
 
 STATIC = Path(__file__).parent / "static"
 MAX_BODY = 64 * 1024
+VOICE_BODY = 16 * 1024 * 1024  # 日记里说的一段话（ethan/voice.py）
 COOKIE = "eo_session"
 CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
        "font-src https://fonts.gstatic.com; script-src 'self' https://telegram.org; connect-src 'self'; "
@@ -114,6 +116,8 @@ class App:
             return self.json(200, self.wb.team_page())
         if method == "GET" and path == "/api/map":
             return self.json(200, self.wb.map_page())
+        if method == "GET" and path == "/api/season":
+            return self.json(200, self.wb.season_page())
         if method == "GET" and path == "/api/review":
             return self.json(200, self.wb.review_page())
         if method == "GET" and path == "/api/monzo/start":  # 设置页“去授权”：跳到 Monzo 登录
@@ -124,8 +128,25 @@ class App:
                 return 200, {"Content-Type": "text/plain; charset=utf-8"}, str(e).encode()
         if method == "GET" and path == "/api/settings":
             return self.json(200, self.wb.settings_page())
+        if method == "GET" and path == "/api/memory":  # 记忆的各个使用者用得怎么样、纠错单（ethan/memusers.py；界面在“我”页，第三步做）
+            return self.json(200, self.wb.memory_page())
+        if method == "GET" and path == "/api/me":  # “我”页（ethan/mepage.py）
+            return self.json(200, self.wb.me_page())
+        if method == "GET" and path == "/api/me/pending":
+            return self.json(200, self.wb.me_pending())
+        if method == "GET" and path == "/api/me/all":
+            g = lambda k: (query.get(k) or [""])[0]
+            return self.json(200, self.wb.me_all(g("q"), g("dim"), g("history") == "1", g("tab") or "facts", int(g("limit") or 100), g("prop")))
+        if method == "GET" and path == "/api/me/manage":  # “我”页第二层：删除管理、对外表达
+            return self.json(200, self.wb.me_manage())
+        if method == "GET" and path == "/api/relations":  # “关系”页（ethan/relations.py）
+            return self.json(200, self.wb.relations_page())
+        if method == "GET" and path == "/api/desk":  # 今日邮件和留言（ethan/desk.py）
+            return self.json(200, self.wb.desk_page())
         if method == "GET" and path == "/api/cards":
             return self.json(200, self.wb.cards_page())
+        if method == "GET" and path == "/api/week":  # 这周和下周的餐单、采购清单、训练（ethan/weekly.py）
+            return self.json(200, self.wb.week_page())
         if method == "GET" and path == "/api/ach":
             return self.json(200, self.wb.ach_page())
         if method == "GET" and path == "/api/brain":
@@ -133,11 +154,36 @@ class App:
             return self.json(200, self.wb.brain_page(g("tab") or "all", g("q"), g("kind"), g("k")))
         if method == "GET" and path == "/api/ethanday":
             return self.json(200, self.wb.ethan_days())
+        if method == "GET" and path == "/api/spend":  # 财务页每日开销，她选起止日期
+            try:
+                return self.json(200, self.wb.spend_page((query.get("start") or [""])[0], (query.get("end") or [""])[0]))
+            except ValueError as e:
+                return self.json(400, {"ok": False, "error": str(e)})
         if method == "GET" and path == "/api/territory":
             try:
                 return self.json(200, self.wb.territory_page((query.get("k") or [""])[0]))
             except ValueError as e:
                 return self.json(404, {"ok": False, "error": str(e)})
+        if method == "POST" and path == "/api/heartbeat":  # 工作台开着、在前台：算工作时间（ethan/workaholic.py，她 10-31 定）
+            from .. import workaholic
+            return self.json(200, {"ok": True, "saved": workaholic.heartbeat(self.wb.db)})
+        if method == "GET" and path == "/api/explore":
+            return self.json(200, self.wb.explore_page())
+        if method == "POST" and path == "/api/explore":  # 设置页上传探索地图 xlsx（ethan/explore.py，她 2026-11-01）
+            from .. import explore
+            try:
+                return self.json(200, {"ok": True, "sheets": explore.save(self.root, body)})
+            except ValueError as e:
+                return self.json(400, {"ok": False, "error": str(e)})
+        if path == "/api/voice":  # 说一段话转文字（ethan/voice.py，她 2026-11-01：浏览器自带的识别不准）
+            from .. import voice
+            try:
+                if method == "POST":
+                    ctype = next((v for k, v in headers.items() if k.lower() == "content-type"), "")
+                    return self.json(200, {"ok": True, "job": voice.start(self.root, body, ctype)})
+                return self.json(200, {"ok": True, **voice.result(self.root, (query.get("job") or [""])[0])})
+            except ValueError as e:
+                return self.json(400, {"ok": False, "error": str(e)})
         if method == "POST" and path == "/api/act":
             data = self.body_json(body)
             return self.json(200, self.wb.act(str(data.pop("action", "")), data))
@@ -185,13 +231,15 @@ class App:
 
 def make_handler(app: App):
     lock = threading.Lock()  # 每个连接一个线程收发，处理请求（用数据库）时一次只一个
+    app.wb.lock = lock  # 等模型回答时放开（api._OutsideLock），一个慢请求不堵住别的页面
 
     class Handler(BaseHTTPRequestHandler):
         timeout = 20  # 连上不说话的连接 20 秒就断，不占着
 
         def _go(self, method, head=False):
             length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY:
+            limit = VOICE_BODY if urlsplit(self.path).path in ("/api/voice", "/api/explore") else MAX_BODY
+            if length > limit:
                 status, headers, body = app.json(413, {"ok": False, "error": "too large"})
             else:
                 try:
@@ -249,9 +297,20 @@ def build(data: Path, env=os.environ) -> App:
 
     settings = Settings(Path(data) / "settings.json")
     store = MemoryStore(data)
-    return App(Workbench(store, settings, calendar=build_calendar(env), places=places(settings), background=True,
-                         card_runner=CardRunner(data), replan_runner=CardRunner(data, "ethan.planner", ["--force"])),
-               env.get("TELEGRAM_BOT_TOKEN", ""), data)
+    wb = Workbench(store, settings, calendar=build_calendar(env), places=places(settings), background=True,
+                   card_runner=CardRunner(data), replan_runner=CardRunner(data, "ethan.planner", ["--force"]))
+    wb.redo_runner = CardRunner(data, "ethan.cards", ["--redo"])
+    wb.warm_busy()  # 苹果日历后台读好，首页不等 iCloud（2026-11-02 她说切页面慢）
+    from .. import diary
+    wb.diary_kick = lambda: diary.kick_backfill(data)
+    from .. import season
+    wb.season_kick = lambda: season.kick(data)
+    try:  # “看中文”翻译用；连不上模型时按钮会提示，不影响别的
+        from ..cli import build_router
+        wb.router = build_router(Path(data), 50.0)
+    except Exception as e:
+        print(f"[workbench] 翻译用的模型没接上：{type(e).__name__} {e}", flush=True)
+    return App(wb, env.get("TELEGRAM_BOT_TOKEN", ""), data)
 
 
 def main():

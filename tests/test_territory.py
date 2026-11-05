@@ -35,8 +35,8 @@ class TerritoryTest(unittest.TestCase):
         return {r["name"]: r for r in territory.health(self.db, key, day, active)}
 
     def test_paced_by_days_so_far(self):
-        # 今天不算欠账：周一一次没做也不红
-        self.assertEqual(self.rows("body", MONDAY)["训练"]["light"], "ok")
+        # 今天不算欠账：周一一次没做也不红；也不说“达标”，算“还没到时候”（她 2026-11-02：本周 0 次怎么是达标）
+        self.assertEqual(self.rows("body", MONDAY)["训练"]["light"], "none")
         # 周四要求到周三（3 天）：副本 5 次 → 2.1 次；保底 4 次 → 1.7 次
         thu = MONDAY + timedelta(days=3)
         self.check("训练", MONDAY, MONDAY + timedelta(days=1), WED)

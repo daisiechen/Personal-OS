@@ -44,7 +44,7 @@ class ReviewTest(unittest.TestCase):
     def test_season_not_started_yet_still_has_this_week(self):
         season = {"name": "测试赛季", "start": (MONDAY + timedelta(days=10)).isoformat(), "end": "2026-12-31"}
         page = review.page(self.db, self.root, MONDAY, season)
-        self.assertEqual(len(page["weeks"]), 1)  # 之前是空列表，战报页直接报错
+        self.assertEqual(len(page["weeks"]), 1)  # 之前是空列表，回顾页直接报错
         self.assertTrue(page["weeks"][0]["live"])
 
     def test_season_points_include_this_week(self):
@@ -59,7 +59,7 @@ class ReviewTest(unittest.TestCase):
         page = self.wb.review_page(datetime.combine(MONDAY + timedelta(days=6), datetime.min.time()).replace(hour=21))
         self.assertTrue(any(w["ethan"] == "这周你超棒" for w in page["weeks"]))
         self.assertTrue(self.wb.act("review.feedback", {"note": "训练太满"})["ok"])
-        self.assertIn("战报反馈：训练太满", [f["note"] for f in self.db.unused_feedback()])
+        self.assertIn("回顾反馈：训练太满", [f["note"] for f in self.db.unused_feedback()])
         self.assertFalse(self.wb.act("review.feedback", {"note": " "})["ok"])
 
     def test_settings_page_and_toggles(self):

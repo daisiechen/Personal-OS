@@ -24,10 +24,18 @@ Agent 任务队列（2026-10-28，见 ethan/agents.py），同样用 INBOX_TOKEN
   POST /cloud/agent/report              任何 agent 自己报到 {"agent","id","title","state","summary","where"}（Codex 的 notify 钩子等）
   POST /cloud/agent/hook?where=mac|server|cloud  Claude Code 钩子报到（会话开始、她发话、一轮做完、结束），
                                         正文是钩子原样的 JSON；密钥 INBOX_TOKEN_HOOK（只能报到）或 INBOX_TOKEN_CLOUD
-  POST /cloud/activity                  她本人的工作时长：Mac 键鼠活跃的 5 分钟格 {"slots": ["2026-10-28T10:05"], "source": "mac"}（ethan/worktime.py）
+  POST /cloud/activity                  她本人的工作时长：Mac 键鼠活跃的 5 分钟格 {"slots": ["2026-10-28T10:05"], "source": "mac"}（ethan/worktime.py）；
+                                        iPhone 快捷指令 {"event": "open"|"close", "app": "Claude"}（ethan/workaholic.py），回现在该不该停
+  GET  /cloud/curfew                    晚上收工：{"phase": ok|remind|persuade|stop, "stop", "until", "message"}
   POST /cloud/place                     iPhone 定位：出门 / 到家 {"event": "leave"|"arrive", "place": "home"}（ethan/places_log.py）
   POST /cloud/agent/sessions            她 Claude 账号里各会话的快照，整份覆盖 {"sessions": [{"title","state","where","updated_at","summary"}]}
+  GET  /cloud/health                    巡检：{"healthy", "problems": [{"what","detail"}]}（ethan/checkup.py）
   GET  /cloud/profile                   个人主页用：{"city","source": "told"|"home","at","birthday": "MM-DD"}（ethan/whereabouts.py）
+  POST /cloud/mail                      她 Mac 上的邮件程序送新邮件、取处理办法（ethan/mail.py，钥匙同报到钩子）
+  POST /cloud/visitor                   个人主页访客留言；GET /cloud/public/now 主页近况；GET /cloud/public/feed 生活栏目（ethan/publicsite.py）。
+  GET /cloud/site/reply-requests、POST /cloud/site/reply-drafts、/cloud/site/reply-status  留言回复：Dais起草、她确认、中转从 hi@ 发。
+                                        这些和 /cloud/profile 也认主页中转的钥匙 INBOX_TOKEN_SITE（只能用这些，profile 只给城市和今天是不是生日）
+  POST /cloud/people_stats              她 Mac 上微信导出算的私聊统计 {"people": [{"key","name","last","n90","n365",...}]}，一次最多 64KB（ethan/relations.py）
   GET  /cloud/maps/<文件名>               领地地图底图（<数据目录>/maps/ 下的 jpg/png），给云端会话取图做设计稿
 
 DemoApp 举报提醒（2026-10-29 她同意，见 ethan/fancy_moderation.py），用单独的密钥 INBOX_TOKEN_FANCY：
@@ -52,7 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import agents, english, fancy_moderation, finance, places_log, whereabouts, worktime
+from . import agents, checkup, english, fancy_moderation, finance, mail, places_log, publicsite, whereabouts, worktime
 from .grok import LOG_FILE, build_grok
 from .memory import MemoryStore
 
@@ -94,6 +102,70 @@ class Inbox:
         """返回 (HTTP 状态码, 回给对方的 JSON)。"""
         if path == "/fancy/moderation":
             return self._fancy(headers, body, now)
+        if path == "/cloud/mail":  # 她 Mac 上的邮件程序（ethan/mailbridge.py → ethan/mail.py）
+            if not (self._authorized("hook", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            if len(body) > 512 * 1024:
+                return 413, {"ok": False, "error": "too large"}
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return 400, {"ok": False, "error": "bad json"}
+            with self.db_lock:
+                got = mail.receive(self.store.db, payload if isinstance(payload, dict) else {})
+            if got["pending"]:
+                getattr(self, "mail_kick", mail.kick)(self.store.root)
+            return 200, got
+        if path == "/cloud/visitor":  # 个人主页访客留言（publicsite.py）
+            if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            if len(body) > 16 * 1024:
+                return 413, {"ok": False, "error": "too large"}
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return 400, {"ok": False, "error": "bad json"}
+            with self.db_lock:
+                return publicsite.receive(self.store.db, payload, now)
+        if path in ("/cloud/site/reply-drafts", "/cloud/site/reply-status"):  # 主页中转交Dais的草稿、回报发没发出（publicsite.py）
+            if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            if len(body) > 32 * 1024:
+                return 413, {"ok": False, "error": "too large"}
+            try:
+                payload = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                return 400, {"ok": False, "error": "bad json"}
+            if not isinstance(payload, dict):
+                return 400, {"ok": False, "error": "bad json"}
+            with self.db_lock:
+                fn = publicsite.reply_draft if path.endswith("drafts") else publicsite.reply_status
+                return fn(self.store.db, payload)
+        if path == "/cloud/interview":  # 她在别的会话里的访谈（ethan/interviews.py，她 2026-11-03 定算原话）
+            if not self._authorized("cloud", headers):
+                return 401, {"ok": False, "error": "unauthorized"}
+            try:
+                payload = json.loads(body.decode("utf-8") or "{}")
+            except ValueError:
+                return 400, {"ok": False, "error": "不是 JSON"}
+            from . import interviews
+            with self.db_lock:
+                return interviews.receive(self.store, payload, now)
+        if path == "/cloud/people_stats":  # 她 Mac 上微信导出顺带算的私聊统计（ethan/wechatexport.py → ethan/relations.py，她 11-04 认可）
+            if not self._authorized("cloud", headers):
+                return 401, {"ok": False, "error": "unauthorized"}
+            if len(body) > MAX_BODY:
+                return 413, {"ok": False, "error": "too large"}
+            try:
+                payload = json.loads(body.decode("utf-8") or "{}")
+            except (UnicodeDecodeError, ValueError):
+                return 400, {"ok": False, "error": "bad json"}
+            from . import relations
+            with self.db_lock:
+                code, res = relations.ingest_stats(self.store.db, payload, now)
+            if code == 200 and not os.environ.get("ETHAN_NO_KICK"):
+                relations.kick_all(self.store.root)  # 统计到了就在后台把所有人的卡一次整理完
+            return code, res
         if path == "/cloud/grok":
             return self._cloud_task(headers, body, now or datetime.now(timezone.utc))
         if urlsplit(path).path in ("/cloud/activity", "/cloud/place", "/cloud/spend"):
@@ -140,11 +212,43 @@ class Inbox:
             return 200, {"ok": True}
         if parts.path.startswith("/cloud/agent/"):
             return self._agent("GET", parts.path, parse_qs(parts.query), headers, b"")
-        if parts.path == "/cloud/profile":  # 个人主页（example.com）取她在哪个城市、生日（2026-10-29 她要）
+        if parts.path == "/cloud/health":  # 云端巡检会话取（ethan/checkup.py）
             if not self._authorized("cloud", headers):
                 return 401, {"ok": False, "error": "unauthorized"}
+            found = checkup.problems(self.store.root, self.store.db, now)
+            return 200, {"ok": True, "healthy": not found, "problems": found}
+        if parts.path == "/cloud/curfew":  # 晚上收工：Mac 记录脚本、Claude Code 收工钩子、iPhone 快捷指令都问这个（ethan/workaholic.py）
+            if not (self._authorized("hook", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            from . import workaholic
+            with self.db_lock:
+                return 200, workaholic.curfew(self.store.db, now)
+        if parts.path == "/cloud/profile":  # 个人主页（example.com）取她在哪个城市、生日（2026-10-29 她要）
             from .planner import BIRTH
+            if self._authorized("site", headers):  # 主页中转的钥匙：只给城市和“今天是不是生日”，不给日期
+                from .clock import her_now
+                with self.db_lock:
+                    city = whereabouts.current(self.store.db)["city"]
+                return 200, {"ok": True, "city": city, "birthday": her_now(None, now).strftime("%m-%d") == BIRTH.strftime("%m-%d")}
+            if not self._authorized("cloud", headers):
+                return 401, {"ok": False, "error": "unauthorized"}
             return 200, {"ok": True, **whereabouts.current(self.store.db), "birthday": BIRTH.strftime("%m-%d")}
+        if parts.path == "/cloud/site/reply-requests":  # 主页中转拉要起草的、她确认要发的留言回复
+            if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            with self.db_lock:
+                got = publicsite.reply_requests(self.store.db, (parse_qs(parts.query).get("status") or [""])[0])
+            return (200 if got["ok"] else 400), got
+        if parts.path == "/cloud/public/feed":  # 主页“生活”栏目：她确认过公开的日常（2026-10-31）
+            if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            with self.db_lock:
+                return 200, publicsite.feed(self.store.db, (parse_qs(parts.query).get("lang") or [""])[0])
+        if parts.path == "/cloud/public/now":  # 个人主页近况（她确认过才有）
+            if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
+                return 401, {"ok": False, "error": "unauthorized"}
+            with self.db_lock:
+                return 200, {"ok": True, **publicsite.public_now(self.store.db)}
         m = re.fullmatch(r"/cloud/maps/([A-Za-z0-9._-]+\.(?:jpg|png))", parts.path)
         if m:
             if not self._authorized("cloud", headers):
@@ -199,6 +303,9 @@ class Inbox:
                 if not str(text).strip():
                     return 400, {"ok": False, "error": "empty"}
                 return 200, finance.record_cmb(self.store.db, str(text), now, str(data.get("sender") or ""))
+            if path == "/cloud/activity" and data.get("event") in ("open", "close"):  # iPhone 快捷指令：打开 / 关掉 Claude、Codex App（ethan/workaholic.py）
+                from . import workaholic
+                return 200, workaholic.app_event(self.store.db, data["event"], str(data.get("app") or "app"), now)
             if path == "/cloud/activity":
                 return 200, {"ok": True, "saved": worktime.record(self.store.db, list(data.get("slots") or [])[:2000],
                                                                  str(data.get("source", "mac")))}
@@ -222,7 +329,11 @@ class Inbox:
         where = (query.get("where") or ["cloud"])[0]
         with self.db_lock:
             agents.record_hook(self.store.root, event, where, now)
-            if where == "mac" and event.get("hook_event_name") == "UserPromptSubmit":  # 她在 Mac 上跟 Claude 说话也算工作时间
+            # 她跟 Claude Code 说话算工作时间：Mac、手机上的云端会话都算（她 10-31）。服务器上的会话不算——那里几乎全是
+            # 小伴 系统自己在后台调 Claude（分邮件、写日记，第一句是“Mia：…”）和开发会话发给服务器会话的消息，不是她说的话
+            # （2026-11-01 她说“今天工作 9.6 小时算错了吧”，查出 19 格都是这样记上的）
+            if event.get("hook_event_name") == "UserPromptSubmit" and where != "server" \
+                    and not str(event.get("prompt") or "").startswith("Mia："):
                 worktime.record(self.store.db, [worktime.slot_of(now or datetime.now(timezone.utc))], "claude")
         return 200, {"ok": True}
 
@@ -408,7 +519,8 @@ def main():
     parser.add_argument("--port", type=int, default=8787)
     args = parser.parse_args()
     tokens = {"grok": os.environ.get("INBOX_TOKEN_GROK", ""), "cloud": os.environ.get("INBOX_TOKEN_CLOUD", ""),
-              "hook": os.environ.get("INBOX_TOKEN_HOOK", ""), "fancy": os.environ.get("INBOX_TOKEN_FANCY", "")}
+              "hook": os.environ.get("INBOX_TOKEN_HOOK", ""), "fancy": os.environ.get("INBOX_TOKEN_FANCY", ""),
+              "site": os.environ.get("INBOX_TOKEN_SITE", "")}
     inbox = Inbox(MemoryStore(args.data), tokens, grok=build_grok(log_dir=args.data),
                   notify=fancy_moderation.telegram_notifier(args.data))
     if not inbox.tokens.get("grok"):

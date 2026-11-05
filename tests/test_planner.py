@@ -268,7 +268,10 @@ class ICloudTest(unittest.TestCase):
         cal = ICloudCalendar("me@icloud.com", "abcd-efgh", opener=fake)
         busy = cal.busy(MONDAY)
         self.assertEqual(busy[0][:3], ("10:00", "11:30", "Marketing 课"))  # 11 月已是冬令时，UTC=伦敦
-        self.assertEqual(busy[0][3], {"location": "AB2 3EF London, 英格兰", "geo": (51.52, -0.11), "travel_min": 37})
+        info = dict(busy[0][3])
+        self.assertTrue(info.pop("href").startswith("https://"))  # 删她日历上的约要用（2026-11-02）
+        self.assertEqual(info.pop("calendar"), "工作")  # 查重时要知道是哪个日历（2026-11-04）
+        self.assertEqual(info, {"location": "AB2 3EF London, 英格兰", "geo": (51.52, -0.11), "travel_min": 37, "recurring": False})
         self.assertEqual(len([r for r in fake.requests if r[0] == "REPORT"]), 2)
 
     def test_sync_creates_calendar_once_with_apple_travel_time_and_alarm(self):
@@ -305,6 +308,23 @@ class ICloudTest(unittest.TestCase):
         summer = parse_events("BEGIN:VEVENT\nDTSTART;TZID=Europe/London:20260701T090000\n"
                               "DTEND;TZID=Europe/London:20260701T100000\nSUMMARY:x\nEND:VEVENT")
         self.assertEqual(summer[0][0].astimezone(timezone.utc).hour, 8)
+
+
+class LinkTasksDedupTest(unittest.TestCase):
+    def test_reworded_todo_links_to_existing(self):
+        """2026-10-30 她说一天冒出好几个“发学生证明邮件”：计划里换了说法的同一件事挂到已有待办上，不另建。"""
+        import tempfile
+        from pathlib import Path
+        from ethan.memory import MemoryStore
+        from ethan.planner import link_tasks
+        with tempfile.TemporaryDirectory() as d:
+            store = MemoryStore(Path(d))
+            old = store.db.add_task("给 VFS 发学生证明邮件")
+            items = [{"kind": "todo", "title": "发学生证明邮件给 VFS"}, {"kind": "todo", "title": "买牛奶"}]
+            link_tasks(store.db, items, date(2026, 10, 30))
+            self.assertEqual(items[0]["task_id"], old)
+            self.assertEqual(len(store.db.open_tasks()), 2)
+            store.close()
 
 
 if __name__ == "__main__":

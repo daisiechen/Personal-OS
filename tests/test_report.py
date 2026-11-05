@@ -58,10 +58,10 @@ class ReportTest(unittest.TestCase):
         self.assertEqual([g["title"] for g in facts["目标"]], ["跑出第一笔订单"])
         self.assertEqual(facts["目标"][0]["本周进展"], ["见了两个客户"])
         self.assertEqual(facts["学习"]["本周新增"][0]["content"], "お疲れ様")
-        self.assertEqual(facts["社交"], [{"name": "小美", "reasons": ["birthday_soon"]}])
+        self.assertEqual(facts["社交"]["生日和重要日子"], ["小美 10-28 生日"])  # 11-04 起从人物卡三张清单取（ethan/relations.py）
         self.assertEqual(facts["小伴答应还没做的"][0]["title"], "帮她整理个人主页素材")
         self.assertEqual(facts["待实现的心愿"], ["想要一个个人主页"])
-        self.assertEqual(len(facts["区域"]), 7)  # 七块领地都在，和战报同一套算法
+        self.assertEqual(len(facts["区域"]), 7)  # 七块领地都在，和回顾同一套算法
         self.assertIn("财务", facts["还没有数据来源的区域"])
         self.assertIn("英语陪练", facts)
         json.dumps(facts, ensure_ascii=False)

@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .clock import HOME_TZ, WEEKDAYS, her_now, home_now, stamp, utc_now
+from .clock import her_today
 
 PREFIX = "ethan-life"
 HER_THINGS = f"{PREFIX}/her-things"
@@ -88,7 +89,9 @@ def her_things(wiki) -> list:
 
 
 def _write_her_things(wiki, items: list):
-    old = (date.today() - timedelta(days=7)).isoformat()  # 过了一周的就不留了，页面不再越写越长（2026-10-29 自查）
+    # 过了一周的就不留了，页面不再越写越长（2026-10-29 自查）；按最新那件算起，不让刚记的被今天的日期删掉
+    newest = max([date.fromisoformat(i["date"]) for i in items] or [her_today()])
+    old = (min(her_today(), newest) - timedelta(days=7)).isoformat()
     items = [i for i in items if i["date"] >= old]
     lines = [f"- {i['date']}{' ' + i['time'] if i['time'] else ''} {i['what']}{ASKED if i['asked'] else ''}"
              for i in sorted(items, key=lambda i: (i["date"], i["time"] or ""))]
@@ -188,6 +191,12 @@ def chat_context(wiki, settings=None, now: datetime = None) -> str:
     day = _body(wiki, day_slug(home_day(now)))
     if day:
         parts += ["### 你今天的剧本（深圳时间，她看不到这个）", day]
+    fixed = _body(wiki, "ethan-life/self-corrections")
+    if fixed:  # 她纠正过的关于你自己的事（ethan/memusers.py 写的）
+        parts += ["### 她纠正过的关于你自己的事（以这里为准）", fixed[-1500:]]
+    past = past_days(wiki, home_day(now))
+    if past:  # 2026-10-31 她发现他忘了几天前的咖啡实验、说“这个月就一杯”：前几天过的日子也得记得
+        parts += ["### 你前几天过的日子（剧本要点和当天临时变化；说起自己最近的事以这里为准）", past]
     things = upcoming_her_things(wiki, her_now(settings, now).date())
     if things:
         parts += ["### 她最近要发生的事（你惦记着）",
@@ -215,6 +224,22 @@ def _writer_system(persona: str, guide: str) -> str:
         guide,
         "只输出要求的 Markdown 正文，不要寒暄，不要解释。",
     ]))
+
+
+def past_days(wiki, day: date, n: int = 6, head: int = 500) -> str:
+    """前 n 天：每天剧本开头一段，加上当天聊天里新冒出来的细节（今天临时变化）全文。"""
+    parts = []
+    for k in range(n, 0, -1):
+        d = day - timedelta(days=k)
+        body = _body(wiki, day_slug(d))
+        if not body:
+            continue
+        main, _, changes = body.partition(CHANGES_HEADING)
+        text = main.strip()[:head] + ("……" if len(main.strip()) > head else "")
+        if changes.strip():
+            text += "\n当天临时变化：" + changes.strip()[:600]
+        parts.append(f"#### {d.isoformat()}\n{text}")
+    return "\n\n".join(parts)
 
 
 def _recent_days(wiki, day: date, n: int = 3) -> str:
@@ -249,6 +274,17 @@ def ensure_plans(store, router, persona: str, settings=None, now: datetime = Non
     day = home_day(now)
     system = _writer_system(persona, load_guide())
     written = []
+    try:  # 她这天的知识点（ethan/lessons.py）：主动消息定时器每 10 分钟来一次，一天只挑一次
+        from . import lessons
+        her_day = her_now(settings, now).date()
+        lesson = lessons.today(store.db, her_day) or lessons.pick(store.db, router, her_day, _chat_digest(store.raw.recent(30), settings))
+        note = lessons.script_note(lesson)
+        slug = day_slug(day)  # 他今天的日子已经写好了（知识点挑得晚）：补进去（她 2026-11-01：“小伴 的今天里还是没写要教我什么”）
+        if note and wiki.exists(slug) and lesson["title"] not in _body(wiki, slug):
+            page = wiki.read(slug)
+            wiki.write(slug, page.get("title") or f"小伴 的一天 {day.isoformat()}", page["body"].rstrip() + "\n\n" + note)
+    except Exception as e:
+        print(f"[life] 知识点没挑成：{type(e).__name__} {str(e)[:120]}", flush=True)
     year_plan = _body(wiki, year_slug())
     if not year_plan:
         year_plan = _ask(router, system, (
@@ -299,6 +335,13 @@ def ensure_plans(store, router, persona: str, settings=None, now: datetime = Non
                                   or "（没有）") + "\n\n"
             f"## 你们最近的聊天\n{_chat_digest(store.raw.recent(30), settings) or '（还没有）'}\n\n"
             "剧本只写你自己的生活和对她的惦记，不编造她没说过的事，不安排见面、来伦敦、寄礼物。"))
+        try:  # 她这天的知识点已经挑好了（每晚整理那一轮挑的），写进他的日子里（ethan/lessons.py）
+            from . import lessons
+            note = lessons.script_note(lessons.today(store.db, her_now(settings, now).date()))
+            if note:
+                script = script.rstrip() + "\n\n" + note
+        except Exception:
+            pass
         wiki.write(slug, f"小伴 的一天 {day.isoformat()}", script)
         written.append(slug)
     return written

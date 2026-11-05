@@ -22,6 +22,7 @@ from . import english
 from .clock import her_tz
 from .domains import domain_lines
 from .memory import MemoryStore
+from .clock import her_today
 
 STATE_FILE = "vault-sync.json"
 BOARD = "看板"
@@ -218,7 +219,7 @@ def board_pages(store: MemoryStore, today: date) -> dict:
 def sync(store: MemoryStore, repo: Path, today: date = None, push: bool = False) -> dict:
     """返回 {"pulled_back": [...], "committed": bool}。"""
     repo = Path(repo)
-    today = today or date.today()
+    today = today or her_today()
     if push and _git(repo, "rev-parse", "--verify", "@{u}", check=False).returncode == 0:
         _git(repo, "pull", "--ff-only")  # 刚 clone 的空仓库还没有上游分支，跳过
     state_path = store.root / STATE_FILE

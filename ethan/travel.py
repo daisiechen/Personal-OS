@@ -44,7 +44,8 @@ class Travel:
         """返回 {"minutes": 路上分钟数（不含余量）, "route": 线路说明, "source": tfl/缓存/默认}。
         dest 是登记过的地点名，或 {"postcode": 邮编或"纬度,经度"}。"""
         known = places(self.settings)
-        a, b = known.get(origin), (dest if isinstance(dest, dict) else known.get(dest))
+        a = origin if isinstance(origin, dict) else known.get(origin)  # 起点也可以是上一站（路线串起来时，2026-11-02）
+        b = dest if isinstance(dest, dict) else known.get(dest)
         if not a or not b or not _code(a) or not _code(b):
             return {"minutes": DEFAULT_MIN, "route": "地点没有邮编，按 30 分钟估", "source": "默认"}
         key = f"{_code(a)}>{_code(b)}>{day.weekday()}>{arrive}"

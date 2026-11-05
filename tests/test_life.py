@@ -129,6 +129,18 @@ class LifeTest(Case):
         self.assertIsNone(life.due_her_thing(self.wiki, later))
 
 
+class PastDaysTest(Case):
+    def test_he_remembers_the_last_few_days(self):  # 2026-10-31：忘了几天前的咖啡实验
+        self.wiki.write("ethan-life/day-2026-10-27", "一天", "上午去三家店做咖啡实验，买了四杯。\n\n## 今天临时变化\n- 晚上和她说了实验结果")
+        self.wiki.write("ethan-life/day-2026-10-30", "一天", "加班。")
+        got = life.past_days(self.wiki, date(2026, 10, 31))
+        self.assertIn("咖啡实验", got)
+        self.assertIn("当天临时变化：- 晚上和她说了实验结果", got)
+        self.assertLess(got.index("2026-10-27"), got.index("2026-10-30"))
+        self.assertNotIn("2026-10-31", got)
+        self.assertEqual(life.past_days(self.wiki, date(2026, 11, 20)), "")
+
+
 class AgentTimeTest(Case):
     def test_prompt_has_time_and_today_script_but_hides_life_pages_from_index(self):
         self.wiki.write("about-mia", "关于", "在伦敦")

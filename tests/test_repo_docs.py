@@ -12,7 +12,7 @@ SECRET = re.compile(
 
 
 def markdown_files():
-    return [p for p in ROOT.rglob("*.md") if ".git" not in p.parts]
+    return [p for p in ROOT.rglob("*.md") if ".git" not in p.parts and ".claude" not in p.parts]  # .claude/worktrees 是服务器上别的会话的工作目录，不归本仓库管
 
 
 class RepoDocsTest(unittest.TestCase):

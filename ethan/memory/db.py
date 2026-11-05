@@ -4,9 +4,11 @@
   vision 80 岁画像 → long 画像的各个方面 → year 今年的目标 → stage 阶段目标 → tasks 表里的每日待办
 """
 
+import re
 import sqlite3
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from ..clock import her_today
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS goals (
@@ -32,7 +34,7 @@ CREATE TABLE IF NOT EXISTS progress_log (
     created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS tasks (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     goal_id INTEGER REFERENCES goals(id),
     title TEXT NOT NULL,
     due TEXT,
@@ -227,6 +229,16 @@ class StructuredDB:
     def __init__(self, path: Path):
         self.conn = sqlite3.connect(str(path), check_same_thread=False)  # 工作台多线程收请求，但一次只让一个线程用（见 workbench/server.py）
         self.conn.row_factory = sqlite3.Row
+        from .. import retire
+        retire.watch(self.conn, path)  # ontology-plan 3.4：记下还有哪些模块在读旧 facts（只在编译 SQL 时计数）
+        # 多个服务同时读写同一个库（Telegram、工作台、定时任务）：开 WAL，写的时候别人照样能读；撞上写锁等 10 秒再报错
+        # （2026-11-02 服务器日志出现过“database is locked”，docs/design/system-rules.md 第 5 节）
+        self.conn.execute("PRAGMA busy_timeout = 10000")
+        if str(path) != ":memory:":
+            try:
+                self.conn.execute("PRAGMA journal_mode = WAL")
+            except sqlite3.OperationalError:
+                pass
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self._migrate()
@@ -256,6 +268,7 @@ class StructuredDB:
             self.conn.executescript(f"BEGIN; {new} INSERT INTO goals_new SELECT * FROM goals; "
                                     "DROP TABLE goals; ALTER TABLE goals_new RENAME TO goals; COMMIT;")
             self.conn.execute("PRAGMA foreign_keys = ON")
+        self._tasks_autoincrement()
         for table in ("tasks", "wishes"):
             cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if "sort" not in cols:
@@ -264,7 +277,44 @@ class StructuredDB:
             self.conn.execute("ALTER TABLE tasks ADD COLUMN domain TEXT")
         if "sort" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(goals)")}:  # 2026-10-28 副本排序（她定先后）
             self.conn.execute("ALTER TABLE goals ADD COLUMN sort REAL")
+        if "handled_by" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(goals)")}:
+            # 项目类副本交给对应的 agent（2026-10-31 她定）：步骤不进她的待办和每日计划，副本还留在“世界”里
+            self.conn.execute("ALTER TABLE goals ADD COLUMN handled_by TEXT")
         self.conn.commit()
+
+    def _tasks_autoincrement(self):
+        """待办编号不再重用（2026-11-02 她点头修）：删掉的编号以前会被新待办拿去，翻旧记录对不上（#208 从“测体脂”变成“完成工作台改版”）。
+        旧库重建成 AUTOINCREMENT，从现在见过的最大编号往后数（计划、积分里记过的也算）。"""
+        sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone()[0]
+        if "AUTOINCREMENT" in sql.upper():
+            return
+        self.conn.commit()
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.execute("BEGIN IMMEDIATE")
+            sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone()[0]
+            if "AUTOINCREMENT" not in sql.upper():  # 别的进程可能刚改完
+                cols = ", ".join(f'"{r["name"]}"' for r in self.conn.execute("PRAGMA table_info(tasks)"))
+                new = re.sub(r"CREATE TABLE (IF NOT EXISTS )?\"?tasks\"?", "CREATE TABLE tasks_new", sql, count=1)
+                new = re.sub(r"\bid INTEGER PRIMARY KEY\b", "id INTEGER PRIMARY KEY AUTOINCREMENT", new, count=1)
+                self.conn.execute(new)
+                self.conn.execute(f"INSERT INTO tasks_new ({cols}) SELECT {cols} FROM tasks")
+                self.conn.execute("DROP TABLE tasks")
+                self.conn.execute("ALTER TABLE tasks_new RENAME TO tasks")
+                seen = [self.conn.execute("SELECT COALESCE(MAX(id), 0) FROM tasks").fetchone()[0]]
+                if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'plan_items'").fetchone():
+                    seen.append(self.conn.execute("SELECT COALESCE(MAX(task_id), 0) FROM plan_items").fetchone()[0])
+                if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'points'").fetchone():
+                    seen.append(self.conn.execute("SELECT COALESCE(MAX(CAST(SUBSTR(ref, 6) AS INTEGER)), 0) FROM points "
+                                                  "WHERE ref LIKE 'task:%'").fetchone()[0])
+                self.conn.execute("DELETE FROM sqlite_sequence WHERE name = 'tasks'")
+                self.conn.execute("INSERT INTO sqlite_sequence (name, seq) VALUES ('tasks', ?)", (max(int(x or 0) for x in seen),))
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self):
         self.conn.close()
@@ -326,8 +376,7 @@ class StructuredDB:
     def goal_chain(self) -> list:
         """没完成、没放弃的目标，按树的顺序排好，给 小伴 看整条链（带编号，记待办和进展时用）。"""
         rows = [dict(r) for r in self.conn.execute(
-            "SELECT id, parent_id, level, title, status, due, next_step, domain FROM goals "
-            "WHERE status NOT IN ('done', 'dropped') ORDER BY id")]
+            "SELECT * FROM goals WHERE status NOT IN ('done', 'dropped') ORDER BY id")]  # 带上 scope（管哪些事，2026-11-02）
         alive = {r["id"] for r in rows}
         children = {}
         for r in rows:
@@ -411,7 +460,9 @@ class StructuredDB:
             return None
         plan = dict(r)
         plan["items"] = [dict(i) for i in self.conn.execute(
-            "SELECT i.*, COALESCE((SELECT result FROM item_results WHERE item_id = i.id ORDER BY id DESC LIMIT 1), "
+            # 待办改过名字的，计划里跟着显示新名字（2026-11-01：冷启动改了名，今天的计划还是旧名字，看着像两条重复）
+            "SELECT i.*, COALESCE((SELECT title FROM tasks WHERE id = i.task_id), i.title) AS title, "
+            "COALESCE((SELECT result FROM item_results WHERE item_id = i.id ORDER BY id DESC LIMIT 1), "
             "CASE WHEN (SELECT done FROM tasks WHERE id = i.task_id) = 1 THEN '完成' END) AS result "
             "FROM plan_items i WHERE plan_id = ? ORDER BY kind = 'todo', start, priority = 'nice', id", (plan["id"],))]
         return plan
@@ -458,8 +509,8 @@ class StructuredDB:
             promised_by_ethan=int(promised_by_ethan), created_at=now(),
         )
 
-    def complete_task(self, task_id):
-        self.conn.execute("UPDATE tasks SET done = 1, done_at = ? WHERE id = ?", (now(), task_id))
+    def complete_task(self, task_id, at: str = None):
+        self.conn.execute("UPDATE tasks SET done = 1, done_at = ? WHERE id = ?", (at or now(), task_id))
         self.conn.commit()
 
     def open_tasks(self) -> list:
@@ -517,14 +568,14 @@ class StructuredDB:
 
     # 学习条目（间隔重复，简化版 SM-2）
     def add_learning_item(self, subject, content, note=None, today: date = None) -> int:
-        today = today or date.today()
+        today = today or her_today()
         return self._insert(
             "learning_items", subject=subject, content=content, note=note,
             next_review=(today + timedelta(days=1)).isoformat(), created_at=now(),
         )
 
     def review_learning_item(self, item_id, remembered: bool, today: date = None):
-        today = today or date.today()
+        today = today or her_today()
         row = self.conn.execute(
             "SELECT interval_days, ease FROM learning_items WHERE id = ?", (item_id,)
         ).fetchone()

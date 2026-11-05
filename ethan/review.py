@@ -1,6 +1,6 @@
-"""战报：领地地图的“战报”标签（设计见 docs/design/workbench.md 页面表；2026-10-28 做）。
+"""回顾：领地地图的“回顾”标签（设计见 docs/design/workbench.md 页面表；2026-10-28 做）。
 
-- 周战报：每周（周一到周日）每块领地的健康灯和各项数、积分、满勤天数、副本进度、小伴 周日写的周报。
+- 周回顾：每周（周一到周日）每块领地的健康灯和各项数、积分、满勤天数、副本进度、小伴 周日写的周报。
   本周按此刻实时算；一周过完后第一次打开就把那周存下来（war_weeks），以后不变，副本进度也停在那一刻。
 - 月度、赛季结算：把存下来的周汇总——每块领地几周绿 / 黄 / 红、积分合计、满勤天数。
 - 她可以给复盘写一句反馈，记给管理系统，计划器排计划时用。
@@ -113,6 +113,6 @@ def page(db, root: Path, today: date, season: dict, bosses=None) -> dict:
         months.setdefault(w["week"][:7], []).append(w)
     done = [w for w in ws if not w["live"]]
     return {"weeks": ws, "months": [{"month": m, **rollup(v)} for m, v in sorted(months.items(), reverse=True)],
-            # 灯只数过完的周；积分和满勤把本周也算上（2026-10-29 她看到战报积分 0、首页 110 对不上）
+            # 灯只数过完的周；积分和满勤把本周也算上（2026-10-29 她看到回顾积分 0、首页 110 对不上）
             "season": {**season, **rollup(done), "points": sum(w["points"] for w in ws),
                        "full_days": sum(w["full_days"] for w in ws), "days_left": max(0, (date.fromisoformat(season["end"]) - today).days)}}

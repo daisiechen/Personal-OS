@@ -176,7 +176,8 @@ class CloudTest(unittest.TestCase):
         self.assertIn("Dishoom", page)
 
     def test_client_end_to_end_over_http(self):
-        self.report(f"{CLOUD_MARK}\n查到了")
+        # 走真的 HTTP，服务端按真实时间取最近 7 天：回报也要按真实时间记（2026-11-02 19:00 起固定的 NOW 掉出了窗口）
+        self.report(f"{CLOUD_MARK}\n查到了", datetime.now(timezone.utc))
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.inbox))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({})).open  # 本机测试不走代理

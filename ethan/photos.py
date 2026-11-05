@@ -13,21 +13,53 @@ import base64
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 
+SEEN = "photos_seen.jsonl"  # 发出去的照片实际画什么（看图模型写的），给 小伴 自己记着
+DESCRIBE = ("这是你刚拍给女朋友的一张照片。用一两句中文客观写出画面里实际有什么：在哪（室内、阳台、街上……）、"
+            "有哪些东西（数清楚，比如两个白纸杯）、天气光线。只写看得见的，不猜，不抒情。")
 PHOTO = re.compile(r"\[照片( 她要的)? ([^\]\n]+)\]")
 WEB_IMAGE = re.compile(r"\[发图 (https?://[^\s\]]+)\]")
 SELF_PER_DAY = 3
 STATE = "photos.json"
 STYLE = ("真实的手机照片，但拍照的人有审美、有心思：像一个温柔、有点会撩的男朋友，随手拍给女朋友的生活碎片。"
          "光线有氛围（逆光、窗边自然光、暖色台灯、夜里的灯影倒影），浅景深，构图有留白和故事感，色调柔和偏暖，略带胶片感。"
-         "画面里藏一个让人想追问的小细节，比如多出来的第二个杯子、一件明显属于女生的小东西、一张没写字的便签、为两个人准备的痕迹。"
+         "只画下面描述里写到的东西，不要自己添加描述里没有的物件（多出来的杯子、便签、别人的东西都不要），场景（室内、阳台、街上）严格按描述。"
          "画面里不出现任何人脸（可以有手、手臂、肩膀、背影或剪影），手干净好看。不要任何文字、水印和边框。画面内容：")
 GEMINI_MODEL = "gemini-2.5-flash-image"
 OPENROUTER_MODEL = "x-ai/grok-imagine-image-2.0"
 EST_COST = 0.04  # 每张大约多少美元，记账用（Grok Imagine 和 Gemini 都约 0.04）
+
+
+def describe(router, path: str) -> str:
+    """看一眼生成出来的照片，写下实际画面（2026-10-31：照片里多了个杯子，他自己不知道，被她问住就乱编）。"""
+    return router.complete(DESCRIBE, [{"role": "user", "content": "照片在附件里。"}], purpose="photo-describe",
+                           images=[str(path)]).text.strip()[:300]
+
+
+def remember(root: Path, asked_for: str, seen: str, at: datetime = None):
+    at = at or datetime.now().astimezone()
+    with (Path(root) / SEEN).open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": at.isoformat(timespec="seconds"), "asked_for": asked_for, "seen": seen}, ensure_ascii=False) + "\n")
+
+
+def recent_seen(root: Path, days: int = 3, now: datetime = None) -> list:
+    path = Path(root) / SEEN
+    if not path.exists():
+        return []
+    now = now or datetime.now().astimezone()
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines()[-50:]:
+        try:
+            r = json.loads(line)
+            if (now - datetime.fromisoformat(r["at"])).total_seconds() <= days * 86400:
+                out.append(r)
+        except (ValueError, KeyError, TypeError):
+            continue
+    return out[-10:]
 
 
 def parse(text: str) -> dict:
@@ -75,8 +107,15 @@ class OpenRouter:
         body = {"model": self.model, "modalities": ["image"], "messages": [{"role": "user", "content": content}]}
         req = urllib.request.Request("https://openrouter.ai/api/v1/chat/completions", data=json.dumps(body).encode(),
                                      headers={"Authorization": f"Bearer {self.key}", "Content-Type": "application/json"})
-        with self.opener(req, timeout=120) as resp:
-            data = json.loads(resp.read())
+        try:
+            with self.opener(req, timeout=120) as resp:
+                data = json.loads(resp.read())
+        except urllib.error.HTTPError as e:  # 带上接口说的原因（2026-10-31：今日卡连着两天只记下“400 Bad Request”，查不出为什么）
+            try:
+                why = e.read().decode("utf-8", "replace")[:300]
+            except Exception:
+                why = ""
+            raise RuntimeError(f"HTTP {e.code} {why}") from e
         url = data["choices"][0]["message"]["images"][0]["image_url"]["url"]
         return base64.b64decode(url.split(",", 1)[1])
 
@@ -95,6 +134,7 @@ class Photographer:
         """wanted：[(她要的?, 描述)]。返回 (照片文件路径, 要告诉她的系统提醒)。"""
         state = self._state()
         used = state.get(day.isoformat(), 0)
+        self.last_taken = []  # [(文件, 他写的描述)]，给 小伴 看图记实际画面用
         files, notes = [], []
         for asked, desc in wanted:
             if not asked and used >= SELF_PER_DAY:
@@ -115,6 +155,7 @@ class Photographer:
             path = folder / f"{datetime.now():%Y%m%d-%H%M%S}-{len(files)}.png"
             path.write_bytes(data)
             files.append(str(path))
+            self.last_taken.append((str(path), desc))
             if self.ledger is not None:
                 self.ledger.record(maker.name, maker.model, EST_COST, purpose="photo")
             if not asked:

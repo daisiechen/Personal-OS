@@ -130,8 +130,21 @@ class SubscriptionBackendTest(unittest.TestCase):
         self.assertEqual(reply.text, "早呀")
         cmd, kwargs = calls[0]
         self.assertNotIn("ANTHROPIC_API_KEY", kwargs["env"])
-        self.assertIn("--system-prompt", cmd)
+        self.assertIn("--system-prompt-file", cmd)  # 11-04：提示词太长放命令行会“Argument list too long”
+        self.assertNotIn("人设", cmd)
         self.assertTrue(kwargs["input"].endswith("Mia：早\n小伴："))
+
+    def test_huge_system_prompt_goes_through_a_file(self):
+        seen = {}
+
+        def run(cmd, **kwargs):
+            path = cmd[cmd.index("--system-prompt-file") + 1]
+            with open(path, encoding="utf-8") as f:
+                seen["len"] = len(f.read())
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"subtype": "success", "is_error": False, "result": "好"}), "")
+        big = "记忆" * 200_000  # 远超单个命令行参数 128KB 的上限
+        self.assertEqual(SubscriptionBackend(runner=run).complete(big, [{"role": "user", "content": "早"}]).text, "好")
+        self.assertEqual(seen["len"], len(big))
 
     def test_images_only_allow_reading_their_folder(self):
         run, calls = self.fake_run(payload={"subtype": "success", "is_error": False, "result": "好看"})

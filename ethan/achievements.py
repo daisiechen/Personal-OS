@@ -70,6 +70,13 @@ def _explore(root: Path) -> dict:
         return {}
 
 
+DOMAIN = {"first_weigh": "body", "train": "body", "bodyfat": "body", "hidden:sleep_week": "body", "hidden:train_week": "body",
+          "hidden:protein_week": "body", "hidden:stretch_week": "body",
+          "first_xhs": "career", "site_live": "career", "xhs_weeks": "career", "fans": "career", "book": "career",
+          "friends": "social", "first_english": "study", "english_weeks": "study", "phrases": "study", "first_prof": "academic",
+          "first_dance": "life", "outing": "life", "experiences": "life", "countries": "life", "hikes": "life", "song": "life"}
+
+
 def _tiered(key, name, cat, value, steps, unit, source=True, hint=""):
     got = sum(1 for s in steps if value is not None and value >= s)
     nxt = steps[got] if got < len(steps) else None
@@ -130,7 +137,7 @@ def compute(db, root: Path, day: date) -> dict:
     best = max(quests.streak(db, day)["best"], quests.streak_best_recorded(db))
     sheets = _explore(root)
     ex = territory.explore_stats(root)
-    hikes = next((v for k, v in sheets.items() if "徒步" in k), [])
+    hikes = next((v for k, v in sheets.items() if "徒步" in k or k == "城市"), [])  # 11-01 新表里这张叫“城市”
     fat = db.conn.execute("SELECT MIN(bodyfat) FROM body_measures WHERE bodyfat IS NOT NULL").fetchone()[0]
     people = lifelog.new_friends(db)  # 只算新认识的（家人和老朋友不算，2026-10-28）
     phrases = db.conn.execute("SELECT COUNT(*) FROM learning_items WHERE subject LIKE '%英语%' OR subject LIKE '%English%'").fetchone()[0]
@@ -163,13 +170,14 @@ def compute(db, root: Path, day: date) -> dict:
               _tiered("countries", "探索地图点亮国家", "领域", ex.get("countries"), (20, 25, 30), "个", source=bool(ex)),
               _tiered("hikes", "城市徒步", "领域", sum(1 for r in hikes if r.get("状态") == "已结束") if hikes else None,
                       (10, 25, 47), "条", source=bool(hikes)),
-              _tiered("green", "某个区域连续全绿", "领域", review.green_streak(db), (4, 12, 26), "周", hint="按战报里过完的周算")]
+              _tiered("green", "某个区域连续全绿", "领域", review.green_streak(db), (4, 12, 26), "周", hint="按回顾里过完的周算")]
     # 作品
     items += [_tiered("book", "出一本书", "作品", lifelog.best_stage(db, "book") or 0, (1, 2, 3), "", hint="初稿 / 签约或自出版 / 正式出版，告诉 小伴"),
               _tiered("song", "写一首歌", "作品", lifelog.best_stage(db, "song") or 0, (1, 2, 3), "", hint="写完第一首 / 发布 / 播放过万，告诉 小伴"),
               _tiered("fans", "自媒体粉丝", "作品", None, (1000, 10000, 100000), "", source=False, hint="小红书和 Instagram 合计，等接账号")]
     # 人生 Goal（探索地图）
-    for g in sheets.get("Goal", []):
+    goal_rows = sheets.get("Goal") or [{"Goal": r.get("成就内容"), "状态": r.get("状态")} for r in sheets.get("成就", []) if r.get("成就") == "人生体验"]
+    for g in goal_rows:
         name = g.get("Goal") or ""
         if name and "56 个民族" not in name:  # 她删掉了这条
             items.append(_once("goal:" + name, name, "人生 Goal", g.get("状态") == "已结束", hint=g.get("状态") or ""))
@@ -188,6 +196,8 @@ def compute(db, root: Path, day: date) -> dict:
             it["name"], it["desc"] = NAMES[it["key"]]
         elif it["cat"] == "人生 Goal":
             it["desc"] = "探索地图里的人生 Goal"
+    for it in items:  # 按七块领域分组（她 2026-11-02 通过的成就页样稿）；不属于哪块的（满勤、全绿、休整这类）归“不分领域”
+        it["domain"] = "life" if it["key"].startswith("goal:") else DOMAIN.get(it["key"])
     legend = [{"name": n, "desc": d, "cat": "终极"} for n, d in LEGEND]
     for it in items:  # 快达成的排前面：有进度、离下一档最近的
         it["near"] = it.get("frac", 0) if it.get("steps") and it.get("next") and it.get("source") else -1
@@ -233,12 +243,19 @@ def celebrate(db, root: Path, day: date) -> list:
     if out:
         new_plays = [p for p in surprises.for_ethan(db) if p["new"]]
         out[-1]["gift"] = len(new_plays)  # 同时解锁了几个惊喜（不说是什么）
-    # 商店里攒够了能拆的，弹一次（2026-10-29 她说小惊喜能拆了系统没提示）；拆过以后再攒够还会再弹
+    # 商店里攒够了能拆的，弹一次（2026-10-29 她说小惊喜能拆了系统没提示）。积分掉到不够（拆了、撤销了）就重新算，
+    # 下次攒够再弹（2026-11-01：退回 1800 分后又够了却没提醒——旧写法按兑换次数记，退回把次数也退回去了）
     bal = quests.totals(db)["balance"]
     for r in quests.rewards(db):
-        if bal >= r["cost"]:
-            n = db.conn.execute("SELECT COUNT(*) FROM redemptions WHERE reward_id = ?", (r["id"],)).fetchone()[0]
-            key = f"shop:{r['id']}:{n}"
+        key = f"shop:{r['id']}"
+        seen = db.conn.execute("SELECT at FROM ach_seen WHERE key = ?", (key,)).fetchone()
+        redeemed_since = seen and db.conn.execute("SELECT 1 FROM redemptions WHERE reward_id = ? AND at >= ?",
+                                                  (r["id"], seen["at"])).fetchone()
+        if bal < r["cost"] or redeemed_since:  # 不够了或拆过了：重新算，下次攒够再弹
+            db.conn.execute("DELETE FROM ach_seen WHERE key = ?", (key,))
+        if bal < r["cost"]:
+            pass
+        else:
             if not db.conn.execute("SELECT 1 FROM ach_seen WHERE key = ? AND shown = 1", (key,)).fetchone():
                 db.conn.execute("INSERT OR IGNORE INTO ach_seen (key, tier, at, shown) VALUES (?, '达成', ?, 0)", (key, now))
                 out.append({"key": key, "name": f"能拆「{r['title']}」了", "cat": "商店", "tier": "达成", "shop": True, "reward": r["id"]})

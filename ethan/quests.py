@@ -16,6 +16,7 @@
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
+from .clock import her_today
 
 SIZE_POINTS = {"S": 40, "M": 100, "L": 200}
 MILESTONE_BONUS = 300
@@ -41,9 +42,9 @@ DEFAULT_HABITS = [
 # 档位和积分她已确认；具体惊喜由 小伴 每次自己策划（下面只是方向，不是固定菜单）
 SURPRISE_NOTE = "小伴 自己策划，兑换后才揭晓"
 DEFAULT_REWARDS = [
-    ("小", 300, "小惊喜", SURPRISE_NOTE),
-    ("中", 800, "中惊喜", SURPRISE_NOTE),
-    ("大", 2000, "大惊喜", SURPRISE_NOTE),
+    ("小", 2500, "小惊喜", SURPRISE_NOTE),  # 2026-10-31 她定：小的约一周一个、中的约一个月、大的约一个季度
+    ("中", 10000, "中惊喜", SURPRISE_NOTE),
+    ("大", 30000, "大惊喜", SURPRISE_NOTE),
 ]
 TITLES = ["新手冒险家", "起步的人", "自律见习生", "目标猎人", "节奏掌控者", "计划炼金师", "长期主义者",
           "人生建筑师", "传奇玩家", "80 岁的自己在招手"]
@@ -77,6 +78,8 @@ def _awarded(db, ref: str) -> bool:
 
 # 主线 / 支线
 def task_points(task: dict) -> int:
+    if task.get("source_type") == "email":  # 邮件里自动生成的检查、确认类杂事不计分（2026-10-31 她定：系统替她记的，不算进展）
+        return 0
     if task.get("quest") == "main":
         pts = SIZE_POINTS.get(task.get("size") or "M", 100) + (MILESTONE_BONUS if task.get("milestone") else 0)
     else:
@@ -129,6 +132,8 @@ def task_progress(db, task: dict, day: date):
 def uncomplete_task(db, task_id: int) -> int:
     """撤销完成：改回没做，收回这件给的分；返回收回了多少。"""
     db.conn.execute("UPDATE tasks SET done = 0, done_at = NULL WHERE id = ?", (task_id,))
+    from . import transitions
+    transitions.record(db, "todo", task_id, "done", "open", {"points": [f"task:{task_id}"]})
     return _take_back(db, f"task:{task_id}")
 
 
@@ -147,7 +152,11 @@ def complete_task(db, task_id: int, day: date) -> int:
         return 0
     task = dict(row)
     if not task["done"]:
-        db.complete_task(task_id)
+        from .clock import her_today
+        # 完成时间记在“做的那天”：不是今天的（补记、测试回放）就记那天，不用服务器此刻的时间（11-04 测试按真实日期出错）
+        db.complete_task(task_id, None if day == her_today() else f"{day.isoformat()}T12:00:00+00:00")
+        from . import transitions
+        transitions.record(db, "todo", task_id, "open", "done", {"points": [f"task:{task_id}"]})
     if task["promised_by_ethan"] or _awarded(db, f"task:{task_id}"):
         return 0
     pts = task_points(task)
@@ -176,21 +185,33 @@ def approve_breakdown(db, goal_id: int) -> int:
     return cur.rowcount
 
 
-def main_quests(db) -> dict:
-    """{目标编号: [主线任务…]}，副本按她排的顺序，步骤按 seq，含已完成的（显示进度用）。
+def main_quests(db, with_agent_goals: bool = False) -> dict:
+    """with_agent_goals：交给 agent 的副本（DemoApp、个人品牌这类）也算上，工作台看副本详情用；计划器不排它们。
+    {目标编号: [主线任务…]}，副本按她排的顺序，步骤按 seq，含已完成的（显示进度用）。
     只算进行中的副本：暂停、放弃的不出现（2026-10-29 她说暂停的写出来引人疑惑，候选放 docs/design/boss-pool.md）。"""
+    from . import stages
+    stages.ensure(db)
+    now_ms = {r[0] for r in db.conn.execute("SELECT MIN(id) FROM milestones m WHERE status = 'open' AND seq = "
+                                            "(SELECT MIN(seq) FROM milestones x WHERE x.goal_id = m.goal_id AND x.status = 'open') GROUP BY goal_id")}
     out = {}
     for r in db.conn.execute("SELECT t.* FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.quest = 'main' "
-                             "AND COALESCE(g.status, 'active') = 'active' "
+                             "AND COALESCE(g.status, 'active') = 'active' " + ("" if with_agent_goals else "AND g.handled_by IS NULL ") +
                              "ORDER BY g.sort IS NULL, g.sort, t.goal_id, t.seq, t.id"):
-        out.setdefault(r["goal_id"], []).append(dict(r))
+        d = dict(r)
+        if d.get("milestone_id") and d["milestone_id"] not in now_ms:  # 新结构：只看当前里程碑的阶段任务
+            continue
+        if d.get("habit_id") and not with_agent_goals:  # 引用日常周常的步骤在那边打卡，计划和今天的任务里不再重复出现（她 2026-11-01）
+            continue
+        out.setdefault(r["goal_id"], []).append(d)
     return out
 
 
 def side_quests(db) -> list:
+    """赛季副本之外的事。暂停副本下的不列；截止日还在 30 天以后的先不列，到时候再出来（她 2026-11-01：约年度体检是明年的事）。"""
     return [dict(r) for r in db.conn.execute(
         "SELECT t.* FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
-        "AND COALESCE(t.quest, 'side') != 'main' AND COALESCE(g.status, 'active') != 'dropped' "
+        "AND COALESCE(t.quest, 'side') != 'main' AND COALESCE(g.status, 'active') NOT IN ('dropped', 'paused') "
+        "AND (t.due IS NULL OR t.due <= date('now', '+30 day')) "
         "ORDER BY t.sort IS NULL, t.sort, t.due IS NULL, t.due, t.id")]
 
 
@@ -242,6 +263,12 @@ def rest_days_left(db, day: date) -> int:
     used = db.conn.execute("SELECT COUNT(*) FROM rest_days WHERE day >= ? AND day <= ?",
                            (_week_start(day).isoformat(), (_week_start(day) + timedelta(days=6)).isoformat())).fetchone()[0]
     return max(0, REST_DAYS_PER_WEEK - used)
+
+
+def cancel_rest_day(db, day: date) -> bool:
+    n = db.conn.execute("DELETE FROM rest_days WHERE day = ?", (day.isoformat(),)).rowcount
+    db.conn.commit()
+    return n > 0
 
 
 def take_rest_day(db, day: date):
@@ -364,12 +391,40 @@ def drop_habit(db, title: str) -> bool:
 def totals(db) -> dict:
     earned = db.conn.execute("SELECT COALESCE(SUM(delta), 0) FROM points WHERE delta > 0").fetchone()[0]
     spent = db.conn.execute("SELECT COALESCE(SUM(cost), 0) FROM redemptions").fetchone()[0]
-    level, need = 1, 100
-    while earned >= need:  # 不封顶（2026-10-27 评审）：每级所需逐级增加，前 10 级和以前一样
-        level += 1
-        need = 50 * level * (level + 1)
+    level, need = level_for(earned, cutover(db))
     return {"earned": earned, "balance": earned - spent, "level": level, "title": TITLES[min(level, len(TITLES)) - 1],
             "next_level_at": need}
+
+
+# 升级规则（2026-10-31 她定：“级别越高升级越慢”）：从 L 级升到 L+1 级要 L × 500 分；
+# 她已经到了的 Lv.5 不降：切换那一刻的累计分和等级记在 game_meta（migrations/20261031_game_pace.py），之后按新规则往上走
+LEVEL_STEP = 500
+META = "CREATE TABLE IF NOT EXISTS game_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+
+
+def cutover(db):
+    db.conn.execute(META)
+    r = db.conn.execute("SELECT value FROM game_meta WHERE key = 'level_cutover'").fetchone()
+    return json.loads(r["value"]) if r else None
+
+
+def _old_level(earned: int) -> tuple:
+    level, need = 1, 100
+    while earned >= need:
+        level += 1
+        need = 50 * level * (level + 1)
+    return level, need
+
+
+def level_for(earned: int, cut: dict = None) -> tuple:
+    """(等级, 到下一级要的累计分)。"""
+    if cut and earned < cut["earned"]:  # 切换之前的历史，按老规则算
+        return _old_level(earned)
+    level, start = (cut["level"], cut["earned"]) if cut else (1, 0)
+    while earned >= start + LEVEL_STEP * level:
+        start += LEVEL_STEP * level
+        level += 1
+    return level, start + LEVEL_STEP * level
 
 
 # 商店里每档下面那句话：隐晦地描一描这档惊喜，按天换一句（2026-10-29 她嫌“小伴 自己策划…”那句没意思）
@@ -381,7 +436,7 @@ TEASERS = {
 
 
 def rewards(db, day: date = None) -> list:
-    n = (day or date.today()).toordinal()
+    n = (day or her_today()).toordinal()
     out = []
     for r in db.conn.execute("SELECT * FROM rewards WHERE active = 1 ORDER BY cost, id"):
         r = dict(r)

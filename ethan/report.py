@@ -1,6 +1,6 @@
 """总览和周报：她说“看看总览”时当场汇报，每周日晚上主动发一次周报。
 
-汇报按七块领地走（2026-10-28 接上领地和战报，见 docs/design/territories.md）：每块的健康灯和各项数（和战报同一套算法）、
+汇报按七块领地走（2026-10-28 接上领地和回顾，见 docs/design/territories.md）：每块的健康灯和各项数（和回顾同一套算法）、
 副本进度、本周积分和满勤，再加这周新收藏串成的“这周你在关注什么”（docs/design/saved-feed.md）、答应她的事和心愿。
 事实从记忆库取，由 小伴 用自己的口吻写；还没有数据来源的领地如实说，不编数字。
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from . import brain, english, focus, progress, review
 from .core.agent import Ethan, build_system_prompt
 from .memory import MemoryStore
+from .clock import her_today
 
 OVERVIEW_WORDS = ("看看总览", "总览", "/overview")
 MAX_TELEGRAM = 4000
@@ -81,14 +82,87 @@ def collect_facts(store: MemoryStore, today: date) -> dict:
             "本周新增": rows("SELECT subject, content FROM learning_items WHERE created_at >= ? ORDER BY id", since),
             "今天待复习条数": len(db.due_learning_items(today, limit=1000)),
         },
-        "社交": db.people_to_contact(today),
+        "社交": _relations_line(db, today),
         "小伴答应还没做的": rows("SELECT title, due FROM tasks WHERE done = 0 AND promised_by_ethan = 1 "
                               "ORDER BY due IS NULL, due, id"),
-        "本周完成的待办": rows("SELECT title FROM tasks WHERE done = 1 AND done_at >= ? ORDER BY done_at", since),
+        **_question_lines(db, today, since),
         "待实现的心愿": [w["quote"] for w in db.open_wishes()],
         "本周实现的心愿": rows("SELECT quote FROM wishes WHERE status = 'done' AND done_at >= ?", since),
         "还没有数据来源的区域": [t["区域"] for t in territories if t["灯"] == "没数据"],
+        "记忆对齐": _memory_line(db, today),
+        "说到做到（你没做就说做了的次数，开发会话据此给你加能力、改规矩）": _deeds_line(db, today),
+        "工作和生活（工作时长、工作狂指数、事业和学术的产出和效率，和上周比；她要时长往下、产出稳住、效率往上）": _work_line(db, today),
+        "这周教了她什么（小伴 主动教的知识点和复习结果，ethan/lessons.py）": _lessons_line(db, today),
     }
+
+
+def _question_lines(db, today, since):
+    """每周复盘要回答的能力题（ethan/memusers.py 登记的 review：第 6、7、26 题），走 onto_query 的函数，不自己拼查询（ontology-plan 3.1）。"""
+    from . import onto_query
+    out = {}
+    try:
+        week = onto_query.week_plan(db, "review", today)
+        w = (week["items"] or [{}])[0]
+        out["本周完成的待办"] = [{"title": t["title"]} for t in w.get("done_tasks", [])]
+        out["这周计划了没完成的（原因只写记下的，没有就是原因未知）"] = [
+            {"哪天": p["day"], "事": p["title"], "结果": p["result"], "原因": p["reason"]} for p in w.get("not_done", [])][:20]
+    except Exception:
+        out["本周完成的待办"] = [dict(r) for r in db.conn.execute("SELECT title FROM tasks WHERE done = 1 AND done_at >= ? ORDER BY done_at", (since,))]
+    try:
+        g = (onto_query.record_gaps(db, "review", today)["items"] or [{}])[0]
+        out["这周没有记录的"] = {"哪天一条都没有": g.get("days_without_any", []),
+                           "断档的来源": [s["name"] for s in g.get("stale_sources", []) if s["state"] == "stale"]}
+    except Exception:
+        pass
+    try:
+        sp = onto_query.weekly_spend(db, "review", today)
+        if sp["items"] and sp["status"] == "answer":
+            w = sp["items"][0]["this_week"]
+            out["这周开销"] = {"折人民币": w["cny"], "各币种": w["by_currency"], "最大几笔": sp["items"][0].get("top", []), "说明": sp["note"]}
+    except Exception:
+        pass
+    return out
+
+
+def _relations_line(db, today):
+    """这周该联系谁、生日和重要日子、对方问了她还没回的（ethan/relations.py，她 11-04 认可）。"""
+    try:
+        from . import relations
+        return relations.week_line(db, today)
+    except Exception:
+        return {}
+
+
+def _lessons_line(db, today):
+    try:
+        from . import lessons
+        return lessons.week(db, today - timedelta(days=6), today)
+    except Exception:
+        return {}
+
+
+def _work_line(db, today):
+    try:
+        from . import workaholic
+        c = workaholic.compare(db, today)
+        pick = lambda w: {"工作小时": w["hours"], "工作狂指数": w["index"], "晚上9点后小时": w["late"], "周末小时": w["weekend"],
+                          "事业和学术经验": w["output"]["points"], "验收通过的交付": w["output"]["accepted"], "效率": w["efficiency"]}
+        return {"这周": pick(c["this"]), "上周": pick(c["last"])}
+    except Exception:
+        return {}
+
+
+def _deeds_line(db, today):
+    from . import deeds
+    return deeds.summary(db, today)
+
+
+def _memory_line(db, today):
+    try:
+        from . import memeval
+        return memeval.weekly_summary(db, today)
+    except Exception:
+        return {}
 
 
 def report_prompt(persona: str, store: MemoryStore, today: date, weekly: bool) -> str:
@@ -99,9 +173,10 @@ def report_prompt(persona: str, store: MemoryStore, today: date, weekly: bool) -
         f"## 这次要写{kind}",
         "按这个顺序，每项一两句，用你自己的口吻，像发给她的一条长消息：\n"
         "1. 这周总的：经验、满勤几天、副本推到哪  2. 七个区域挨个过：绿的夸一句，黄的红的说清哪项差了多少、下周怎么补"
-        "（健康看训练、蛋白质、睡眠、体重趋势；学习看英语陪练）  3. 社交：该联系谁、谁快过生日  "
+        "（健康看训练、蛋白质、睡眠、体重趋势；学习看英语陪练）  3. 社交：这周该联系谁（带一句能聊的）、谁快过生日、谁问了她还没回  "
         "4. 这周你在关注什么：把“这周新收藏”串成一段，挑一两条建议下周用上（没有就跳过）  "
-        "5. 你答应她还没做的事、心愿清单里待实现的",
+        "5. 你答应她还没做的事、心愿清单里待实现的"
+        + ("  6. 最后一行写记忆：这周对齐率、被她纠正几次（复发几次）、检验题通过率比上周升还是降，一句话，没有数就略过（2026-10-31 她定）" if weekly else ""),
         "只用下面的事实，没有的不要编。“还没有数据来源的区域”合成一句带过。"
         + ("最后用一两句说说这周你看到的她，给下周一个小期待。然后提 3 件下周重点（从黄的红的区域、副本下一步和她最近着急的事里挑，"
            "每件一句、具体到能排进日程），问她行不行，并在消息最末尾加 [下周重点 第一件 | 第二件 | 第三件]（2026-10-29 她定）。" if weekly else ""),
@@ -114,7 +189,7 @@ def report_prompt(persona: str, store: MemoryStore, today: date, weekly: bool) -
 def write_report(ethan: Ethan, channel: str, today: date = None, weekly: bool = False,
                  asked: str = None) -> str:
     """生成总览或周报并记入原始对话。asked 为她的原话（总览时）。"""
-    today = today or date.today()
+    today = today or her_today()
     if asked:
         ethan.store.raw.append(channel, "mia", asked)
     system = report_prompt(ethan.persona, ethan.store, today, weekly)
@@ -144,6 +219,17 @@ def main():
         chat_id = ethan.router.settings.get("telegram_owner_chat_id")
         if chat_id is None:
             print("还没绑定 Telegram，跳过")
+            return
+        if args.weekly:  # 赛季页顶上的一句结论、每块领域的原因、下季建议：每周日写一次（她 2026-11-02 选了赛季页样稿 B）
+            try:
+                from . import season
+                from .clock import her_now
+                s, start = season.current(ethan.router.settings)
+                season.write_note(store.db, ethan.router, s, start, her_now(ethan.router.settings).date())
+            except Exception as e:
+                print(f"赛季总结没写成：{type(e).__name__} {str(e)[:120]}")
+        if args.weekly:  # 周报并进周日 21:00 的复盘（ethan/weekreview.py，她 2026-11-02：“可以”），这里只写赛季页那句结论
+            print("周报并进 21:00 的复盘，不单独发")
             return
         text = write_report(ethan, "telegram", weekly=args.weekly)
         TelegramAPI(os.environ["TELEGRAM_BOT_TOKEN"]).call("sendMessage", chat_id=chat_id, text=text)

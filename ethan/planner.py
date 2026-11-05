@@ -21,8 +21,63 @@ from . import brain, domains, focus, meals, quests, training
 from .clock import her_now
 from .progress import year_progress
 from .travel import BUFFER_MIN, DEFAULT_MIN, depart_at, places, where
+from .clock import her_today
 
 REMIND_BEFORE_DEPART = 60  # 出发前多久提醒
+OVERRIDES = """CREATE TABLE IF NOT EXISTS plan_overrides (day TEXT NOT NULL, title TEXT NOT NULL, action TEXT NOT NULL,
+    start TEXT, end TEXT, place TEXT, at TEXT, PRIMARY KEY (day, title))"""
+
+
+def _hm2m(t: str) -> int:
+    h, m = map(int, t.split(":"))
+    return h * 60 + m
+
+
+def _m2hm(n: int) -> str:
+    n = max(0, min(n, 23 * 60 + 59))
+    return f"{n // 60:02d}:{n % 60:02d}"
+
+
+def note_override(db, day: date, title: str, action: str, start: str = None, end: str = None, place: str = None):
+    """记下她手动改的日程：time（改时间）/ delete（删掉）/ add（自己加的）。同一天同一条以最后一次为准。"""
+    db.conn.execute(OVERRIDES)
+    db.conn.execute("INSERT OR REPLACE INTO plan_overrides (day, title, action, start, end, place, at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
+                    (day.isoformat(), title, action, start, end, place))
+    db.conn.commit()
+
+
+def shift_trip(item: dict, start: str):
+    """日程挪了时间：出发、提醒、到家跟着挪。"""
+    delta = _hm2m(start) - _hm2m(item["start"])
+    item["start"] = start
+    for k in ("end", "leave", "back", "remind"):
+        if item.get(k):
+            item[k] = _m2hm(_hm2m(item[k]) + delta)
+    return item
+
+
+def apply_overrides(db, day: date, items: list) -> list:
+    """重排时保留她手动改的：改过时间的照她的时间（出发、到家跟着挪），删掉的不再排，她自己加的留着。"""
+    db.conn.execute(OVERRIDES)
+    rows = {r["title"]: dict(r) for r in db.conn.execute("SELECT * FROM plan_overrides WHERE day = ?", (day.isoformat(),))}
+    if not rows:
+        return items
+    out = []
+    for it in items:
+        o = rows.get(it.get("title")) if it.get("kind") == "event" else None
+        if o and o["action"] == "delete":
+            continue
+        if o and o["action"] in ("time", "add") and o["start"]:
+            shift_trip(it, o["start"])
+            if o.get("end"):
+                it["end"] = o["end"]
+        out.append(it)
+    have = {it.get("title") for it in out if it.get("kind") == "event"}
+    for o in rows.values():
+        if o["action"] == "add" and o["title"] not in have and o["start"]:
+            out.append({"kind": "event", "start": o["start"], "end": o["end"] or o["start"], "title": o["title"], "place": o["place"] or "",
+                        "priority": "main"})
+    return out
 
 TRAINING_START, TRAINING_END, TRAINING_PLACE = "16:00", "17:15", "健身房"
 DAY_START, DAY_END = "07:00", "23:30"
@@ -113,18 +168,27 @@ def busy_with_travel(busy, today: date, travel=None) -> list:
     return out
 
 
-def quest_facts(db) -> dict:
+def quest_facts(db, day: date = None) -> dict:
     """任务系统的现状：每个今年目标的主线拆到哪了、哪些目标还没拆、支线、小伴 答应的事。"""
-    mains = quests.main_quests(db)
-    years = [dict(r) for r in db.conn.execute("SELECT id, title, status, due FROM goals WHERE level = 'year' "
+    from . import stages
+    mains = quests.main_quests(db, with_agent_goals=True)
+    years = [dict(r) for r in db.conn.execute("SELECT id, title, status, due, handled_by FROM goals WHERE level = 'year' "
                                               "AND status = 'active' ORDER BY sort IS NULL, sort, due IS NULL, due, id")]
+    # 交给 agent 的副本：拆了里程碑的才写进来（里面是要她本人做的那几步，她 2026-11-02）
+    years = [g for g in years if not g["handled_by"] or stages.has_structure(db, g["id"])]
     main = {}
     for g in years:
         qs = mains.get(g["id"], [])
         if qs:
+            qs = [q for q in qs if not q.get("habit_id")]
             main[g["id"]] = {"goal": g["title"], "done": sum(q["done"] for q in qs), "total": len(qs),
                              "draft": any(q["draft"] for q in qs),
                              "open": [q["title"] for q in qs if not q["done"]]}
+            m = stages.current(db, g["id"]) if stages.has_structure(db, g["id"]) else None
+            if m:  # 新结构：写当前里程碑和今天该做的阶段任务
+                ids = set(stages.today_ids(db, g["id"], day or her_today()))
+                main[g["id"]].update(milestone=m["title"], milestone_due=m["due"],
+                                     open=[q["title"] for q in qs if q["id"] in ids])
     return {"main": main,
             "needs_breakdown": [{"goal_id": g["id"], "title": g["title"], "due": g["due"]}
                                 for g in years if g["id"] not in mains],
@@ -154,7 +218,7 @@ def gather_facts(db, today: date, busy=(), settings=None, cold_start_from: date 
         "yesterday": yesterday,
         "last_7_days": {"planned": week["planned"], "done": week["done"]},
         "feedback": [f["note"] for f in db.unused_feedback()],
-        "quests": quest_facts(db),
+        "quests": quest_facts(db, today),
         "training": ({"start": TRAINING_START, "end": TRAINING_END, "place": TRAINING_PLACE, "focus": rx["focus"]}
                      if rx else None),
         "cold_start": {"module": cold[0], "how": cold[1]} if cold else None,
@@ -165,7 +229,34 @@ def gather_facts(db, today: date, busy=(), settings=None, cold_start_from: date 
         "busy": busy_with_travel(busy, today, travel),
         "day_window": [DAY_START, DAY_END],
         "week_focus": focus.current(db, today),
+        "her_profile": _profile(db),
+        "her_decisions": _decisions(db),
     }
+
+
+def _decisions(db) -> list:
+    """第 22 题：排计划前，管到计划器的生效决定（暂停、规矩、约束），走 onto_query（ontology-plan 3.1）；没切到新结构时不给。"""
+    try:
+        from . import onto_query
+        if not onto_query.reading_new(db, "planner"):
+            return []
+        got = onto_query.decisions_for(db, "planner", None)
+        return [i["value"] for i in got["items"]][:15]
+    except Exception:
+        return []
+
+
+def _profile(db) -> str:
+    """她的画像（作息、偏好这些排计划用得上），走记忆入口、报上“计划器”（ethan/memusers.py，2026-10-31）。"""
+    try:
+        from . import onto_query, portrait
+        if onto_query.reading_new(db, "planner"):  # ontology 第 4 步：偏好改从新结构读（第 4 题），其余方面照旧读画像
+            prefs = onto_query.preference_lines(db, "planner")
+            rest = portrait.chat_text(db, skip=("preferences",), user="planner")
+            return ((f"#### 偏好\n{prefs}\n\n" if prefs else "") + rest)[:1500]
+        return portrait.chat_text(db, "planner")[:1500]
+    except Exception:
+        return ""
 
 
 PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的“事实”全部由代码算好，你不能改其中的数字。
@@ -176,7 +267,7 @@ PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的�
 {"breakdowns": [{"goal_id": 编号, "steps": [{"title": "具体要做的一步", "size": "S|M|L", "milestone": true|false, "hard": true|false}]}],
  "ethan": [{"title": "小伴 要替她准备好、再交给她审批的东西", "goal_id": 目标编号或 null}],
  "events": [{"start": "HH:MM", "end": "HH:MM", "place": "地点名", "title": "去做什么", "goal_id": 目标编号或 null}],
- "review": {"目标编号": "今天的战况点评，一句话"},
+ "review": {"目标编号": "今天的进展点评，一句话"},
  "skipped": [{"title": "今天故意没排的事", "why": "一句人话原因"}]}
 
 规则：
@@ -185,8 +276,11 @@ PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的�
    size：S 一小时内、M 半天左右、L 要好几天。关键的阶段节点 milestone 设 true（每个目标 1–4 个）。
    hard 设 true 的是“硬骨头”：她最可能拖、最难开始的那一步（比如第一次给陌生客户发消息），每个目标 1–3 个，完成多给 50% 积分。
    步骤只放她本人亲自要做的事；漏斗类目标按漏斗各步拆（列名单、联系、聊、报价、成交）。
-2. ethan（不限件数）：凡是可以由别人先想好、查好、整理好的（想指标、查场地和价格、比较选项、列清单、起草、找资料），
-   由 小伴 做好后把结果给她审批。quests.ethan 里已有的不要重复写。
+   交给对应 agent 管的项目副本不会出现在 needs_breakdown 里，也不要替它们排任务。
+2. ethan：小伴 只管日程和生活上的事（订餐厅门票交通、查场地和价格、比较选项、列生活清单）；项目工作（DemoApp、个人主页、开发、
+   创业、自媒体、各副本里的具体工作内容）她直接找对应的 agent，不要写进 ethan，也不要拆成她的步骤（2026-10-31 她定）。
+   有前提没满足的（比如签证没下来就做行程）先不写。quests.ethan 里已有的不要重复写。新写的 小伴 会先问她要不要再做。
+   日常周常里已经定了怎么做的不要再去找（比如英语陪练就是 Grok，别写“查英语陪练的渠道 / 老师 / 课程”；她 2026-11-02 说）。
    和本赛季副本（goals 里 status 为 active 的）相关的先列、先做，其他的排在后面，但也要做，不能丢（2026-10-28 她定）。
    要挑选的（去哪、上哪节课、选哪家）由 小伴 直接拍板，告诉她选了什么、为什么，不要列选项让她挑；
    她的步骤里也不要写“从 小伴 的候选里选”。只有要花钱或付款时，小伴 先跟她确认再订。
@@ -194,10 +288,14 @@ PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的�
    能选时间的尽量排在早上：起床后先出门，再开始工作（2026-10-28 她定）。
    saved_ideas 是她自己收藏的地方和玩法：小伴 替她选新体验、出门小计划、旅行地点时优先从里面挑（2026-10-28 她要收藏真正用起来）。
    place 用 places 里的名字；不在里面就写具体地点名称。不能和训练、busy（leave 到 back 是她连同来回路上都不在的时间）冲突。
+   要出门的事按一条路线排（她 2026-11-02）：上一站结束到下一站开始要留出路上时间；离得近、中间空不出一小时就从上一站直接过去，
+   别排成刚出门又回家、或者上一站还没结束就得出发去下一站。训练前后有饭局，训练挪到饭局结束加路上之后。
 4. goal_id 只能用 goals 里出现过的编号。参考 yesterday、feedback：总拖的事换个做法。
 5. deleted_recently 是她最近 30 天亲手删掉的事：不要再排回来，换个说法的同一件事也不要（2026-10-28 她定）。
-6. review：给 progress 里每个目标写一句今天的战况点评，像军师：领先还是落后、差在哪、今天打哪一下最值（数字只用 progress 里的）。
-   skipped：今天有意不排的事（比如时间不够、等别人回复、天气不合适），一句人话说清为什么，没有就空数组。
+   her_decisions 是她定过、现在生效的决定（暂停、规矩、约束）：照着排，和别的事实冲突时以它为准（ontology-plan 3.1，第 22 题）。
+6. review：给 progress 里每个目标写一句今天的进展点评，像军师：领先还是落后、差在哪、今天打哪一下最值（数字只用 progress 里的）。
+   skipped：今天本来该做、有意不排的事（比如时间不够、等别人回复、天气不合适），一句人话说清为什么，没有就空数组。
+   暂停的副本、以后才做的事本来就不在今天的范围，不要写进 skipped（她 2026-11-01：这个赛季不看的目标列出来是多余的）。
 7. week_focus 是这周的 3 件重点（周日周报里定的，2026-10-29 她定）：今天的 events、ethan 和点评优先围着它们转，
    能往前推一步的就推；skipped 里不要出现它们，除非真的做不了并写清原因。confirmed 为 false 是她还没点头，照样优先。
 """
@@ -211,8 +309,10 @@ def parse_plan(text: str) -> dict:
     for key in ("breakdowns", "events", "ethan"):
         if not isinstance(data.get(key, []), list):
             raise ValueError(f"{key} 必须是列表")
+    data["ethan"] = [x for x in data.get("ethan") or [] if not DECIDED.search(str(x.get("title") if isinstance(x, dict) else x))]
     review = data.get("review") if isinstance(data.get("review"), dict) else {}
     skipped = [x for x in data.get("skipped") or [] if isinstance(x, dict) and x.get("title")] if isinstance(data.get("skipped"), list) else []
+    skipped = [x for x in skipped if not PAUSED_WHY.search(f"{x.get('title')} {x.get('why') or ''}")]  # 代码兜底：暂停副本的不列
     return {"breakdowns": data.get("breakdowns", []), "events": data.get("events", []), "ethan": data.get("ethan", []),
             "review": {str(k): str(v)[:120] for k, v in review.items() if v}, "skipped": skipped[:8]}
 
@@ -321,10 +421,29 @@ def link_tasks(db, items: list, today: date):
     当天重排时，上一版自动建的、新版不要了、她也还没做的待办删掉，免得清单越堆越多。
     小伴 准备的事不删：那是他答应要做的，重排不该让它消失（2026-10-27 重排丢过 9 件）。"""
     open_by_title = {t["title"]: t["id"] for t in db.open_tasks()}
+    from . import locks  # 她删掉的，计划器不能再建回来（以前只靠提示词叮嘱模型，docs/design/system-rules.md 第 1 节）
+    from .core.agent import find_similar as _same
+    from . import onto_query
+    removed = (lambda t: onto_query.she_removed(db, "planner", t)) if onto_query.reading_new(db, "planner") else (lambda t: locks.she_deleted(db, t))
+    gone = [it for it in items if it["kind"] == "todo" and it.get("priority") != "ethan" and it["title"] not in open_by_title
+            and not _same(it["title"], list(open_by_title)) and removed(it["title"])]
+    for it in gone:
+        print(f"[planner] 她删过的，不再排：{it['title']}", flush=True)
+        items.remove(it)
+    from . import naming  # 新建的待办名字写成标题式（docs/design/ui-spec.md 第 5 节）
+    for it in items:
+        if it["kind"] == "todo" and it["title"] not in open_by_title:
+            it["title"] = naming.title(it["title"])
     for it in items:
         if it["kind"] != "todo":
             continue
         task_id = open_by_title.get(it["title"])
+        if task_id is None:  # 换了说法的同一件事也挂到已有的上（2026-10-30 她说一天冒出好几个“发学生证明邮件”）
+            from .core.agent import find_similar
+            same = find_similar(it["title"], list(open_by_title))
+            task_id = open_by_title.get(same) if same else None
+        if task_id is None:  # 她改过名字的那件，模型还用旧名字提：挂回她改过的那件，不另建
+            task_id = locks.renamed_from(db, it["title"])
         if task_id is None:
             task_id = db.add_task(it["title"], goal_id=it.get("goal_id"),  # 多数事没有硬截止，不默认截止今天
                                   promised_by_ethan=it.get("priority") == "ethan")
@@ -342,27 +461,37 @@ def link_tasks(db, items: list, today: date):
     db.conn.commit()
 
 
-def rest_items(db, items: list) -> list:
-    """所有没做完的任务都列出：主线（每个目标从下一步开始）、支线、小伴 答应的事；没做完的一直接着列。"""
+def rest_items(db, items: list, day: date = None) -> list:
+    """所有没做完的任务都列出：主线（每个目标从下一步开始）、支线、小伴 答应的事；没做完的一直接着列。
+    按新结构拆了里程碑的副本：当前里程碑里今天该做的阶段任务标“下一步”（进今天），其余照样列着（quest-structure.md 第 5 节）。"""
+    from . import stages
+    day = day or her_today()
     chosen = {it.get("task_id") for it in items}
     rest = []
     active = {r["id"] for r in db.conn.execute("SELECT id FROM goals WHERE status = 'active'")}
-    for goal_id, qs in quests.main_quests(db).items():
+    agent_goals = {r[0] for r in db.conn.execute("SELECT id FROM goals WHERE handled_by IS NOT NULL")}
+    for goal_id, qs in quests.main_quests(db, with_agent_goals=True).items():
         if goal_id not in active:  # 暂停的副本（如挪到下个赛季的）不排进今天
             continue
+        if goal_id in agent_goals and not stages.has_structure(db, goal_id):  # 交给 agent、还没拆里程碑的：不排
+            continue
+        # 交给 agent 的副本：活是 agent 干，里程碑里要她本人做的（找内测用户、审反馈、验收、复盘）照样排进她的待办（她 2026-11-02）
         nxt = True
+        todays = set(stages.today_ids(db, goal_id, day)) if stages.has_structure(db, goal_id) else None
         for q in qs:
-            if q["done"]:
+            if q["done"] or q.get("habit_id") or q.get("promised_by_ethan"):
                 continue
+            first = (q["id"] in todays) if todays is not None else nxt
             rest.append({"kind": "todo", "priority": "main", "title": q["title"], "goal_id": goal_id, "task_id": q["id"],
-                         "how": ("下一步" if nxt else None), "detail": json.dumps(
+                         "how": ("下一步" if first else None), "detail": json.dumps(
                              {"size": q["size"], "milestone": bool(q["milestone"]), "draft": bool(q["draft"]),
                               "points": quests.task_points(q)}, ensure_ascii=False)})
             nxt = False
     status = {r["id"]: r["status"] for r in db.conn.execute("SELECT id, status FROM goals")}
+    staged = {r[0] for r in db.conn.execute("SELECT id FROM tasks WHERE milestone_id IS NOT NULL")}  # 阶段任务只按上面的规矩排
     later = []
     for t in db.open_tasks():
-        if t["id"] in chosen or t["id"] in {r["task_id"] for r in rest}:
+        if t["id"] in chosen or t["id"] in {r["task_id"] for r in rest} or t["id"] in staged:
             continue
         st = status.get(t.get("goal_id"), "active") if t.get("goal_id") else "active"
         if st == "dropped":  # 放弃的副本不再排（2026-10-29 自查）
@@ -412,6 +541,10 @@ def timeline(items: list, busy: list) -> list:
 
 
 STATUS_MARK = {"领先": "🔥 领先", "落后": "⚠️ 落后", "达成": "✅ 达成", "正常": "正常"}
+
+
+DECIDED = __import__("re").compile(r"英语陪练.*(渠道|老师|课程|平台)|(找|查).*英语陪练")  # 已经定了用 Grok（她 2026-11-02）
+PAUSED_WHY = __import__("re").compile(r"暂停|这个赛季不|下个赛季|以后的副本")
 
 
 def goal_card(p: dict) -> dict:
@@ -488,17 +621,27 @@ def plan_day(db, router, today: date, busy=(), calendar=None, travel=None, setti
     for b in plan.get("breakdowns", []):  # 主线拆解先当草稿存下，小伴 发她过目
         quests.add_breakdown(db, b["goal_id"], b["steps"], draft=True)
     if plan.get("breakdowns"):
-        facts["quests"] = quest_facts(db)
+        facts["quests"] = quest_facts(db, today)
     items = assemble(plan, facts, db, today, travel)
+    items = apply_overrides(db, today, items)  # 她在工作台手动改过的日程，重排时照她改的（2026-11-02）
     link_tasks(db, items, today)
-    items += rest_items(db, items)
+    items += rest_items(db, items, today)
     menu = meals.pick(facts["nutrition"]["kcal"], facts["nutrition"]["protein_g"], today,
                       avoid=meals.yesterday_ids(db, today))
     rx = training.prescribe(db, today)
     brief = make_brief(facts, items, origin, menu, rx)
+    try:  # 时间线按一条路线串（ethan/route.py，她 2026-11-02）：上一站结束直接去下一站还是先回家、赶不赶得上
+        from . import route
+        from .travel import places as _places
+        raw = [(b["start"], b["end"], b["title"], {"location": b.get("place") or "", "travel_min": b.get("trip_min")})
+               for b in facts["busy"]]
+        r = route.timeline(raw, items, _places(settings), travel, today)
+        brief["timeline"], brief["route_conflicts"] = r["rows"], r["conflicts"]
+    except Exception as e:
+        print(f"[planner] 路线没串起来：{type(e).__name__} {e}", flush=True)
     brief["meals_text"] = meals.describe(menu)
     brief["game"] = quests.today_summary(db, today)
-    brief["review"] = {k: v for k, v in (plan.get("review") or {}).items() if k.isdigit() and int(k) in goal_ids}  # 每个副本今天的战况点评
+    brief["review"] = {k: v for k, v in (plan.get("review") or {}).items() if k.isdigit() and int(k) in goal_ids}  # 每个副本今天的进展点评
     brief["skipped"] = [{"title": str(x["title"])[:80], "why": str(x.get("why") or "")[:120]} for x in plan.get("skipped") or []]
     fingerprint = hashlib.sha256(facts_json.encode()).hexdigest()[:16]
     plan_id = db.save_plan(today.isoformat(), origin, facts_json, json.dumps(brief, ensure_ascii=False),
@@ -565,9 +708,23 @@ def main():
         return
     calendar = build_calendar()
     busy = calendar.busy(today) if calendar is not None else []
+    from . import events  # 提前登记的日程（订位等）也算她已有的安排（2026-10-30）
+    from . import weekreview  # 每周日 21:00 的复盘：在家、定死的一小时（她 2026-11-02）
+    busy = sorted(list(busy) + events.for_day(store.db, today) + weekreview.busy_for(today, calendar))
+    try:
+        events.sync(store.db, calendar)
+    except Exception as e:
+        print(f"[planner] 提前登记的日程没写进日历：{e}", flush=True)
     start = settings.get("cold_start_from")
     result = plan_day(store.db, router, today, busy=busy, calendar=calendar, travel=Travel(args.data, settings),
                       settings=settings, cold_start_from=date.fromisoformat(start) if start else None)
+    try:  # 今天排进复盘的里程碑：小伴 先起草复盘（ethan/msreview.py，她 2026-11-02）
+        from . import msreview
+        wrote = msreview.write_due(store.db, router, today)
+        if wrote:
+            print(f"[planner] 起草了里程碑复盘：{'、'.join(wrote)}", flush=True)
+    except Exception as e:
+        print(f"[planner] 里程碑复盘草稿没写成：{type(e).__name__} {e}", flush=True)
     ask_for_inspiration(settings, today, build_grok(args.data))
     try:  # 今日卡：排完计划就画（ethan/cards.py），失败不影响计划
         import os
@@ -575,7 +732,7 @@ def main():
         from .photos import OpenRouter
         key = os.environ.get("OPENROUTER_API_KEY")
         make_card(args.data, store.db, today, store.db.latest_plan(today.isoformat()),
-                  maker=OpenRouter(key) if key else None, ledger=router.ledger)
+                  maker=OpenRouter(key) if key else None, ledger=router.ledger, router=router)  # router：按今天的事编镜头
     except Exception as e:
         print(f"[planner] 今日卡没生成：{e}", flush=True)
     print(json.dumps({k: result[k] for k in ("plan_id", "origin", "errors")}, ensure_ascii=False))

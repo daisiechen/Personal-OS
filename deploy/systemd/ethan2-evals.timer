@@ -1,0 +1,9 @@
+[Unit]
+Description=每周六 15:00（伦敦时间）跑题集评测，不及格进系统巡检
+
+[Timer]
+OnCalendar=Sat *-*-* 15:00:00 Europe/London
+Persistent=true
+
+[Install]
+WantedBy=timers.target

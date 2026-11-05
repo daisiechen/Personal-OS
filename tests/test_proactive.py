@@ -99,6 +99,22 @@ class ProactiveTest(unittest.TestCase):
         self.assertEqual(self.run_at(self.at.hour, self.at.minute), "morning：免打扰")
         self.assertEqual(self.channel.sent, [])
 
+    def test_yesterdays_silence_does_not_mute_today(self):
+        """2026-11-01：她前一天没回，第二天 小伴 剧本里 4 次找她全被“还没回”拦下。只数今天发的，早报不算。"""
+        from datetime import datetime, timezone
+        from ethan.core.router import Settings
+        now = datetime(2026, 11, 1, 13, 10, tzinfo=timezone.utc)
+        rec = lambda at, role="ethan", kind="proactive": {"at": at, "role": role, "kind": kind, "text": "x"}
+        records = [rec("2026-10-31T15:53:00+00:00", "mia", None)] + [rec(f"2026-10-31T{h}:00:00+00:00") for h in (17, 19, 21)] \
+            + [rec("2026-11-01T08:10:00+00:00")]
+        from ethan import proactive
+        from ethan.clock import LOCAL
+        now = now.astimezone(LOCAL)
+        settings = self.settings
+        self.assertIsNone(proactive.blocked(now, settings, records))
+        records += [rec("2026-11-01T10:00:00+00:00"), rec("2026-11-01T12:00:00+00:00")]
+        self.assertEqual(proactive.blocked(now, settings, records), "还没回")
+
     def test_optional_slot_skipped_if_last_one_unanswered(self):
         self.run_at(self.at.hour, self.at.minute)
         afternoon = planned_time(DAY, SLOTS[1])
