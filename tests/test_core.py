@@ -278,7 +278,7 @@ if __name__ == "__main__":
 
 class ConfigurableModelTest(unittest.TestCase):
     def test_openai_compatible_primary_from_env(self):
-        """开源准备（2026-10-29）：填了 ETHAN_LLM_* 就直连兼容 OpenAI 接口的模型（比如 DeepSeek），不用 Claude 订阅。"""
+        """开源准备：填了 ETHAN_LLM_* 就直连兼容 OpenAI 接口的模型（比如 DeepSeek），不用 Claude 订阅。"""
         import tempfile
         from pathlib import Path
         from unittest import mock

@@ -43,7 +43,7 @@ class AutoDoneTest(unittest.TestCase):
             store.close()
 
     def test_positioning_task_not_ticked_and_wrong_ticks_reverted(self):
-        """2026-10-29：“定好小红书和 IG 定位”被“手机定位接上了”误勾，她撤销后又被勾回去。"""
+        """“定好小红书和 IG 定位”被“手机定位接上了”误勾，她撤销后又被勾回去。"""
         from ethan import quests
         with tempfile.TemporaryDirectory() as d:
             store = make_demo(Path(d))

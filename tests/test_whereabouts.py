@@ -28,7 +28,7 @@ class WhereaboutsTest(unittest.TestCase):
         self.dir.cleanup()
 
     def test_told_city_then_back_home(self):
-        """2026-10-29 她定：告诉了 小伴 就同步给个人主页，没告诉就默认常驻地。"""
+        """告诉了 小伴 就同步给个人主页，没告诉就默认常驻地。"""
         self.assertEqual(whereabouts.current(self.db)["city"], "伦敦")
         self.assertEqual(whereabouts.note(self.db, "玩得开心 [在 巴黎]", T0), ["巴黎"])
         self.assertEqual(whereabouts.current(self.db), {"city": "巴黎", "source": "told", "at": T0.isoformat()})

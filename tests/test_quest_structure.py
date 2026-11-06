@@ -1,4 +1,4 @@
-"""任务结构改版（docs/design/quest-structure.md，她 2026-11-01：“把任务结构改版一起做了”）。"""
+"""任务结构改版（docs/design/quest-structure.md）。"""
 
 import importlib
 import tempfile
@@ -74,11 +74,11 @@ class QuestStructureTest(unittest.TestCase):
         today = {r["title"] for r in rest if r.get("how") == "下一步"}
         self.assertIn("测体脂", today)
         self.assertIn("按清单买菜", today)
-        self.assertIn("拿到芬兰签证（等结果）", today)
+        self.assertNotIn("拿到芬兰签证（等结果）", {r["title"] for r in rest})  # 等别人结果的只在副本详情里列（第 2 条）
         self.assertNotIn("定芬兰 12 月行程", today)  # 前置还没完成
         self.assertNotIn("训练 5 次 / 周", {r["title"] for r in rest})  # 引用日常的在日常里打卡
         self.assertNotIn("中期复盘：调热量和训练量", {r["title"] for r in rest})  # 以后的里程碑不排
-        # 交给 agent 的副本：里程碑里要她本人做的照样排（她 2026-11-02）；暂停的“拿下第一个订单”不排
+        # 交给 agent 的副本：里程碑里要她本人做的照样排；暂停的“拿下第一个订单”不排
         self.assertIn("找 5 个内测用户", today)
         self.assertIn("审内测反馈，定哪些上线前必须修", today)
 
@@ -181,7 +181,7 @@ class QuestStructureTest(unittest.TestCase):
 
 
     def test_review_only_due_near_milestone_end(self):
-        """她 2026-11-02：今天怎么这么多 M1 复盘——复盘只在阶段最后两天排，没截止日的要等其他一次性任务做完。"""
+        """今天怎么这么多 M1 复盘——复盘只在阶段最后两天排，没截止日的要等其他一次性任务做完。"""
         self.m.run(self.store)
         rest = {r["title"] for r in planner.rest_items(self.db, [], TODAY) if r.get("how") == "下一步"}
         self.assertNotIn("M1 复盘", rest)
@@ -204,7 +204,7 @@ class QuestStructureTest(unittest.TestCase):
 
 
     def test_start_day_keeps_task_out_until_then(self):
-        """她 2026-11-02：“11/12 前没出签就催问”算 11-12 的待办，不算今天的。"""
+        """算 11-12 的待办，不算今天的。"""
         self.m.run(self.store)
         m1 = stages.milestones(self.db, 22)[0]
         tid = stages.add_task(self.db, m1["id"], "11/12 前没出签就催问")
@@ -215,14 +215,14 @@ class QuestStructureTest(unittest.TestCase):
 
 
     def test_old_cold_start_rotation_off_once_in_milestones(self):
-        """她 2026-11-02：小伴 为什么来找我做财务冷启动——冷启动挪进管理系统 M2 以后，老的每日轮换不再塞、不再让他来约。"""
+        """小伴 为什么来找我做财务冷启动——冷启动挪进管理系统 M2 以后，老的每日轮换不再塞、不再让他来约。"""
         from ethan import domains
         self.assertIsNotNone(domains.todays_cold_start(self.db, TODAY, date(2026, 10, 28)))  # 还没拆结构时照旧
         self.m.run(self.store)
         self.assertIsNone(domains.todays_cold_start(self.db, TODAY, date(2026, 10, 28)))
 
     def test_draft_written_when_review_due_and_kept_on_close(self):
-        """她 2026-11-02：里程碑复盘由 小伴 先起草（数据小结和调整建议），她看完再勾。"""
+        """里程碑复盘由 小伴 先起草（数据小结和调整建议），她看完再勾。"""
         from ethan import msreview
         from ethan.core.backends import Reply
         self.m.run(self.store)
@@ -231,7 +231,7 @@ class QuestStructureTest(unittest.TestCase):
         day = date.fromisoformat(m1["due"]) - timedelta(days=1)
 
         class Router:
-            def complete(self, system, messages):
+            def complete(self, system, messages, purpose="chat"):
                 assert "测体脂" in system
                 return Reply('好的：{"summary": "体脂测了，买菜两周都做到了。", "suggest": ["M2 训练前称体重改成每周 3 次"]}', "x", "m", 0)
         wrote = msreview.write_due(self.db, Router(), day)

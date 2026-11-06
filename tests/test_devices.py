@@ -12,7 +12,7 @@ from tests.test_workbench import MONDAY, make_demo
 AUTH = {"Authorization": "Bearer c"}
 
 
-def at(day, hh, mm=0):  # 伦敦冬令时 = UTC
+def at(day, hh, mm=0):  # 冬令时 = UTC
     return datetime(day.year, day.month, day.day, hh, mm, tzinfo=timezone.utc)
 
 
@@ -46,7 +46,7 @@ class WorktimeTest(Base):
         hook = {"session_id": "s", "hook_event_name": "UserPromptSubmit", "cwd": "/x", "prompt": "hi"}
         self.inbox.handle("/cloud/agent/hook?where=mac", AUTH, json.dumps(hook).encode(), at(MONDAY, 22, 3))
         self.assertEqual(worktime.hours(self.db, MONDAY), 9.1)
-        # 服务器上的会话、系统自己调 Claude（第一句“Mia：”）不算她的工作（2026-11-01 查出今天 19 格都是这样多记的）
+        # 服务器上的会话、系统自己调 Claude（第一句“Mia：”）不算她的工作（查出今天 19 格都是这样多记的）
         self.inbox.handle("/cloud/agent/hook?where=server", AUTH, json.dumps(hook).encode(), at(MONDAY, 22, 13))
         sysc = {**hook, "prompt": "Mia：发件人：The Devonshire 主题：…"}
         self.inbox.handle("/cloud/agent/hook?where=cloud", AUTH, json.dumps(sysc).encode(), at(MONDAY, 22, 23))

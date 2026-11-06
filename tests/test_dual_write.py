@@ -90,7 +90,7 @@ class DualWriteTest(unittest.TestCase):
 
     def test_migrate_old_facts(self):
         # 第 2 步之前的老数据：没有对照
-        self.db.conn.execute("DROP TRIGGER facts_mirror_ins_v4")
+        self.db.conn.execute("DROP TRIGGER facts_mirror_ins_v5")
         a = lifebase.add_fact(self.db, "rhythms", "周末 11 点起", [self.ev])
         b = lifebase.add_fact(self.db, "rhythms", "周末 9 点起", [self.ev])
         lifebase.supersede(self.db, a, b, when="2026-11-02")

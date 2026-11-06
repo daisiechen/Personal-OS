@@ -1,4 +1,4 @@
-"""每周固定出的下周安排（她 2026-10-31 定）：下周 7 天的餐单和采购清单、下周 5 次训练。
+"""每周固定出的下周安排：下周 7 天的餐单和采购清单、下周 5 次训练。
 
 以前 小伴 在聊天里“答应”帮她排，进了“小伴 帮我办”当成一次性的活；她说这是长期固定的事，不该由他答应。
 现在由代码每周日凌晨（每晚整理那一轮）算好，存进 week_plans；工作台“三餐”“训练详情”里能看整周，周日傍晚 小伴 说一声。
@@ -59,7 +59,7 @@ def make(db, today: date, force: bool = False) -> dict:
     if not force and db.conn.execute("SELECT 1 FROM week_plans WHERE week = ?", (monday.isoformat(),)).fetchone():
         return {"week": monday.isoformat(), "made": False}
     plan = build(db, monday)
-    # 训练前称体重只在训练日要打卡（她 2026-11-01：今天不是训练日就不该有这个任务）：跟着下周排的训练日走
+    # 训练前称体重只在训练日要打卡（今天不是训练日就不该有这个任务）：跟着下周排的训练日走
     days = ",".join(str(date.fromisoformat(x["day"]).weekday()) for x in plan["training"])
     if days:
         db.conn.execute("UPDATE habits SET weekdays = ? WHERE title = '训练前称体重'", (days,))

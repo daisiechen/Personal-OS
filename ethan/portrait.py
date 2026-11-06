@@ -1,4 +1,4 @@
-"""画像（docs/design/digital-life-spec.md 第 3 节、4.2 节，2026-10-30 她认可）。
+"""画像（docs/design/digital-life-spec.md 第 3 节、4.2 节）。
 
 三件事：
 1. 每晚 fact_ops：每晚整理出的“今天新知道的”，逐条对照库里相关的旧事实，由模型提议 新增 / 更新 / 作废 / 已知，代码校验后执行。
@@ -30,6 +30,7 @@ OPS_SCHEMA = {"type": "object", "required": ["ops"], "properties": {"ops": {"typ
         "op": {"type": "string", "enum": ["ADD", "UPDATE", "INVALIDATE", "NOOP"]}, "from": {"type": "string"},
         "fact_id": {"type": ["integer", "null"]}, "dimension": {"type": ["string", "null"], "enum": list(lifebase.DIMENSIONS) + [None]},
         "statement": {"type": ["string", "null"], "maxLength": 80}, "valid_from": {"type": ["string", "null"]},
+        "until": {"type": ["string", "null"]},  # 临时状态预计到哪天（借鉴 6，fact_ops 第 2 版）
         "reason": {"type": ["string", "null"], "maxLength": 80}}}}}}
 BLOCK_SCHEMA = {"type": "object", "required": ["summary", "used_ids"], "properties": {
     "summary": {"type": "string"}, "used_ids": {"type": "array", "items": {"type": "integer"}}}}
@@ -61,7 +62,9 @@ def _fact(db, fid):
 
 
 def _current(f) -> bool:
-    return bool(f) and f["valid_to"] is None and f["status"] != "invalid"
+    """还能被每晚 fact_ops 证实 / 更新 / 作废的：lifebase.MEM_VIEWS["fact_ops"]（当前的和候选的；删掉、作废、删后停用、
+    过时、到期的都不碰。11-06 修过：检索后、执行前她删了证据，停用的那条会被 NOOP 追加证据、被 UPDATE 接出一条新的有效说法）。"""
+    return bool(f) and lifebase.mem_ok("fact_ops", f)
 
 
 # ---------- 1. 每晚 fact_ops ----------
@@ -93,11 +96,14 @@ def check_ops(data: dict, new: list, old_ids: set) -> list:
             errors.append(f"ops[{i}].fact_id 不在库里已有的里")
         if op["op"] in ("ADD", "UPDATE") and not (op.get("dimension") and (op.get("statement") or "").strip()):
             errors.append(f"ops[{i}] 新增和更新要有 dimension 和 statement")
-        if op.get("valid_from"):
-            try:
-                date.fromisoformat(op["valid_from"][:10])
-            except ValueError:
-                errors.append(f"ops[{i}].valid_from 不是日期")
+        for k in ("valid_from", "until"):
+            if op.get(k):
+                try:
+                    date.fromisoformat(op[k][:10])
+                except ValueError:
+                    errors.append(f"ops[{i}].{k} 不是日期")
+        if op.get("until") and op.get("valid_from") and op["until"][:10] < op["valid_from"][:10]:
+            errors.append(f"ops[{i}].until 早于 valid_from")
     return errors
 
 
@@ -123,7 +129,11 @@ def apply_ops(db, data: dict, evidence_id: int, day: date, context: str = None, 
             lifebase.invalidate(db, old["id"], since)
         else:
             subject = old["subject"] if old else "self"
-            new_id = lifebase.add_fact(db, op["dimension"], op["statement"], [evidence_id], subject=subject, valid_from=since,
+            # 临时状态预计到哪天：模型填的为准；没填但说法里明说了“这周 / 这几天 / 这个月”的，按说的那天算（借鉴 6）
+            until = (op.get("until") or "")[:10] or lifebase.temp_until(op["statement"], since)
+            if until and until < since:
+                until = None
+            new_id = lifebase.add_fact(db, op["dimension"], op["statement"], [evidence_id], subject=subject, valid_from=since, until=until,
                                        importance=old["importance"] if old else 3,
                                        visibility=old["visibility"] if old and subject == "self" else None, context=context,
                                        prop=(props or {}).get(op.get("from")) or (old["prop"] if old and "prop" in old.keys() else None),
@@ -229,7 +239,7 @@ def chat_text(db, user: str = None, skip=()) -> str:
             f"SELECT * FROM facts WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)}
         if not ids:
             continue  # 说不清用到了哪几条的摘要，不给（等重做）
-        ok = lambda f: (f["status"] not in ("deleted", "invalid", "suspended") and f["valid_to"] is None
+        ok = lambda f: (lifebase.mem_ok("portrait", f)  # 到期的临时状态不当现在（决定 10）
                         and memusers.may_read(user, f.get("kind"), f.get("read_by"), f["dimension"]))
         if len(facts) == len(ids) and all(ok(f) for f in facts.values()):
             rows[b["dimension"]] = b["summary"]
@@ -250,8 +260,8 @@ def chat_text(db, user: str = None, skip=()) -> str:
 def _outside_text(db, user: str, skip=()) -> str:
     """对外的（合作方、公开两档）：不给摘要（摘要混着不能说的），只按对外开关逐条给“可以说”的（lifebase.disclose，ontology-plan 3.3）。"""
     rows = {}
-    for f in db.conn.execute("SELECT * FROM facts WHERE subject = 'self' AND valid_to IS NULL AND status = 'active' "
-                             "ORDER BY importance DESC, id DESC").fetchall():
+    cond, args = lifebase.mem_where("public", "facts")
+    for f in db.conn.execute(f"SELECT * FROM facts WHERE subject = 'self' AND {cond} ORDER BY importance DESC, id DESC", args).fetchall():
         if f["dimension"] in skip or lifebase.disclose(db, user, f) != "allow":
             continue
         rows.setdefault(f["dimension"], []).append(dict(f))
@@ -269,8 +279,9 @@ def _outside_text(db, user: str, skip=()) -> str:
 # ---------- 3. 每周复盘 ----------
 def decay(db, today: date) -> int:
     cut = (today - timedelta(days=STALE_DAYS)).isoformat()
-    cur = db.conn.execute("UPDATE facts SET confidence = MAX(0.3, confidence * 0.8) WHERE valid_to IS NULL AND status NOT IN ('invalid', 'deleted') AND locked = 0 "
-                          "AND COALESCE(last_confirmed_at, recorded_at) < ? AND confidence > 0.3", (cut,))
+    cond, args = lifebase.mem_where("fact_ops", "facts", today)
+    cur = db.conn.execute(f"UPDATE facts SET confidence = MAX(0.3, confidence * 0.8) WHERE {cond} AND locked = 0 "
+                          "AND COALESCE(last_confirmed_at, recorded_at) < ? AND confidence > 0.3", (*args, cut))
     return cur.rowcount
 
 
@@ -320,7 +331,7 @@ def weekly(store, router, today: date = None) -> dict:
                 db.conn.execute("UPDATE facts SET dimension = ?, also_dims = '[]', status = 'active' WHERE id = ? AND locked = 0",
                                 (r["dimension"], r["fact_id"]))
                 got["reclassified"] += 1
-            for q in data["questions"]:  # 进“待你定”：工作台和 小伴 聊天问的是同一份（2026-10-31）
+            for q in data["questions"]:  # 进“待你定”：工作台和 小伴 聊天问的是同一份
                 if mepage.add_question(db, q["question"], q.get("fact_id"), commit=False):
                     got["questions"] += 1
         else:

@@ -1,26 +1,26 @@
-{"id": "knee", "input": {"query": "我膝盖疼还能跑步吗", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-knee"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "allergy", "input": {"query": "我对什么药过敏来着", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-penicillin"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "coriander", "input": {"query": "我是不是不吃香菜", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-coriander"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "sleep-current", "input": {"query": "我现在一般几点睡觉", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-sleep"], "within": 3, "absent": ["f-sleep-old"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "visa", "input": {"query": "我签证什么时候到期", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-visa"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "invalid-gone", "input": {"query": "我喜欢什么蓝色", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": ["f-blue"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "iceland", "input": {"query": "上次去芬兰是什么时候", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-iceland"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "xiaolin", "input": {"query": "我最近和小林干嘛了", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-hotpot"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "presentation", "input": {"query": "那次 presentation 怎么样", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-presentation"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "dentist-money", "input": {"query": "看牙医花了多少钱", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-dentist"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "kyoto-old", "input": {"query": "京都红叶那次住哪", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-kyoto"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "statement-deep", "input": {"query": "iCloud 订阅每月扣多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-statement"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "statement", "input": {"query": "招行流水里盒马花了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-statement"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "rooftop", "input": {"query": "伦敦有什么屋顶花园", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-rooftop"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "breakfast", "input": {"query": "高蛋白早餐吃什么", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-breakfast"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "trash-gone", "input": {"query": "伦敦火锅店排行", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-hotpot"], "within": 3, "absent": ["b-trash"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "pret", "input": {"query": "Pret 花了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-monzo"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "tesco", "input": {"query": "上次在 Tesco 买了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-tesco"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "thesis", "input": {"query": "导师对开题报告说了什么", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-chat-thesis"], "within": 3, "absent": ["c-chat-ethan"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "train", "input": {"query": "去爱丁堡的火车多少钱", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-grok"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "mom", "input": {"query": "我妈最近身体怎么样", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-mom-yoga"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "python", "input": {"query": "我会什么编程语言", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-python"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "freedom", "input": {"query": "我更看重自由还是稳定", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-freedom"], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "chitchat", "input": {"query": "哈哈哈好的", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": []}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "public-scene", "input": {"query": "她会什么技能 Python", "scene": "public", "today": "2026-10-30"}, "expect": {"top": ["f-python"], "within": 3, "absent": ["f-knee"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
-{"id": "public-private", "input": {"query": "膝盖旧伤", "scene": "public", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": ["f-knee"]}, "note": "起步题：模拟记忆库在 retrieval_corpus.json；以后用她的真实问句（脱敏）补到 30 条以上"}
+{"id": "knee", "input": {"query": "我膝盖疼还能跑步吗", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-knee"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "allergy", "input": {"query": "我对什么药过敏来着", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-penicillin"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "coriander", "input": {"query": "我是不是不吃香菜", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-coriander"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "sleep-current", "input": {"query": "我现在一般几点睡觉", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-sleep"], "within": 3, "absent": ["f-sleep-old"]}, "note": "虚构示例"}
+{"id": "visa", "input": {"query": "我签证什么时候到期", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-visa"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "invalid-gone", "input": {"query": "我喜欢什么蓝色", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": ["f-blue"]}, "note": "虚构示例"}
+{"id": "iceland", "input": {"query": "上次去芬兰是什么时候", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-iceland"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "xiaolin", "input": {"query": "我最近和小林干嘛了", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-hotpot"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "presentation", "input": {"query": "那次 presentation 怎么样", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-presentation"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "dentist-money", "input": {"query": "看牙医花了多少钱", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-dentist"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "kyoto-old", "input": {"query": "京都红叶那次住哪", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-kyoto"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "statement-deep", "input": {"query": "iCloud 订阅每月扣多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-statement"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "statement", "input": {"query": "招行流水里盒马花了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-statement"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "rooftop", "input": {"query": "伦敦有什么屋顶花园", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-rooftop"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "breakfast", "input": {"query": "高蛋白早餐吃什么", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["b-breakfast"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "trash-gone", "input": {"query": "伦敦火锅店排行", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["e-hotpot"], "within": 3, "absent": ["b-trash"]}, "note": "虚构示例"}
+{"id": "pret", "input": {"query": "Pret 花了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-monzo"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "tesco", "input": {"query": "上次在 Tesco 买了多少", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-tesco"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "thesis", "input": {"query": "导师对开题报告说了什么", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-chat-thesis"], "within": 3, "absent": ["c-chat-ethan"]}, "note": "虚构示例"}
+{"id": "train", "input": {"query": "去爱丁堡的火车多少钱", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["c-grok"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "mom", "input": {"query": "我妈最近身体怎么样", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-mom-yoga"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "python", "input": {"query": "我会什么编程语言", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-python"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "freedom", "input": {"query": "我更看重自由还是稳定", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": ["f-freedom"], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "chitchat", "input": {"query": "哈哈哈好的", "scene": "chat", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": []}, "note": "虚构示例"}
+{"id": "public-scene", "input": {"query": "她会什么技能 Python", "scene": "public", "today": "2026-10-30"}, "expect": {"top": ["f-python"], "within": 3, "absent": ["f-knee"]}, "note": "虚构示例"}
+{"id": "public-private", "input": {"query": "膝盖旧伤", "scene": "public", "today": "2026-10-30"}, "expect": {"top": [], "within": 3, "absent": ["f-knee"]}, "note": "虚构示例"}

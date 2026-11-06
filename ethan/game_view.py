@@ -1,14 +1,14 @@
-"""任务系统在 Telegram 里的样子（2026-10-26 Mia 要固定按钮，不用记暗号）。
+"""任务系统在 Telegram 里的样子（固定按钮，不用记暗号）。
 
 输入框下面常驻四个按钮：☀️ 今天、🛍 商店、📊 进度、📋 清单。点了弹出对应页面，页面里用内联按钮打卡、完成、兑换。
-“☀️ 今天”就是早报那张今日卡片（2026-10-27 她要合成一张，见 brief_card.py），打卡在卡片上点。
+“☀️ 今天”就是早报那张昨日卡（合成一张，见 brief_card.py），打卡在卡片上点。
 兑换要点两次（先选、再确认），避免手滑扣分。所有页面都按 Telegram HTML 发。
 """
 
 import html
 from datetime import date
 
-from . import brief_card, quests
+from . import brief_card, quests, taskrules
 
 BUTTONS = {"☀️ 今天": "quests", "今天": "quests", "🎯 任务": "quests", "任务": "quests",
            "🛍 商店": "shop", "商店": "shop", "📊 进度": "progress", "进度": "progress"}
@@ -74,7 +74,7 @@ def handle(db, data: str, day: date) -> tuple:
         gain = quests.check_habit(db, int(arg), day)
         return (f"打卡成功 +{gain} 分" if gain else "今天已经打过卡啦"), "quests"
     if action == "t":
-        gain = quests.complete_task(db, int(arg), day)
+        gain = taskrules.complete(db, int(arg), day)  # 和工作台同一个完成函数
         return (f"完成！+{gain} 分" if gain else "已经完成过了"), "quests"
     if action == "r":
         return "再点一次“确认兑换”就扣分", f"confirm:{arg}"

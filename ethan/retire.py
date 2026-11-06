@@ -31,12 +31,15 @@ HERE = Path(__file__).resolve().parent
 # 往 facts 表插、改、删（INSERT、UPDATE、DELETE）算写，调 lifebase.current_facts 算读）。
 # 写路径保留双写（触发器同步说法），读路径能改的已改；改不了的写原因，等对应的东西进新结构再改。
 LEGACY = {
-    "ethan/lifebase.py": (30, 10, "facts 的主人：写入、双写触发器、迁移、对账、删除和暂停、去重判断都在这里；"
+    "ethan/lifebase.py": (32, 12, "facts 的主人：写入、双写触发器、迁移、对账、删除和暂停、去重判断都在这里；"
                                   "source_health 本月贡献 3.4 已改读说法（回退用的旧查询留着，算 1 次读）。读的大多是写之前的去重 / 锁判断，属于写路径；"
-                                  "删后停用在说法上只是 candidate，NOT_GONE_STATEMENT / statement_gone / disclose 按对照查回旧状态挡掉（3 次读，Codex 评审 11-05），"
-                                  "等说法有了自己的停用状态再改"),
-    "ethan/mepage.py": (13, 11, "“我”页：十个方面的厚薄、全部记忆、待你定、纠错都按“方面（dimension）”算；"
-                                "说法里细属性不带方面，要等“看法（views）”进新结构（ontology-structure 第 6 节）才能改；改的是她的直接操作，写路径保留双写"),
+                                  "删后停用在说法上只是 candidate，fact_state 的 SQL 版（_state_case）/ statement_gone / disclose 按对照查回旧状态挡掉"
+                                  "（3 次读，Codex 评审 11-05；11-06“算不算数”统一成 fact_state 后 NOT_GONE_STATEMENT 并进 _state_case），"
+                                  "等说法有了自己的停用状态再改；临时状态到期（借鉴 6，11-05）：写入时带 until、迁移补 until、"
+                                  "触发器 v5 补说法的 until（2 次读、2 次写，都是写路径）"),
+    "ethan/mepage.py": (14, 11, "“我”页：十个方面的厚薄、全部记忆、待你定、纠错都按“方面（dimension）”算；"
+                                "说法里细属性不带方面，要等“看法（views）”进新结构（ontology-structure 第 6 节）才能改；改的是她的直接操作，写路径保留双写；"
+                                "全部记忆每条下面“意思相近的”（借鉴 8，11-05）按编号取回那几条的原文和状态（1 次读），跟着全部记忆一起改"),
     "ethan/memusers.py": (1, 3, "纠错单：按检索结果找到那条旧记录再改对 / 作废，是写路径，保留双写"),
     "ethan/portrait.py": (5, 3, "画像 chat_text 是登记过的统一入口（3.3 对外部分逐条过 lifebase.disclose，多读一次）；每晚整理的去重和置信度衰减是写路径；"
                                  "按方面给 小伴 的画像同样等 views 进新结构"),

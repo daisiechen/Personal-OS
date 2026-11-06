@@ -95,7 +95,7 @@ MEAL_LINE = re.compile(r"^(\S+?)：(.+?)（约 (\d+) 千卡，蛋白质 ([\d.]+)
 
 
 def parse_text(text: str):
-    """把 describe() 写的三餐文字拆回结构，给工作台排版用（2026-10-28 她嫌一坨）；拆不出就返回 None，页面照原文显示。"""
+    """把 describe() 写的三餐文字拆回结构，给工作台排版用（一坨）；拆不出就返回 None，页面照原文显示。"""
     if not text:
         return None
     lines = [l.rstrip() for l in text.splitlines() if l.strip()]
@@ -111,8 +111,8 @@ def parse_text(text: str):
         elif line.strip().startswith("用料：") and out["meals"]:
             out["meals"][-1]["items"] = [x.strip() for x in line.strip()[3:].split("、") if x.strip()]
         elif line.strip().startswith("做法：") and out["meals"]:
-            steps = re.split(r"(?<=[。；;])|\s*\d+[.、)）]\s*", line.strip()[3:])
-            out["meals"][-1]["steps"] = [x.strip(" ；;。") for x in steps if x and x.strip(" ；;。")]
+            steps = re.split(r"(?<=[。])|\s*\d+[.、)）]\s*", line.strip()[3:])
+            out["meals"][-1]["steps"] = [x.strip("") for x in steps if x and x.strip("")]
         elif not out["meals"]:
             out["note"] = (out["note"] + " " + line.strip()).strip()
     return out if out["meals"] else None

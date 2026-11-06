@@ -106,7 +106,7 @@ class LifebaseTest(unittest.TestCase):
 
     def test_backfill_reads_journal_and_about_section(self):
         self.store.wiki.write("journal/2026-10-28", "记忆", "# 2026-10-28 的记忆\n\n她去攀岩。\n\n新知道的：\n- 【饮食】不吃香菜\n- 【作息与习惯】十二点前睡\n\n聊到的人：\n- Amy：一起攀岩")
-        self.store.wiki.write("about-mia", "关于 Mia", "她在伦敦读书。\n\n## 小伴 每晚整理\n\n### 饮食\n- （2026-10-28）不吃香菜\n- 爱喝冰美式\n\n### 其他\n- 喜欢克莱因蓝")
+        self.store.wiki.write("about-mia", "关于 Mia", "她在曼彻斯特工作。\n\n## 小伴 每晚整理\n\n### 饮食\n- （2026-10-28）不吃香菜\n- 爱喝冰美式\n\n### 其他\n- 喜欢克莱因蓝")
         got = lifebase.backfill(self.store)
         rows = {r["statement"]: dict(r) for r in self.db.conn.execute("SELECT * FROM facts")}
         self.assertEqual(got["facts"], 5)  # 香菜两处只记一次；“聊到的人”不算事实；开头她写的那句也迁
@@ -114,7 +114,7 @@ class LifebaseTest(unittest.TestCase):
         self.assertEqual(rows["十二点前睡"]["dimension"], "rhythms")
         self.assertIsNone(rows["爱喝冰美式"]["valid_from"])
         self.assertEqual(rows["喜欢克莱因蓝"]["status"], "candidate")
-        self.assertEqual((rows["她在伦敦读书。"]["confidence"], rows["她在伦敦读书。"]["locked"]), (1.0, 0))
+        self.assertEqual((rows["她在曼彻斯特工作。"]["confidence"], rows["她在曼彻斯特工作。"]["locked"]), (1.0, 0))
         self.assertEqual(lifebase.backfill(self.store)["facts"], 0)
         self.assertTrue(lifebase.head_migrated(self.db))
 

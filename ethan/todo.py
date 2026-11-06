@@ -1,4 +1,4 @@
-"""可交互的待办清单（Telegram 内联按钮，2026-10-22 Mia 选定）。
+"""可交互的待办清单（Telegram 内联按钮，定）。
 
 她发“待办”弹出清单：每项一行按钮，✓ 完成、⬆ 往前挪、✕ 删掉。
 三栏：待办、小伴 答应你的、我们的心愿（两人一起实现的事）。
@@ -8,7 +8,7 @@
 import re
 from datetime import date
 
-from . import quests
+from . import quests, taskrules
 from .clock import her_today
 
 LIST_WORDS = ("待办", "清单", "todo", "/todo")
@@ -37,11 +37,12 @@ def _short(text: str, n: int = 14) -> str:
     return text if len(text) <= n else text[:n - 1] + "…"
 
 
-def render(db) -> tuple:
-    """返回 (消息文字, inline_keyboard)。"""
-    tasks = db.open_tasks()
-    mine = [t for t in tasks if not t["promised_by_ethan"]][:MAX_ITEMS]
-    his = [t for t in tasks if t["promised_by_ethan"]][:MAX_ITEMS]
+def render(db, today: date = None) -> tuple:
+    """返回 (消息文字, inline_keyboard)。她的待办和首页一样：今日任务 + 其他（第 9 条，ethan/taskrules.py 的 tg_list 视图），
+    不再列全部没做完的；在等的、推到明天的、说算了的、暂停副本的、交给 Claude / Codex / Grok 的都不在这里。"""
+    day = today or her_today()
+    mine = taskrules.rows(db, "tg_list", day)[:MAX_ITEMS]
+    his = taskrules.ethan_tasks(db, day)[:MAX_ITEMS]
     wishes = db.open_wishes()[:MAX_ITEMS]
     lines, keyboard = [], []
 
@@ -78,16 +79,16 @@ def handle_callback(db, data: str, today: date = None) -> str:
     item_id = int(raw_id)
     if kind == "t":
         if action == "done":
-            gain = quests.complete_task(db, item_id, today or her_today())
+            gain = taskrules.complete(db, item_id, today or her_today())  # 和工作台同一个完成函数（阶段任务走 stages.check）
             return f"完成一件！+{gain} 分" if gain else "完成一件！"
         if action == "del":
-            db.delete_task(item_id)
+            if not taskrules.delete(db, item_id, today or her_today()):  # 和工作台删除一样记“她删过”
+                return "这件已经不在了"
             return "删掉了"
-        if action == "up":
-            mine = [t for t in db.open_tasks()]
-            group = [t["id"] for t in mine if t["promised_by_ethan"] == next(
-                (x["promised_by_ethan"] for x in mine if x["id"] == item_id), 0)]
-            db.move_up("tasks", item_id, group)
+        if action == "up":  # 在她看到的那一栏里往前挪
+            day = today or her_today()
+            mine, his = [t["id"] for t in taskrules.rows(db, "tg_list", day)], [t["id"] for t in taskrules.ethan_tasks(db, day)]
+            db.move_up("tasks", item_id, mine if item_id in mine else his)
             return "往前挪了"
     if kind == "w":
         if action == "done":

@@ -213,7 +213,7 @@ class InboxAgentTest(unittest.TestCase):
 
 
 class LiveWorkTest(unittest.TestCase):
-    """2026-10-29 她说团队页漏活、失败怎么判：她叫停的算放弃不扣分；小伴 派给 Grok 还没回的算在干。"""
+    """团队页漏活、失败怎么判：她叫停的算放弃不扣分；小伴 派给 Grok 还没回的算在干。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -246,7 +246,7 @@ class LiveWorkTest(unittest.TestCase):
         self.assertEqual([(x["title"], x["asked"]) for x in live["done"]], [("芬兰机票三个选项", True)])
 
     def test_grok_matched_by_receipt_and_self_started(self):
-        """2026-10-29：按回执号配对，收藏日报不抵掉在干的；她在 Grok 里直接交代的，Grok 报【开工】就显示在干。"""
+        """按回执号配对，收藏日报不抵掉在干的；她在 Grok 里直接交代的，Grok 报【开工】就显示在干。"""
         now = datetime.now(timezone.utc)
         at = lambda m: (now - timedelta(minutes=m)).isoformat(timespec="seconds")
         (self.root / "grok-tasks.jsonl").write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in [
@@ -291,7 +291,7 @@ class SelfStartedExpiryTest(unittest.TestCase):
 
 class JudgeReviewTest(LiveWorkTest):
     def test_misreport_and_fail_from_review(self):
-        """2026-10-30 她说“待你审查”里有些是误报：能选误报（流转到下一步）或失败。"""
+        """“待你审查”里有些是误报：能选误报（流转到下一步）或失败。"""
         from datetime import datetime, timedelta, timezone
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
@@ -319,7 +319,7 @@ class JudgeReviewTest(LiveWorkTest):
 
 class ArchiveTest(LiveWorkTest):
     def test_archive_failed_and_review(self):
-        """2026-10-30 她问失败的 7 天后去哪、能不能直接归档：失败的照算失败收进归档，等审查的不审了算放弃再归档。"""
+        """失败的 7 天后去哪、能不能直接归档：失败的照算失败收进归档，等审查的不审了算放弃再归档。"""
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         wb = Workbench(self.store, Settings(self.root / "s.json"))

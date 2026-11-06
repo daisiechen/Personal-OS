@@ -1,5 +1,7 @@
-"""写作规范和 skill 第一版（docs/design/style-and-skills.md，她 11-05：“提前做”）：
-原料只取她写的、出处校验、确认前不注入 / 确认后注入、增量不覆盖她确认的、skill 草稿只进候选区、批准后生效、纠正攒够提议。"""
+"""写作规范和 skill 第一版（docs/design/style-and-skills.md）：
+原料只取她写的、出处校验、确认前不注入 / 确认后注入、增量不覆盖她确认的、skill 草稿只进候选区、批准后生效、纠正攒够提议。
+迭代：落在在用 skill 上的纠正出新版本草稿、
+不开新 skill；没有 skill 管的提议新 skill；批准后新版替换、旧版进 history；一键退回；写作规范确认过的条目出修订草稿、不另开。"""
 
 import json
 import tempfile
@@ -262,6 +264,188 @@ class SkillsTest(StyleBase):
         self.assertFalse((self.root / "skills" / "active" / "mail_reply.md").exists())
 
 
+class SkillIterateTest(StyleBase):
+    """"""
+
+    def setUp(self):
+        super().setUp()
+        from ethan import memusers, runlog
+        runlog.ensure(self.db)
+        memusers.ensure(self.db)
+        skills.draft_skill(self.db, "mail_reply")
+        skills.approve(self.db, "mail_reply")  # v1 在用
+        self.n = 0
+
+    def _run(self, kind="mail", reaction="edited", note=None):
+        from datetime import date
+        self.n += 1
+        today = date.today().isoformat()
+        self.db.conn.execute("INSERT INTO run_log (key, at, actor, kind, title, reaction, reaction_at, note) VALUES (?, ?, 'ethan', ?, ?, ?, ?, ?)",
+                             (f"{kind}:{self.n}", today, kind, f"回复：第 {self.n} 封", reaction, today, note))
+        self.db.conn.commit()
+
+    def _ticket(self, right, wrong="", entry="mail", user="mail"):
+        from datetime import datetime, timezone
+        self.db.conn.execute("INSERT INTO corrections (at, user, about, entry, wrong, right, layer, kind) VALUES (?, ?, 'her', ?, ?, ?, 'wrong', 'wrong')",
+                             (datetime.now(timezone.utc).isoformat(timespec="seconds"), user, entry, wrong, right))
+        self.db.conn.commit()
+
+    def _items(self, step=None):
+        out = [x for x in mepage.pending_items(self.db) if x["kind"] == "skill"]
+        return [x for x in out if x["options"][0].get("step") == step] if step else out
+
+    def test_mail_edit_counts_as_correction(self):
+        """她改了 小伴 的邮件草稿再发：运行记录记“自己改了”，改前→改后进 note。"""
+        from ethan import runlog
+        desk.ensure(self.db)
+        self.db.conn.execute("INSERT INTO mail_items (msg_key, subject, created_at, draft, ethan_draft, desk_state, sent_at) VALUES "
+                             "('msgid:a', '周五', '2026-11-05', '好的，周五见。我带 deck。', '您好，非常感谢您的来信！周五见。', 'sent', '2026-11-05')")
+        self.db.conn.execute("INSERT INTO mail_items (msg_key, subject, created_at, draft, ethan_draft, desk_state, sent_at) VALUES "
+                             "('msgid:b', '没改', '2026-11-05', '收到。', '收到。', 'sent', '2026-11-05')")
+        runlog.collect(self.db)
+        got = {r["key"]: dict(r) for r in self.db.conn.execute("SELECT * FROM run_log WHERE kind = 'mail'")}
+        edited = [r for r in got.values() if r["reaction"] == "edited"]
+        self.assertEqual(len(edited), 1)
+        self.assertIn("改了", edited[0]["note"])
+        self.assertIn("非常感谢", edited[0]["note"])
+        self.assertEqual(sorted(r["reaction"] for r in got.values()), ["adopted", "edited"])
+
+    def test_corrections_on_active_skill_draft_new_version(self):
+        self._run(note="改了 1 句：「您好，非常感谢您的来信！」→「（删掉）」")
+        self._run(note="改了 1 句：「期待您的回复。」→「（删掉）」")
+        self.assertEqual(skills.propose(self.db), [])  # 两次不够
+        self._ticket("给教授的信署全名 Mia Lin", wrong="署名 Mia", entry="mail")
+        self.assertEqual(skills.propose(self.db), ["mail_reply"])
+        # 不开新 skill：没有“要不要开一个”，有一条“替你回邮件 v2：改了 3 处”
+        self.assertFalse(self._items("idea"))
+        rev = self._items("revise")
+        self.assertEqual(len(rev), 1)
+        self.assertEqual(rev[0]["question"], "替你回邮件 v2：改了 3 处")
+        o = rev[0]["options"][0]
+        self.assertEqual((o["from_version"], o["version"]), (1, 2))
+        self.assertEqual(len(o["changes"]), 3)
+        self.assertTrue(all(c["from"] for c in o["changes"]))  # 每处改动附上是哪次纠正
+        self.assertTrue(any("纠错单 #" in c["from"] for c in o["changes"]))
+        self.assertNotIn("她纠正过的", o["before"])  # 改前改后对比
+        self.assertIn("署全名 Mia Lin", o["after"])
+        cand = (self.root / "skills" / "candidates" / "mail_reply.md").read_text(encoding="utf-8")
+        act = (self.root / "skills" / "active" / "mail_reply.md").read_text(encoding="utf-8")
+        self.assertTrue(cand.startswith("# skill：替你回邮件（mail_reply）v2"))
+        self.assertIn("在 v1 上改了 3 处", cand)
+        # 只改“她的做法”那块
+        self.assertEqual(cand.split("## 2.")[0].split("\n", 3)[3], act.split("## 2.")[0].split("\n", 3)[3])
+        self.assertEqual(cand[cand.index("## 3."):], act[act.index("## 3."):])
+        # 批准前还用 v1
+        self.assertNotIn("署全名", skills.prompt_for(self.db, "mail_reply"))
+        self.assertEqual(skills.propose(self.db), [])  # 用过的纠正不再算、在等她看的不重复起草
+        # 批准：v2 替换，v1 进 history
+        res = mepage.resolve(self.db, rev[0]["id"], "yes")
+        self.assertTrue(res["ok"])
+        self.assertIn("退回 v1", res["msg"])
+        how = skills.prompt_for(self.db, "mail_reply")
+        self.assertIn("v2", how)
+        self.assertIn("署全名 Mia Lin", how)
+        self.assertNotIn("依据：", how)
+        self.assertIn("署全名 Mia Lin", desk._mail_how(self.db))
+        hist = list((self.root / "skills" / "history").glob("mail_reply-v1-*.md"))
+        self.assertEqual(len(hist), 1)
+        self.assertEqual(skills.state(self.db, "mail_reply")["version"], 2)
+        self.assertEqual(skills.listing(self.db), [{"skill": "mail_reply", "title": "替你回邮件", "version": 2, "back_to": 1,
+                                                    "scope": "回邮件 / 起草邮件"}])
+        # 一键退回上一版
+        back = skills.rollback(self.db, "mail_reply")
+        self.assertTrue(back["ok"])
+        self.assertNotIn("署全名", skills.prompt_for(self.db, "mail_reply"))
+        self.assertEqual(skills.state(self.db, "mail_reply")["version"], 1)
+        self.assertEqual(skills.listing(self.db)[0]["back_to"], None)
+        self.assertFalse(skills.rollback(self.db, "mail_reply")["ok"])  # v1 是最早的
+        self.assertTrue(list((self.root / "skills" / "history").glob("mail_reply-v2-*.md")))  # v2 留底
+
+    def test_reject_new_version_keeps_old(self):
+        for n in range(3):
+            self._run(note=f"改了 1 句：「第 {n} 种客套话」→「（删掉）」")
+        skills.propose(self.db)
+        rev = self._items("revise")[0]
+        self.assertEqual(mepage.resolve(self.db, rev["id"], "no")["msg"], "好，这版不用，还按 v1 来")
+        self.assertEqual(skills.state(self.db, "mail_reply")["status"], "active")
+        self.assertTrue((self.root / "skills" / "active" / "mail_reply.md").exists())
+        self.assertTrue(list((self.root / "skills" / "rejected").glob("mail_reply-v2-*.md")))
+        self.assertEqual(skills.propose(self.db), [])  # 这几次纠正她看过了，不再反复提
+
+    def test_uncovered_kind_proposes_new_skill(self):
+        for n in range(3):
+            self._run(kind="prep", reaction="revised", note=f"第 {n} 次要改")
+        self._ticket("聊天里纠正的邮件事", entry="chat")  # 不是从邮件起草进来的：不算在“替你回邮件”上
+        self.assertEqual(skills.propose(self.db), ["prep"])
+        self.assertFalse(self._items("revise"))
+        idea = self._items("idea")
+        self.assertEqual([x["question"] for x in idea], ["要不要开一个 skill：替你准备事"])
+        self.assertFalse((self.root / "skills" / "candidates" / "mail_reply.md").exists())
+
+    def test_scope_matching(self):
+        rec = {"src": "ticket", "kind": "ethan", "entry": "mail"}
+        self.assertEqual(skills.owner(self.db, rec), "mail_reply")
+        self.assertIsNone(skills.owner(self.db, {**rec, "entry": "chat"}))
+        self.assertEqual(skills.owner(self.db, {"src": "run", "kind": "mail", "entry": None}), "mail_reply")
+        self.assertIsNone(skills.owner(self.db, {"src": "run", "kind": "diary", "entry": None}))
+        skills.rollback(self.db, "mail_reply")  # 没有更早的，照旧在用
+        self.db.conn.execute("UPDATE skill_state SET status = 'rejected' WHERE name = 'mail_reply'")
+        self.assertIsNone(skills.owner(self.db, {"src": "run", "kind": "mail", "entry": None}))  # 没在用的 skill 不算“已有”
+
+
+class StyleReviseTest(StyleBase):
+    """写作规范也一样：她改得多了的那条确认过的规则出“修订草稿”，不另开。"""
+
+    def setUp(self):
+        super().setUp()
+        style.draft(self.db, Model([GOOD]), force=True)
+        self.rid = style.rules(self.db, "draft")[0]["id"]
+        style.confirm(self.db, self.rid)
+
+    def _round(self, days):
+        for d, text in days:
+            diary.save(self.db, d, text)
+        lifebase.backfill_handwritten(self.db)
+        quotes = [t.split("。")[0] + "。" for _, t in days][:3]
+        if len(quotes) < 2:
+            quotes.append(days[0][1].split("。")[1] + "。")
+        return style.draft(self.db, Model([{**GOOD, "rule": "开心时会用“哈哈”", "words": ["哈哈"], "quotes": quotes, "replaces": self.rid}]), force=True)
+
+    def test_revision_after_enough_and_confirm_replaces(self):
+        got = self._round([("2026-11-06", "哈哈今天好开心。见到小林了。"), ("2026-11-07", "哈哈又下雨。没出门。")])
+        self.assertEqual(got["signals"], 1)
+        self.assertEqual(style.rules(self.db, "draft"), [])  # 两句不够，不出草稿、也不另开一条
+        self.assertEqual([r["id"] for r in style.rules(self.db, "confirmed")], [self.rid])
+        got = self._round([("2026-11-08", "哈哈搞定了。去吃饭。")])
+        self.assertEqual(got["revisions"], 1)
+        drafts = style.rules(self.db, "draft")
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0]["revises"], self.rid)
+        p = [x for x in mepage.pending_items(self.db) if x["kind"] == "style"][0]
+        self.assertIn("修订 1 条", p["question"])
+        self.assertEqual(p["options"][0]["revises"]["text"], GOOD["rule"])
+        self.assertIn("不用“哈哈”", style.style_block(self.db, "mail"))  # 她点对之前还按原来的
+        self.assertTrue(mepage.resolve(self.db, p["id"], "yes", pick=drafts[0]["id"])["ok"])
+        block = style.style_block(self.db, "mail")
+        self.assertIn("开心时会用“哈哈”", block)
+        self.assertNotIn("不用“哈哈”", block)
+        old = [r for r in style.rules(self.db, "replaced") if r["id"] == self.rid][0]
+        self.assertEqual(old["replaced_by"], drafts[0]["id"])  # 原来那条留着、记“被取代”
+        self.assertEqual(lifebase.reconcile_statements(self.db), [])
+
+    def test_reject_revision_keeps_old_rule(self):
+        self._round([("2026-11-06", "哈哈今天好开心。见到小林了。"), ("2026-11-07", "哈哈又下雨。没出门。")])
+        self._round([("2026-11-08", "哈哈搞定了。去吃饭。")])
+        style.reject(self.db, style.rules(self.db, "draft")[0]["id"])
+        self.assertIn("不用“哈哈”", style.style_block(self.db, "mail"))
+        self.assertEqual([r["id"] for r in style.rules(self.db, "confirmed")], [self.rid])
+
+    def test_same_as_confirmed_is_not_a_signal(self):
+        diary.save(self.db, "2026-11-06", "今天下雨。没出门。")
+        got = style.draft(self.db, Model([{**GOOD, "rule": "不用哈哈", "quotes": ["今天下雨。", "没出门。"], "replaces": self.rid}]), force=True)
+        self.assertEqual((got["skipped"], got["signals"]), (1, 0))
+
+
 class EvalTest(StyleBase):
     def test_metrics(self):
         self.assertEqual(style.banned_hits("哈哈哈哈", ["哈哈"]), 2)
@@ -292,3 +476,47 @@ class EvalTest(StyleBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreshOnlyTest(StyleBase):
+    """驳回 skill 第一版：“用了好多都是我十年前邮件里面的内容，不合适，你要用最新的”。"""
+
+    def test_old_mail_not_in_style_materials(self):
+        lifebase.add_evidence(self.db, "sent", "sent:old", "2015-03-01", "主题：旧信\n十年前写的信，语气很学生气。")
+        self.db.conn.commit()
+        text = " ".join(i["text"] for i in style.materials(self.db))
+        self.assertIn("我带 deck", text)
+        self.assertNotIn("十年前写的信", text)
+
+    def test_skill_drops_statements_only_backed_by_old_records(self):
+        old = lifebase.add_evidence(self.db, "sent", "sent:old2", "2015-03-01", "主题：x\n回邮件一律先写感谢。")
+        new = lifebase.add_evidence(self.db, "sent", "sent:new2", "2026-10-01", "主题：y\n回邮件先给结论。")
+        lifebase.add_fact(self.db, "preferences", "回邮件一律先写一大段感谢", [old], kind="preference")
+        lifebase.add_fact(self.db, "preferences", "回邮件先给结论", [new], kind="preference")
+        self.db.conn.commit()
+        got = onto_query.preferences(self.db, "ethan", "")
+        fresh = [i["value"] for i in onto_query.recent_only(self.db, got)["items"]]
+        self.assertIn("回邮件先给结论", fresh)
+        self.assertNotIn("回邮件一律先写一大段感谢", fresh)
+        self.assertEqual(len(onto_query.recent_only(self.db, got, today=__import__("datetime").date(2016, 1, 1))["items"]),
+                         len(got["items"]))  # 截止线按“今天”往前两年算
+
+
+class NoSelfLearningTest(StyleBase):
+    """小伴 起草、她照发的不算她写的。"""
+
+    def test_ethan_drafted_mail_not_learned_but_her_edits_are(self):
+        desk.ensure(self.db)
+        self.db.conn.execute("INSERT INTO mail_items (msg_key, subject, created_at, draft, ethan_draft, desk_state, sent_at) VALUES "
+                             "('msgid:s', '照发', '2026-11-05', '您好，非常感谢您的来信，我们下周详谈。', '您好，非常感谢您的来信，我们下周详谈。', 'sent', '2026-11-05')")
+        self.db.conn.execute("INSERT INTO mail_items (msg_key, subject, created_at, draft, ethan_draft, desk_state, sent_at) VALUES "
+                             "('msgid:e', '改过', '2026-11-05', '好，周五聊。', '您好，非常感谢您的来信！周五见。', 'sent', '2026-11-05')")
+        lifebase.add_evidence(self.db, "sent", "sent:s", "2026-11-05", "主题：照发\n您好，非常感谢您的来信，我们下周详谈。\n\nMia")
+        lifebase.add_evidence(self.db, "sent", "sent:e", "2026-11-05", "主题：改过\n好，周五聊。")
+        self.db.conn.commit()
+        items = style.materials(self.db)
+        mails = " ".join(i["text"] for i in items if i["kind"] == "mail")
+        self.assertNotIn("我们下周详谈", mails)  # 小伴 写、她没改的整封不收
+        self.assertIn("我带 deck", mails)  # 她自己写的照收
+        pairs = [(i.get("before"), i["text"]) for i in items if i["ref"].startswith("mailpair:")]
+        self.assertTrue(any("周五聊" in t for _, t in pairs))  # 她改过的收改前→改后

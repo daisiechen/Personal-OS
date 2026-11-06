@@ -1,11 +1,11 @@
-"""小伴 发照片（2026-10-27 她定）。
+"""小伴 发照片。
 
 两种：
 - 生活照：他剧本里的日出、咖啡、跑步路线、晚饭……用 AI 现场生成。照片里不露他的脸（风景、食物、手、背影）。
   他主动发的每天最多 3 张；她要的不算，要多少给多少。
 - 网上的图：[发图 网址]，Telegram 直接按网址发。
 生图先用 OpenRouter 上的 Grok Imagine（OPENROUTER_API_KEY），没有或失败再试 Google Gemini API（GEMINI_API_KEY），每张记进账本。
-2026-10-27 她看了三轮样图定的：Grok 写实，配上“有审美、会撩”的提示词后不再直男；Seedream 偏摆拍。
+看了三轮样图定的：Grok 写实，配上“有审美、会撩”的提示词后不再直男；Seedream 偏摆拍。
 她的 OpenRouter 账号被 Claude、Gemini、GPT 三家拒（403），Grok、Seedream、Muse 能用。
 """
 
@@ -35,7 +35,7 @@ EST_COST = 0.04  # 每张大约多少美元，记账用（Grok Imagine 和 Gemin
 
 
 def describe(router, path: str) -> str:
-    """看一眼生成出来的照片，写下实际画面（2026-10-31：照片里多了个杯子，他自己不知道，被她问住就乱编）。"""
+    """看一眼生成出来的照片，写下实际画面（照片里多了个杯子，他自己不知道，被她问住就乱编）。"""
     return router.complete(DESCRIBE, [{"role": "user", "content": "照片在附件里。"}], purpose="photo-describe",
                            images=[str(path)]).text.strip()[:300]
 
@@ -98,7 +98,7 @@ class OpenRouter:
         self.key, self.model, self.opener = key, model, opener
 
     def make(self, prompt: str, refs=()) -> bytes:
-        """refs：参考图的路径（JPEG/PNG），按顺序放进同一条消息，用来保住人物长相（今日卡用，见 ethan/cards.py）。"""
+        """refs：参考图的路径（JPEG/PNG），按顺序放进同一条消息，用来保住人物长相（昨日卡用，见 ethan/cards.py）。"""
         content = prompt
         if refs:
             content = [{"type": "text", "text": prompt}] + [
@@ -110,7 +110,7 @@ class OpenRouter:
         try:
             with self.opener(req, timeout=120) as resp:
                 data = json.loads(resp.read())
-        except urllib.error.HTTPError as e:  # 带上接口说的原因（2026-10-31：今日卡连着两天只记下“400 Bad Request”，查不出为什么）
+        except urllib.error.HTTPError as e:  # 带上接口说的原因（昨日卡连着两天只记下“400 Bad Request”，查不出为什么）
             try:
                 why = e.read().decode("utf-8", "replace")[:300]
             except Exception:

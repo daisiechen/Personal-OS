@@ -227,14 +227,18 @@ class OntoQueryTest(unittest.TestCase):
         self.assertNotIn("sleep_late", keys)
         self.assertEqual(lifebase.write_behavior(self.db, DAY)["written"], 0)
 
-    def test_work_start_not_before_4am(self):
-        # 02:00 起来干活（前面空了 4 小时以上）不算开始；04:30 起的算
+    def test_work_start_not_before_5am(self):
+        # 02:00 起来干活（前面空了 4 小时以上）不算开始；决定 9（11-06）：和工作时长一样按凌晨 5 点分天，04:30 的也不算（以前 4 点），05:30 的算
         for d in ("2026-10-27", "2026-10-28", "2026-10-29"):
             self._slots([f"{d}T02:00", f"{d}T02:05", f"{d}T09:00"])
         self._slots(["2026-10-30T04:30"])
         items = {i["key"]: i for i in onto_query.rhythm_items(self.db, DAY)}
-        self.assertEqual((items["work_start"]["value"], items["work_start"]["samples"]), ("09:00", 4))
+        self.assertEqual((items["work_start"]["value"], items["work_start"]["samples"]), ("09:00", 3))
         self.assertNotIn("02:", items["work_start"]["value"])
+        self._slots(["2026-10-31T05:30"])  # 周六不算工作日；换成下周一前的周五已经用过，直接查 mac_sessions
+        starts, nights = onto_query.mac_sessions(self.db, date(2026, 10, 27), date(2026, 11, 2))
+        self.assertNotIn(4 * 60 + 30, starts)
+        self.assertIn(28 * 60 + 30, nights)  # 10-30 04:30 收工算 10-29 那一晚（相对那晚 0 点 28:30）
 
     def test_write_behavior_replaces_same_week_when_algorithm_changes(self):
         self._slots(["2026-10-27T09:40", "2026-10-28T10:20", "2026-10-29T10:05"])

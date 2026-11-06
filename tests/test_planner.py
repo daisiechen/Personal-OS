@@ -269,8 +269,8 @@ class ICloudTest(unittest.TestCase):
         busy = cal.busy(MONDAY)
         self.assertEqual(busy[0][:3], ("10:00", "11:30", "Marketing 课"))  # 11 月已是冬令时，UTC=伦敦
         info = dict(busy[0][3])
-        self.assertTrue(info.pop("href").startswith("https://"))  # 删她日历上的约要用（2026-11-02）
-        self.assertEqual(info.pop("calendar"), "工作")  # 查重时要知道是哪个日历（2026-11-04）
+        self.assertTrue(info.pop("href").startswith("https://"))  # 删她日历上的约要用
+        self.assertEqual(info.pop("calendar"), "工作")  # 查重时要知道是哪个日历
         self.assertEqual(info, {"location": "AB2 3EF London, 英格兰", "geo": (51.52, -0.11), "travel_min": 37, "recurring": False})
         self.assertEqual(len([r for r in fake.requests if r[0] == "REPORT"]), 2)
 
@@ -312,7 +312,7 @@ class ICloudTest(unittest.TestCase):
 
 class LinkTasksDedupTest(unittest.TestCase):
     def test_reworded_todo_links_to_existing(self):
-        """2026-10-30 她说一天冒出好几个“发学生证明邮件”：计划里换了说法的同一件事挂到已有待办上，不另建。"""
+        """一天冒出好几个“发学生证明邮件”：计划里换了说法的同一件事挂到已有待办上，不另建。"""
         import tempfile
         from pathlib import Path
         from ethan.memory import MemoryStore

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex 实时报到（2026-10-29 她要 Codex 干活的状态实时更新，Mac 本地和另一台服务器上的都要）。
+"""Codex 实时报到（Codex 干活的状态实时更新，Mac 本地和另一台服务器上的都要）。
 
 Codex 只在一轮做完时调 notify，而且桌面 App 在沙箱里跑它、连不了网，所以“在干”报不上来。
 但 Codex 每一轮都会把过程实时写进 ~/.codex/sessions/年/月/日/rollout-*.jsonl。这个小程序在沙箱外每分钟看一眼：
@@ -36,7 +36,7 @@ def _text(v) -> str:
 
 
 def _is_her(text: str) -> bool:
-    """Codex 会把 AGENTS.md、环境说明当成“用户消息”塞进去，标题要跳过这些，取她真正说的第一句（2026-10-29）。"""
+    """Codex 会把 AGENTS.md、环境说明当成“用户消息”塞进去，标题要跳过这些，取她真正说的第一句。"""
     t = text.strip()
     return bool(t) and not t.startswith(("<", "# AGENTS.md", "#AGENTS.md")) and "AGENTS.md instructions" not in t[:80]
 
@@ -121,7 +121,7 @@ def once(home: Path = None, now: float = None, opener=urllib.request.urlopen, sa
     except (OSError, ValueError):
         cache = {}
     # 默认看 ~/.codex/sessions；Codex 用了别的 CODEX_HOME 的（比如另一台服务器上的 app-server），把它的 sessions 目录
-    # 一行一个写进 ~/.codex/ethan_sessions（2026-10-29 旧服务器上的两个 Codex 都不在默认位置）
+    # 一行一个写进 ~/.codex/ethan_sessions（旧服务器上的两个 Codex 都不在默认位置）
     dirs = [home / "sessions"]
     extra = home / "ethan_sessions"
     if extra.exists():

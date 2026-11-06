@@ -1,4 +1,6 @@
-# DemoApp 举报提醒（2026-10-29 她同意）
+# DemoApp 举报提醒
+
+[English](../en/operations/fancy-moderation.md) | 简体中文
 
 DemoApp（她的你的 App）的举报要在 24 小时内复核，**复核由她本人负责，小伴 只负责提醒**。
 DemoApp 的 worker 把只含数字和后台链接的消息推给 小伴 的接收口，小伴 收到后马上在 Telegram 告诉她。

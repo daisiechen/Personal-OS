@@ -90,7 +90,7 @@ class PublicSiteTest(unittest.TestCase):
         def complete(system, messages, purpose="chat", images=()):
             seen.append(messages[0]["content"])
             return SimpleNamespace(text=json.dumps(answer, ensure_ascii=False))
-        self.assertEqual(desk.items(self.db), [])  # 分档前工作台不显示（2026-10-31 她定）
+        self.assertEqual(desk.items(self.db), [])  # 分档前工作台不显示
         publicsite.triage(self.db, SimpleNamespace(complete=complete), "2026-10-30")
         self.assertIn("由 AI agent「某某助手，替 Amy 联系」代留", seen[0])
         self.assertNotIn("cheap seo", seen[0])  # 机器人那条不送去分档

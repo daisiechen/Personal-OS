@@ -45,7 +45,7 @@ class ParseTest(unittest.TestCase):
         turns = ax.parse_turns([old_line("user", INJ_ENV + "\n" + SAID), old_line("assistant", "收到", "output_text")])
         self.assertEqual([t["text"] for t in turns], [SAID, "收到"])
 
-    def test_transcript_both_sides_agent_cut_500(self):  # 她 11-04：别人跟我的对话也是我的记忆
+    def test_transcript_both_sides_agent_cut_500(self):  # 别人跟我的对话也是我的记忆
         turns = [{"role": "user", "text": SAID}, {"role": "assistant", "text": "建议你" + "多休息" * 300},
                  {"role": "assistant", "text": "```\nprint(1)\n```"}, {"role": "user", "text": "好的"}]
         lines = ax.transcript_lines(turns, "Codex", ax.AGENT_MAX)

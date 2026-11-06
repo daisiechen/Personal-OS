@@ -75,7 +75,7 @@ class LookupTest(unittest.TestCase):
             self.assertEqual(rounds, [1, 2])
             store.close()
 
-    def test_agent_searches_her_mailbox(self):  # 2026-10-31：“订单号也在我邮箱里自己去找”
+    def test_agent_searches_her_mailbox(self):  # “订单号也在我邮箱里自己去找”
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(Path(tmp))
             answers = ["[查邮件 ltmuseum]", "找到了，订单号 778899"]

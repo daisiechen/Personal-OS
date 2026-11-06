@@ -1,6 +1,6 @@
-"""工作台“我”页（记忆对齐第三步，她 2026-10-31 定稿：docs/design/memory-alignment.md 第 9 节）。
+"""工作台“我”页（记忆对齐第三步，稿：docs/design/memory-alignment.md 第 9 节）。
 
-页面主体：对得上的比例和每周趋势 → 使用者小卡（小伴、Dais在前，其余按用得多少）→ 纠错单（跟着点开的卡变）。
+页面主体：对得上的比例和每周趋势 → 使用者小卡（小伴、主页助手在前，其余按用得多少）→ 纠错单（跟着点开的卡变）。
 右上角三个弹窗：待你定（红点数字）、问一问、全部记忆。
 
 记忆分两种：长期（她一般是怎样的，带有效期：一直 / 从某天起 / 到某天 / 某个条件下）和那一次（某天发生了什么，记成事件）。
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS pending (
 CREATE TABLE IF NOT EXISTS confirmations (id INTEGER PRIMARY KEY, at TEXT NOT NULL, source TEXT NOT NULL, fact_id INTEGER, note TEXT);
 CREATE TABLE IF NOT EXISTS ask_log (id INTEGER PRIMARY KEY, at TEXT NOT NULL, question TEXT NOT NULL, answers TEXT NOT NULL, verdict TEXT);
 """
-PENDING_COLS = (("asked_at", "TEXT"), ("origin", "TEXT"), ("dim", "TEXT"))  # origin = gap：1.7 补缺口挑的题  # 小伴 在聊天里问过的时间：问过的三天内不再问（2026-10-31 两套“问她”合一）
+PENDING_COLS = (("asked_at", "TEXT"), ("origin", "TEXT"), ("dim", "TEXT"))  # origin = gap：1.7 补缺口挑的题  # 小伴 在聊天里问过的时间：问过的三天内不再问（两套“问她”合一）
 QUESTION_DAYS = 14  # 画像出的确认问题，她两周没理就过期（不算错也不算对）
 ASK_GAP_DAYS = 3
 SNAP_COLS = "valid_from, valid_to, superseded_by, status, locked, confidence, until, until_cond, last_confirmed_at"
@@ -52,7 +52,7 @@ def ensure(db):
 
 
 def _move_old_questions(db):
-    """画像每周复盘以前出的确认问题（profile_questions）挪进“待你定”，以后只有这一条线（2026-10-31）。"""
+    """画像每周复盘以前出的确认问题（profile_questions）挪进“待你定”，以后只有这一条线。"""
     try:
         rows = db.conn.execute("SELECT * FROM profile_questions WHERE status = 'open'").fetchall()
     except Exception:
@@ -69,14 +69,14 @@ def _fact(db, fid):
     return dict(r) if r else None
 
 
-# 这条是谁说的（ontology-plan 1.2 节的归属表），“全部记忆”每条都写清楚，方便她验收（11-04 她看到全写着“系统推出来的”）
+# 这条是谁说的（ontology-plan 1.2 节的归属表），“全部记忆”每条都写清楚，方便她验收（看到全写着“系统推出来的”）
 SAID = {"her_words": "你说的", "her_confirmation": "你确认的", "her_provided": "你给的资料", "behavior": "行为记录",
         "other_person": "别人说的", "system_inference": "系统推的", "agent_relay": "转述"}
 
 
 def _matches(q: str, text: str) -> bool:
-    """全部记忆里的搜索（11-04 她搜“Lbs”“读过的学校”都搜不到）：不分大小写；整句对得上、换过的说法对得上、
-    或者一半以上的词对得上都算。意思相近但用词完全不同的，要等语义检索（ontology-plan 候补，她 11-04 要提前）。"""
+    """全部记忆里的搜索（搜“某商学院”“读过的学校”都搜不到）：不分大小写；整句对得上、换过的说法对得上、
+    或者一半以上的词对得上都算。意思相近但用词完全不同的，要等语义检索（ontology-plan 候补，提前）。"""
     from . import memsearch
     low = (text or "").lower()
     q = (q or "").strip().lower()
@@ -166,10 +166,10 @@ def refresh(db, today: date = None, city: str = None) -> dict:
             f0 = _fact(db, ids[0])
             if f0:
                 seen.append(f0["statement"] or "")
-    for f in lifebase.current_facts(db):
+    for f in lifebase.current_facts(db, include_expired=True, today=today):  # 到期的读取时已经不算现在，这里要看到它们去问她
         if f["id"] in asked:
             continue
-        expired = (f.get("until") and f["until"] <= today.isoformat()) or (
+        expired = lifebase.fact_state(f, today) == "expired" or (  # “到期”只按 lifebase 一处判（决定 10）
             city and (f.get("until_cond") or "").startswith("city:") and f["until_cond"][5:].lower() != city.lower())
         if expired:
             n, users = _uses(db, f["id"])
@@ -180,10 +180,10 @@ def refresh(db, today: date = None, city: str = None) -> dict:
             continue
         if _hers(f):
             continue
-        if ONE_OFF.search(f["statement"] or ""):  # 某一天的事（“10-30 早上 8:43 才睡醒”）只是那天的记录，不当长期的去确认（她 11-04）
+        if ONE_OFF.search(f["statement"] or ""):  # 某一天的事（“10-30 早上 8:43 才睡醒”）只是那天的记录，不当长期的去确认
             continue
         from .core.agent import similar_task
-        if similar_task(f["statement"] or "", seen):  # 同一件事换个说法的，已经问过或她确认过就不再问（她 11-04：“为什么要我确认两遍？”）
+        if similar_task(f["statement"] or "", seen):  # 同一件事换个说法的，已经问过或她确认过就不再问
             continue
         n, users = _uses(db, f["id"])
         if n >= CONFIRM_USES:
@@ -257,7 +257,7 @@ def pending_items(db) -> list:
 def pending_count(db) -> int:
     try:
         ensure(db)
-        # 小伴 补缺口的问题不算“待你定”（他在聊天里顺口问；她 11-04：“是给我的问答题么？”）
+        # 小伴 补缺口的问题不算“待你定”（他在聊天里顺口问）
         return db.conn.execute("SELECT COUNT(*) FROM pending WHERE status = 'open' AND COALESCE(origin, '') != 'gap'").fetchone()[0]
     except Exception:
         return 0
@@ -282,7 +282,7 @@ def resolve(db, pid: int, action: str, pick: int = None, text: str = "", type_: 
         return {"ok": False, "msg": "这件已经定过了"}
     if r["kind"] == "disclose":
         return _resolve_disclose(db, r, action, text)
-    if r["kind"] == "style":  # 写作规范草稿：逐条对 / 不对 / 改（ethan/style.py，她 11-05“提前做”），pick 是规则编号
+    if r["kind"] == "style":  # 写作规范草稿：逐条对 / 不对 / 改（ethan/style.py，“提前做”），pick 是规则编号
         from . import style
         return style.resolve(db, r, action, pick, text)
     if r["kind"] == "skill":  # 新 skill 草稿 / 提议开 skill（ethan/skills.py）：批准才生效
@@ -295,7 +295,7 @@ def resolve(db, pid: int, action: str, pick: int = None, text: str = "", type_: 
     before_max = db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM facts").fetchone()[0]
     if action == "pick":
         chosen = fids[int(pick)]
-        if since or until:  # 选定的这条从哪天到哪天算（2026-10-31 时间填在按钮上面）
+        if since or until:  # 选定的这条从哪天到哪天算（时间填在按钮上面）
             db.conn.execute("UPDATE facts SET valid_from = COALESCE(?, valid_from), until = ? WHERE id = ?", (since, until, chosen))
         _confirm(db, chosen, "pending")
         for fid in fids:
@@ -377,7 +377,7 @@ def reopen(db, pid: int) -> dict:
         if row:
             db.conn.execute(f"UPDATE facts SET {', '.join(c + ' = ?' for c in row)} WHERE id = ?", (*row.values(), int(fid)))
     for fid in res.get("created") or []:
-        db.conn.execute("UPDATE facts SET status = 'invalid', valid_to = ? WHERE id = ?", (_now(), fid))
+        lifebase.invalidate(db, fid, force=True)  # 撤销时新建的那几条作废（作废只走 lifebase 一个入口）
     if res.get("confirm_from"):
         db.conn.execute("DELETE FROM confirmations WHERE id > ?", (res["confirm_from"],))
     db.conn.execute("UPDATE pending SET status = 'open', resolved_at = NULL, resolution = NULL WHERE id = ?", (int(pid),))
@@ -387,7 +387,7 @@ def reopen(db, pid: int) -> dict:
 
 # ---------- 问一问 ----------
 def ask(db, router, question: str) -> dict:
-    """同一个问题，小伴 和Dais各会怎么答（只是问问，不发给任何人）。"""
+    """同一个问题，小伴 和主页助手各会怎么答（只是问问，不发给任何人）。"""
     from . import memsearch
     ensure(db)
     question = (question or "").strip()[:200]
@@ -395,8 +395,8 @@ def ask(db, router, question: str) -> dict:
         return {"ok": False, "msg": "问一句"}
     memsearch.refresh(db)
     jobs = []
-    asked = []  # Dais 按对外开关（ontology-plan 3.3）：“问我”的那几类只知道要先问她，不给内容
-    for user, who in (("ethan", "小伴"), ("twin", "Dais（她主页上的 AI，只能用对外开关里“可以说”的那部分）")):
+    asked = []  # 主页助手 按对外开关（ontology-plan 3.3）：“问我”的那几类只知道要先问她，不给内容
+    for user, who in (("ethan", "小伴"), ("twin", "主页助手（她主页上的 AI，只能用对外开关里“可以说”的那部分）")):
         found = (memsearch.search(db, [question], "chat", user="ethan") if user == "ethan"
                  else memsearch.search(db, [question], "public", user="twin", asked=asked))
         jobs.append((user, who, found))
@@ -529,7 +529,7 @@ def page(db, today: date = None) -> dict:
         start = monday - timedelta(weeks=k)
         weeks.append({"week": start.isoformat()[5:], **_week_rate(db, start, start + timedelta(days=7))})
     this = weeks[-1]
-    users = memusers.entity_stats(db)  # 按实体：小伴、个人主页、OS（她 2026-10-31）
+    users = memusers.entity_stats(db)  # 按实体：小伴、个人主页、OS
     since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds")
     for u in users:  # 每个实体这周用得最多的记忆
         counts = {}
@@ -617,16 +617,15 @@ def all_memory(db, q: str = "", dim: str = "", history: bool = False, limit: int
     counts, out = {}, []
     from . import memsearch
     near = {int(k.split(":")[1]) for k, _ in memsearch.similar_keys(db, q, top=60, prefix="fact:")} if q else set()  # 按意思也算（语义检索开着时）
+    today = her_today()
     for f in rows:
         f = dict(f)
-        current = f["valid_to"] is None and f["status"] not in ("invalid", "candidate", "suspended", "deleted")
-        if not history and not current:
-            continue
-        if history and current:
+        state = lifebase.fact_state(f, today)  # 默认列现在的和到期的（标“到期了”，决定 10）；历史里列其余的（lifebase.MEM_VIEWS）
+        if state not in lifebase.MEM_VIEWS["me_history" if history else "me_now"]["states"]:
             continue
         if q and f["id"] not in near and not _matches(q, " ".join(str(f.get(k) or "") for k in ("statement", "detail", "context"))):
             continue
-        counts[f["dimension"]] = counts.get(f["dimension"], 0) + 1  # 标签上的数是搜索结果里各方面的条数（她 11-04）
+        counts[f["dimension"]] = counts.get(f["dimension"], 0) + 1  # 标签上的数是搜索结果里各方面的条数
         if dim and f["dimension"] != dim:
             continue
         if prop and (f.get("prop") or "") != (prop if prop != "-" else ""):  # 星图往下钻：只看这个方面里的这一项（“-” 是没细分的）
@@ -635,13 +634,46 @@ def all_memory(db, q: str = "", dim: str = "", history: bool = False, limit: int
         out.append({"id": f["id"], "text": f["statement"], "dim": f["dimension"], "dim_name": lifebase.DIM_NAMES.get(f["dimension"], f["dimension"]),
                     "locked": bool(f["locked"]), "mine": _hers(f), "from": (f["valid_from"] or f["recorded_at"] or "")[:10],
                     "to": (f["valid_to"] or "")[:10], "until": f.get("until"), "uses": n, "status": f["status"],
+                    "state": state, "state_label": lifebase.MEM_LABEL[state],
                     "said": SAID.get(f.get("source_kind") or "", ""), "kind": f.get("kind"), "context": f.get("context") or "", "prop": f.get("prop") or ""})
-    return {"items": out[:limit], "more": len(out) > limit, "dims": [{"key": k, "name": lifebase.DIM_NAMES.get(k, k), "n": counts[k]}
+    items = out[:limit]
+    _attach_similar(db, items)
+    return {"items": items, "more": len(out) > limit, "dims": [{"key": k, "name": lifebase.DIM_NAMES.get(k, k), "n": counts[k]}
                                          for k in lifebase.DIMENSIONS if k in counts], "total": sum(counts.values())}
 
 
+SIMILAR_TOP = 3
+
+
+def _attach_similar(db, items: list) -> None:
+    """每条下面挂意思相近的几条（借鉴 8）：方便她一眼看出重复、矛盾。只是给她看，不合并、不改。
+    只列关于她本人、没删没停用的；以前的（过时了、到期了）也列，标出来——矛盾常常就是一新一旧。"""
+    from . import memsearch
+    try:
+        near = memsearch.similar_to(db, [f"fact:{x['id']}" for x in items], user="me_similar", top=SIMILAR_TOP + 2)
+    except Exception as e:
+        print(f"[mepage] 相近的没算出来：{type(e).__name__} {e}", flush=True)
+        near = {}
+    ids = {int(k.split(":")[1]) for v in near.values() for k, _ in v}
+    today = her_today().isoformat()
+    cond, args = lifebase.mem_where("me_similar", "facts", today)
+    rows = {r["id"]: dict(r) for r in db.conn.execute(
+        f"SELECT * FROM facts WHERE id IN ({','.join('?' * len(ids)) or 'NULL'}) AND subject = 'self' AND {cond}", (*sorted(ids), *args))}
+    for x in items:
+        sims = []
+        for k, s in near.get(f"fact:{x['id']}", []):
+            f = rows.get(int(k.split(":")[1]))
+            if not f:
+                continue
+            st = lifebase.fact_state(f, today)
+            past = "过时了" if st in ("past", "retracted") else lifebase.MEM_LABEL[st] if st in ("expired", "candidate") else ""
+            sims.append({"id": f["id"], "text": f["statement"], "from": (f["valid_from"] or f["recorded_at"] or "")[:10],
+                         "locked": bool(f["locked"]), "past": past, "sim": s})
+        x["similar"] = sims[:SIMILAR_TOP]
+
+
 def days(db, wiki, q: str = "", limit: int = 30) -> dict:
-    """发生过的事：按天，每天的记忆日记开头一段 + 那天记下的事件，新的在前（2026-10-31 她定，“全部记忆”第二个标签）。"""
+    """发生过的事：按天，每天的记忆日记开头一段 + 那天记下的事件，新的在前（“全部记忆”第二个标签）。"""
     import re as _re
     lifebase.ensure(db)
     by = {}
@@ -679,7 +711,7 @@ def fix_fact(db, fid: int, text: str, kind: str = "wrong", type_: str = "long", 
     t = memusers.open_ticket(db, text, f["statement"], user="ethan", entry="me_page", quote=text, dimension=f["dimension"],
                              kind=kind, since=since, until=until)
     # 她点的就是这一条：纠错单按文字找旧说法，找偏了（或这条她以前确认过、锁着）也要把这条换下来。
-    # 锁只挡系统，不挡她自己（她 11-05：“我自己归的确认的这些东西也会出错，怎么办？”）
+    # 锁只挡系统，不挡她自己
     new_id = t.get("fact_id")
     now = _fact(db, f["id"])
     if new_id and new_id != f["id"] and now and now["valid_to"] is None and now["status"] not in ("invalid", "deleted"):
@@ -733,10 +765,10 @@ def strip(text: str) -> str:
 
 
 # ---------- 小伴 主动补缺口（ontology-plan 1.7） ----------
-# 每天能挑的都挑（她 11-04 不设上限）：先看哪些能力题最近答不上，再看哪些方面空着、很薄。先查再问：她的聊天、文件里其实提过的，
+# 每天能挑的都挑（不设上限）：先看哪些能力题最近答不上，再看哪些方面空着、很薄。先查再问：她的聊天、文件里其实提过的，
 # 不问她（交给每晚整理去关联，记一笔），真缺才问。题放进“待你定”，小伴 聊天时顺口问（三天内不重复，见 chat_items），
 # 她挑着答；她说“今天别问”当天就停。她来聊天时问（打扰登记 gap-ask）；每天下午傍晚的“聊聊”主动带一题（nudges.py lesson-chat，11-04）。
-GAP_DAILY, GAP_THIN = 20, 3  # 她 11-04：“每天可以不设上限吧，多一点没关系”——实际就是能挑的都挑（最多十几个）
+GAP_DAILY, GAP_THIN = 20, 3  # 实际就是能挑的都挑（最多十几个）
 GAP_STOP = re.compile(r"今天(先)?别问|别再问了|今天不想(答|回答)|不想被问")
 GAP_FN = {  # 能力题答不上时，问她什么（只挑她自己答得上的；钱、作息这种看记录的不问她）
     "whereabouts_now": ("你现在平时住在哪个城市？最近常待的地方有哪些？", "住在 城市", "resources"),
@@ -756,7 +788,7 @@ GAP_DIM = {  # 方面空着或很薄时问什么（关键词用来先查她有�
     "resources": ("最近手头在忙的大事有哪些？住、学习、工作上有什么变化吗？", "签证 学校 工作 房子"),
     "rhythms": ("你平时一般几点起、几点睡？周末和工作日差别大吗？", "起床 睡觉 周末"),
 }
-# 她 11-04：“这个让他来引导我聊吧”——薄的方面不只问一句，给 小伴 一串接着问的（她答了上一个，下一轮接着问下一个）
+# 薄的方面不只问一句，给 小伴 一串接着问的（她答了上一个，下一轮接着问下一个）
 GAP_FOLLOW = {
     "values": ["你做选择的时候，最不能让步的是什么？能举一件最近的事吗？", "有没有哪件事，你后来觉得当时坚持对了？",
                "你最佩服的人身上，有哪一点是你也想要的？", "什么样的事会让你觉得“这不对”，哪怕别人都觉得没什么？"],
@@ -821,8 +853,8 @@ def mark_asked(db, pid: int):
 
 def _thin_dims(db) -> list:
     counts = {d: 0 for d in lifebase.DIMENSIONS}
-    for r in db.conn.execute("SELECT dimension, COUNT(*) n FROM facts WHERE subject = 'self' AND status = 'active' AND valid_to IS NULL "
-                             "AND superseded_by IS NULL GROUP BY dimension"):
+    cond, args = lifebase.mem_where("count", "facts")
+    for r in db.conn.execute(f"SELECT dimension, COUNT(*) n FROM facts WHERE subject = 'self' AND {cond} GROUP BY dimension", args):
         if r["dimension"] in counts:
             counts[r["dimension"]] = r["n"]
     return [d for d, n in sorted(counts.items(), key=lambda x: x[1]) if n < GAP_THIN]
@@ -922,7 +954,7 @@ def gap_week(db, today: date = None) -> dict:
     return {"asked": max(asked, answered), "answered": answered, "found_in_records": found, "paused_today": gap_paused(db, day)}
 
 
-# ---------- “我”页后台指标（ontology-plan 2.1，me-page-v2.md 第 1、2 节；她 11-04 让和阶段 1 同步做） ----------
+# ---------- “我”页后台指标（ontology-plan 2.1，me-page-v2.md 第 1、2 节；让和阶段 1 同步做） ----------
 HER_KINDS = ("her_words", "her_confirmation", "her_provided")  # 厚薄只算她说的、她确认的、她给的资料
 STALE_DAYS, THIN_N = 30, 3
 REVIEW_DAYS = {"quarter": 90, "on_use": 180}
@@ -944,7 +976,8 @@ def metrics(db, today: date = None) -> dict:
         review = {r[0]: r[1] for r in db.conn.execute("SELECT key, review_every FROM properties")}
     except Exception:
         pass
-    rows = db.conn.execute("SELECT * FROM facts WHERE subject = 'self' AND status = 'active' AND valid_to IS NULL AND superseded_by IS NULL").fetchall()
+    cond, args = lifebase.mem_where("count", "facts", day)
+    rows = db.conn.execute(f"SELECT * FROM facts WHERE subject = 'self' AND {cond}", args).fetchall()
     cols = rows[0].keys() if rows else []
     dims = {d: {"dim": d, "name": lifebase.DIM_NAMES[d], "n": 0, "hers": 0, "confirmed": 0, "last": None, "kinds": set(),
                 "evidence": set(), "due": 0, "used": 0, "missed": 0, "props": {}} for d in lifebase.DIMENSIONS}
@@ -1069,8 +1102,8 @@ def week_learned(db, day: date = None, top: int = 5) -> dict:
     day = day or her_today()
     since = week_since(day)
     last = (datetime.fromisoformat(since) - timedelta(days=7)).isoformat()
-    rows = db.conn.execute("SELECT * FROM facts WHERE subject = 'self' AND status = 'active' AND valid_to IS NULL AND superseded_by IS NULL "
-                           "AND recorded_at >= ?", (since,)).fetchall()
+    cond, args = lifebase.mem_where("count", "facts", day)
+    rows = db.conn.execute(f"SELECT * FROM facts WHERE subject = 'self' AND {cond} AND recorded_at >= ?", (*args, since)).fetchall()
     cols = rows[0].keys() if rows else []
     by_dim, by_source = {}, {k: 0 for k in SAID_NAMES}
     picks = []
@@ -1221,7 +1254,7 @@ def manage(db) -> dict:
         users = json.loads(d.get("to_users") or "[]")
         state = ("撤回了" if d.get("revoked_at") else "说过了（这次的）" if d.get("once") and d.get("used_at")
                  else "到期了" if d.get("until") and d["until"] < now[:10] else "有效")
-        discl.append({"id": d["id"], "text": d["text"], "quote": d["quote"], "to": "、".join({"twin": "Dais", "site": "主页"}.get(u, u) for u in users),
+        discl.append({"id": d["id"], "text": d["text"], "quote": d["quote"], "to": "、".join({"twin": "主页助手", "site": "主页"}.get(u, u) for u in users),
                       "once": bool(d.get("once")), "to_whom": d.get("to_whom") or "", "until": d.get("until") or "",
                       "renew_at": (d.get("renew_at") or "")[:10], "state": state})
     for d in lifebase.disclosures(db, mode="deny"):  # 逐条挡住的
@@ -1256,7 +1289,7 @@ def allow_reimport_request(db, req_id: int, root=None) -> dict:
 
 
 def keep_suspended(db, fid: int) -> dict:
-    """先停用的条目，她看过说“留着”：恢复成有效（剩下的依据她认可）。"""
+    """先停用的条目，她看过说“留着”：恢复成有效（剩下的依据）。"""
     ensure(db)
     n = db.conn.execute("UPDATE facts SET status = 'active' WHERE id = ? AND status = 'suspended'", (int(fid),)).rowcount
     if n:

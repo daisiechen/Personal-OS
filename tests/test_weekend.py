@@ -1,4 +1,4 @@
-"""每周五“这周末可以去”（她 2026-11-04：“我想去的店、展、演出我还等着ethan和grok给我推荐呢。想试的运动就舞蹈吧”）。
+"""每周五“这周末可以去”。
 收藏优先、Grok 补本周新的、舞蹈单列；周五 12:00–20:30；推荐过的几周内不重复；登记在打扰登记表。"""
 
 import json
@@ -80,7 +80,7 @@ class WeekendTest(unittest.TestCase):
     def test_friday_saved_first_then_grok_and_dance_line(self):
         for t in ("屋顶花园 Sky Garden", "运河边二手书店", "Borough Market", "Columbia Road 花市"):
             self.save(t)
-        self.save("芬兰观光团", tags=("旅行",), place={"name": "芬兰", "area": "Iceland"}, extra={"intent": "travel"})
+        self.save("芬兰观光团", tags=("旅行",), place={"name": "芬兰", "area": "Finland"}, extra={"intent": "travel"})
         weekend.ask(self.db, self.grok, at(2026, 11, 5, 10))
         self.grok_reply("2026-11-06", [{"kind": "展", "title": "Tate Modern 新展", "when": "周六 10:00", "where": "Bankside", "price": "£18"},
                                        {"kind": "演出", "title": "西区音乐剧", "when": "周六 19:30", "price": "£35"},

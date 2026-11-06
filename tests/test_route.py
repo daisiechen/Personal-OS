@@ -1,4 +1,4 @@
-"""今天的路线串起来（她 2026-11-02：一点十分出发去 Sunday Roast，两点十分为什么还有一个出门？到家比训练结束还早，乱七八糟）。"""
+"""今天的路线串起来（一点十分出发去 Sunday Roast，两点十分为什么还有一个出门？到家比训练结束还早，乱七八糟）。"""
 
 import unittest
 
@@ -23,7 +23,7 @@ class RouteTest(unittest.TestCase):
         texts = [(r["at"], r["text"]) for r in out["rows"]]
         self.assertEqual(sum("出门" in t for _, t in texts), 1)  # 只从家出一次门
         self.assertIn(("14:10", "出门 → Sunday Roast（路上约 30 分钟）"), texts)
-        # 17:00 吃完赶 17:00 的训练赶不上：吃饭能早走，提醒几点吃完就走（她 2026-11-02）
+        # 17:00 吃完赶 17:00 的训练赶不上：吃饭能早走，提醒几点吃完就走
         self.assertIn(("16:25", "「Sunday Roast」16:25 吃完就走，直接去「训练：上肢」（路上约 25 分钟）"), texts)
         self.assertEqual(texts[-1], ("18:35", "到家"))  # 最后一站结束后才到家
         self.assertTrue(out["conflicts"])

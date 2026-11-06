@@ -1,4 +1,4 @@
-"""定时任务留痕（2026-10-28 全面检查：后台任务默默坏掉没人知道）。
+"""定时任务留痕（全面检查：后台任务默默坏掉没人知道）。
 
 每个定时任务的 systemd 都经这里启动：照常跑原来的命令，跑完把结果（开始、结束、成功没有、最后几行输出）
 记进 <数据目录>/jobs.json；设置页“系统体检”读它，超过该跑的时间没跑、或上次失败，就标红。
@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 FILE = "jobs.json"
-SEEN = "jobs-seen.json"  # 每个任务第一次被体检看到的时间：从没跑过的，过了该跑的时间也要报（2026-11-04 统一巡检）
+SEEN = "jobs-seen.json"  # 每个任务第一次被体检看到的时间：从没跑过的，过了该跑的时间也要报（统一巡检）
 # 任务名 → (中文名, 多久该跑一次, 定时器里那一行)。定时器那一行和 deploy/systemd/ethan2-<任务名>.timer 里的一字不差
 # （tests/test_jobs.py 对着查），体检按它算“下次什么时候跑”和“是不是超时没跑”。没写时区的 OnCalendar 按服务器时区 UTC。
 JOBS = {
@@ -29,7 +29,7 @@ JOBS = {
     "memory": ("每晚记忆整理", timedelta(days=1), "OnCalendar=*-*-* 03:00:00 Europe/London"),
     "money": ("Monzo 同步", timedelta(hours=1), "OnUnitInactiveSec=1h"),
     "evals": ("题集评测", timedelta(days=7), "OnCalendar=Sat *-*-* 15:00:00 Europe/London"),
-    "mail": ("收邮件", timedelta(minutes=10), "OnUnitInactiveSec=10min"),  # 不及格退出码 1，巡检会看到（2026-10-30 执行保障）
+    "mail": ("收邮件", timedelta(minutes=10), "OnUnitInactiveSec=10min"),  # 不及格退出码 1，巡检会看到（执行保障）
     # 2026-11-04 统一巡检补登记：以前没经过留痕，挂了没人知道（system-review-20261030 第三节“告警有盲区”）
     "backlog": ("大批整理（微信对话、人物卡）", timedelta(minutes=10), "OnUnitInactiveSec=10min"),  # 没活马上退出；整理中能跑好几个小时
     "codex": ("Codex 自动领活", timedelta(minutes=5), "OnUnitInactiveSec=5min"),
@@ -57,7 +57,7 @@ def save(data: Path, runs: dict):
 def record(data: Path, name: str, ok: bool, started: datetime, finished: datetime, tail: str = ""):
     import fcntl
     Path(data).mkdir(parents=True, exist_ok=True)
-    with open(Path(data) / (FILE + ".lock"), "w") as lock:  # 读了再写要加锁，不然同一时刻收尾的会丢一条（2026-10-29 自查）
+    with open(Path(data) / (FILE + ".lock"), "w") as lock:  # 读了再写要加锁，不然同一时刻收尾的会丢一条（自查）
         fcntl.flock(lock, fcntl.LOCK_EX)
         runs = load(data)
         keep = {k: v for k, v in (runs.get(name) or {}).items() if k in ("progress_at", "progress")}  # 心跳留着（收件口起的后台也写它）
@@ -100,8 +100,12 @@ def run(data: Path, name: str, cmd: list, runner=subprocess.run) -> int:
     sys.stdout.write(proc.stdout or "")
     sys.stderr.write(proc.stderr or "")
     lines = [l for l in out.strip().splitlines() if l.strip()]
-    flagged = [l for l in lines if l.rstrip().endswith("✗")]  # 题集评测把不及格的那项标 ✗，可能不在最后几行（2026-11-02 巡检）
-    record(data, name, proc.returncode == 0, started, datetime.now(timezone.utc), "\n".join(flagged[-2:] + lines[-3:]))
+    flagged = [l for l in lines if l.rstrip().endswith("✗")]  # 题集评测把不及格的那项标 ✗，可能不在最后几行（巡检）
+    tail = "\n".join(flagged[-2:] + lines[-3:])
+    ok = proc.returncode == 0
+    if not ok and "QuotaBlocked" in out:  # 按后台任务表在付费额度期停的（ethan/bgjobs.py，决定 7）：不算坏，恢复后 catchup 补
+        ok, tail = True, "付费额度停跑，恢复后补\n" + tail
+    record(data, name, ok, started, datetime.now(timezone.utc), tail)
     return proc.returncode
 
 
@@ -177,7 +181,7 @@ def every_text(spec: str) -> str:
     zone = "" if len(parts) > 2 else " UTC"
     if "," in hh:
         hs = hh.split(",")
-        return f"{hs[0]}–{hs[-1]} 点每 2 小时（:{mm}）" if len(hs) > 2 else f"每天 {'、'.join(h + ':' + mm for h in hs)}"
+        return f"{hs[0]}–{hs[-1]} 点每 2 小时（{mm}）" if len(hs) > 2 else f"每天 {'、'.join(h + ':' + mm for h in hs)}"
     return f"{'每' + day if day else '每天'} {int(hh):02d}:{mm}{zone}"
 
 
@@ -205,7 +209,7 @@ def _seen(data: Path, now: datetime) -> dict:
 def overview(data: Path, now: datetime = None) -> list:
     """设置页“系统体检”和巡检用：每个定时任务一行。
     {key, name, ok, state（ok / running / late / failed / stuck / never / waiting）, detail, last, next, running_since}。
-    时间都按伦敦时间写（她看的），判断按 UTC 算。"""
+    时间都按本地时间写（她看的），判断按 UTC 算。"""
     now = now or datetime.now(timezone.utc)
     runs = load(data)
     seen = _seen(data, now)

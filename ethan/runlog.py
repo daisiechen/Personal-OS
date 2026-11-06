@@ -3,9 +3,9 @@
 系统的输出本身是派生物，**不算关于她的证据**；她的反应（通过、要改、不要、自己改了、删了）是行为记录。
 每晚从各处汇总一次（可以重复跑，按 key 去重）：
 - 准备员做的事：她通过 / 要改（她的意见）/ 不要了；
-- 小伴 写的日记初稿：她自己改过再存（source = her_edited；旧数据是 her），note 记改了几句、前 2 句改前→改后（2026-11-05，
+- 小伴 写的日记初稿：她自己改过再存（source = her_edited；旧数据是 her），note 记改了几句、前 2 句改前→改后（
   以后归纳她的写作习惯用）；
-- 邮件草稿：她发出去 / 点了不用管；
+- 邮件草稿：她发出去 / 点了不用管；她改了再发（和 小伴 的原稿 ethan_draft 不一样）记“自己改了”，note 记改前→改后（skill 迭代用，11-05）；
 - 计划器排的事：她挪了、删了。
 同一类反应 4 周里出现 3 次以上，才在 lifebase.write_behavior 里写成一条行为说法，她改一次不算长期习惯。
 """
@@ -37,6 +37,16 @@ def _put(db, key, at, actor, kind, title, reaction=None, reaction_at=None, note=
     return 0
 
 
+def edit_note(before: str, after: str, limit: int = 2, width: int = 40) -> str:
+    """她在 小伴 的草稿上改了什么（按句子比）：改了几句、前几句改前→改后；没改就空。"""
+    from .diary import changes
+    ch = changes(before or "", after or "")
+    if not ch:
+        return ""
+    cut = lambda t: (t[:width] + "…") if len(t) > width else t
+    return f"改了 {len(ch)} 句：" + "；".join(f"「{cut(a) or '（新加）'}」→「{cut(b) or '（删掉）'}」" for a, b in ch[:limit])
+
+
 def _table(db, name) -> bool:
     return bool(db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (name,)).fetchone())
 
@@ -63,9 +73,13 @@ def collect(db) -> int:
     if _table(db, "mail_items"):
         cols = {c[1] for c in db.conn.execute("PRAGMA table_info(mail_items)")}
         if {"draft", "desk_state"} <= cols:
-            for r in db.conn.execute("SELECT id, subject, desk_state, sent_at, created_at FROM mail_items WHERE draft IS NOT NULL AND draft != ''"):
+            orig = "ethan_draft" if "ethan_draft" in cols else "NULL"
+            for r in db.conn.execute(f"SELECT id, subject, desk_state, sent_at, created_at, draft, {orig} AS orig FROM mail_items "
+                                     "WHERE draft IS NOT NULL AND draft != ''"):
                 reaction = {"sent": "adopted", "ignored": "ignored"}.get(r["desk_state"])
-                n += _put(db, f"mail:{r['id']}", r["created_at"], "ethan", "mail", f"回复：{r['subject'] or ''}", reaction, r["sent_at"])
+                note = edit_note(r["orig"], r["draft"]) if reaction == "adopted" and r["orig"] else ""
+                n += _put(db, f"mail:{r['id']}", r["created_at"], "ethan", "mail", f"回复：{r['subject'] or ''}",
+                          "edited" if note else reaction, r["sent_at"], note or None)
     if _table(db, "plan_overrides"):
         for r in db.conn.execute("SELECT day, title, action, at FROM plan_overrides"):
             n += _put(db, f"plan:{r['day']}:{r['title']}", r["day"], "planner", "plan", r["title"],

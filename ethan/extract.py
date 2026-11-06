@@ -1,4 +1,4 @@
-"""聊天里即时抽取（docs/design/digital-life-spec.md 第 3 节、4.1 节，2026-10-30 她认可）。
+"""聊天里即时抽取（docs/design/digital-life-spec.md 第 3 节、4.1 节）。
 
 她每发一条消息，小伴 回完话后在后台跑一次：模型按固定格式提议“记下哪些待办、心愿、事实、事件、要记住的话、提到的人”，
 代码校验（原话必须真在她这条消息里、编号必须存在、日期和取值合法），再查重、执行。小伴 回复里的 [待办 …] 标记照旧，
@@ -20,12 +20,10 @@
 import argparse
 import json
 import re
-import subprocess
-import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import lifebase
+from . import lifebase, relations
 from .clock import her_today
 
 OWNERS = ("mia", "ethan", "grok", "claude", "codex")
@@ -156,19 +154,17 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
     for t in data.get("todos") or []:
         if t["op"] == "add":
             title = t["title"].strip()[:200]
-            same = find_similar(title, list(open_tasks))
-            if same:  # 已经有了（多半是 小伴 的标记刚记的）：只补日期
-                if t.get("due") and not open_tasks[same].get("due"):
-                    db.conn.execute("UPDATE tasks SET due = ? WHERE id = ?", (t["due"], open_tasks[same]["id"]))
-                continue
-            from . import locks
-            if locks.she_deleted(db, title) or locks.renamed_from(db, title):  # 她删掉过 / 改过名字的同一件事，不再从聊天里记一条（docs/design/system-rules.md 第 1 节）
+            from . import taskrules
+            hit = taskrules.already(db, title, "ethan")  # 统一查重：没做完的、改过名的、她删过的、最近做完的都算有了
+            if hit:
+                if hit["why"] == "open" and hit["id"] and t.get("due"):  # 已经有了（多半是 小伴 的标记刚记的）：只补日期
+                    db.conn.execute("UPDATE tasks SET due = ? WHERE id = ? AND due IS NULL", (t["due"], hit["id"]))
                 continue
             owner = t.get("owner") or "mia"
             from . import naming
             title = naming.title(title)  # 标题式（docs/design/ui-spec.md 第 5 节）
             from . import prep
-            # 只有交给 小伴 的才是他的活；交给 Claude / Codex / Grok 的不是他答应的，也不进准备员（她 11-05：“这个他不是没答应么？”）
+            # 只有交给 小伴 的才是他的活；交给 Claude / Codex / Grok 的不是他答应的，也不进准备员
             tid = db.add_task(title, due=t.get("due"), promised_by_ethan=owner == "ethan" and not prep.is_ops(title))
             db.conn.execute("UPDATE tasks SET owner = ?, source_type = 'chat', source_ref = ?, status = 'open' WHERE id = ?",
                             (owner, ref, tid))
@@ -181,8 +177,9 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
         elif t["op"] == "claim_done":
             db.conn.execute("UPDATE tasks SET claimed_done_at = ? WHERE id = ? AND done = 0", (now, t["match_id"]))
             got["todo_claim"] += 1
-        else:  # drop：只标记，不删
-            db.conn.execute("UPDATE tasks SET status = 'drop_asked' WHERE id = ? AND done = 0", (t["match_id"],))
+        else:  # drop：只标记，不删（到处都不列，“其他”底下“你说算了的”里她删或恢复，taskrules.drop）
+            from . import taskrules
+            taskrules.drop(db, t["match_id"])
             got["todo_drop"] += 1
     wishes = {w["quote"]: w["id"] for w in db.open_wishes()}
     for w in data.get("wishes") or []:
@@ -213,7 +210,10 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
             fields["circle"] = p["relation"]
         if p.get("note"):
             fields["notes"] = ((row["notes"] + "\n") if row and row["notes"] else "") + f"（{today.isoformat()}）{p['note']}"
-        people[name] = db.upsert_person(name, **fields)
+        pid = relations.upsert(db, name, source="chat", **fields)  # 她删过的人不建回来、她改过的字段不动
+        if pid is None:
+            continue
+        people[name] = pid
         got["person"] += 1
     facts = [(f, 3, 0.6, ()) for f in data.get("facts") or []] + [(r, 5, 0.9, ("remember",)) for r in data.get("remember") or []]
     for f, importance, conf, tags in facts:
@@ -270,17 +270,12 @@ def run(store, router, ref: str, today: date = None, force_mode: str = None) -> 
     return apply(db, data, ev, ref, today)
 
 
-def kick(root, ref: str, spawn=subprocess.Popen) -> bool:
-    """小伴 回完话：后台抽取她这条，不拖慢回复。开关关着就不起进程。"""
+def kick(root, ref: str, spawn=None) -> bool:
+    """小伴 回完话：后台抽取她这条，不拖慢回复。开关关着就不起进程。统一走 bgwork.kick（日志、停跑期不起）。"""
     if not ref or mode(root) == "off":
         return False
-    try:
-        spawn([sys.executable, "-m", "ethan.extract", "--data", str(root), "--ref", ref],
-              cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-              start_new_session=True)
-        return True
-    except OSError:
-        return False
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "extract", ["--ref", ref], spawn))
 
 
 def main():

@@ -1,7 +1,7 @@
 """仓库文档里记下的她的原话，整理后交给 小伴 的记忆（ontology-plan 1.4，数据源 S12）。
 
 只在开发会话里跑的一次性整理脚本：
-- 扫 docs/**/*.md，找“她 X-X 说 / 她原话 / 她定”后面引号里的话；必须带日期或写明“原话”（没日期的多半是举例）。
+- 扫 docs/**/*.md，找“她 X-X 说 /  / 她定”后面引号里的话；必须带日期或写明“原话”（没日期的多半是举例）。
 - 用规则先粗筛：含“代码、页面、按钮、上线、系统……”的算对系统提的要求，不交（一次决定不是性格）；
   但话里明说她自己的习惯、喜好、过往的（“我懒得打字”“不像我的写作习惯”）保留。
 - 算“文档转述”：每条写清出自哪份文档、哪天；去掉联系方式和住址样式。
@@ -10,7 +10,7 @@
 用法：
   python3 -m ethan.docquotes --dry-run [--json 候选.json]   打印候选和条数，不发
   python3 -m ethan.docquotes --send                         交给 小伴（要 ETHAN_CLOUD_TOKEN；没有就只生成文件）
-  加 --wide 放宽收（她 11-04 说“放宽收一遍”）：
+  加 --wide 放宽收（“放宽收一遍”）：
   - 没写日期也收：日期取所在小节标题里的日期（“## 11-03 …”也算），没有就写“未注明日期”；
   - 不带“她”字、但引号里是第一人称（含“我”）的也收：同一行或前一行有“她 / Mia”，或文档本身是记她需求的（HER_DOCS）；
     引号紧前面是 小伴 / agent / 系统在说的不算；
@@ -36,7 +36,7 @@ CHUNK = 50000  # 访谈接口一次最多 60000 字（ethan/interviews.py MAX_CH
 
 # 她 + 至多 30 个字的修饰（日期、“跟 小伴”……）+ 说/原话/定/问… + 引号里的话；后面紧跟的引号段（“…”，“…”）算同一句
 _DATE = r"(?<!\d)(?:20\d{2}-\d{1,2}-\d{1,2}|1[0-2]-\d{1,2}|0?[1-9]-\d{1,2}|\d{1,2}月\d{1,2}日)(?![\d-])"
-QUOTE = re.compile(r"她(?P<pre>[^。“”\n]{0,30}?)(?P<verb>说|原话|定|问|提|讲|写|回|答|觉得|评价|[：:])(?P<mid>[^“”。\n]{0,8})"
+QUOTE = re.compile(r"她(?P<pre>[^。“”\n]{0,30}?)(?P<verb>说|原话|定|问|提|讲|写|回|答|觉得|评价|[：])(?P<mid>[^“”。\n]{0,8})"
                    r"“(?P<q>[^”\n]{2,600})”(?P<more>(?:[，、,和 ]{1,3}“[^”\n]{2,600}”)*)")
 DATE = re.compile(_DATE)
 HEADING_DATE = re.compile(r"^#{1,6}\s.*?(20\d{2}-\d{2}-\d{2})")
@@ -48,9 +48,9 @@ HEADING_ANY_DATE = re.compile(r"^#{1,6}\s.*?(" + _DATE + ")")
 HER_CTX = re.compile(r"她|Mia")  # 同一行或前一行提到她，才算她说的
 HER_DOCS = ("docs/design/mias-os.md",)  # 整份记她需求的文档
 SKIP_DOCS = ("docs/design/capability-questions.md",)  # 检验题、提示词、样例数据，不是她说的
-EXAMPLE = re.compile(r"(?:(?:比如|例如|譬如|举例|例[：:])[^。；\n]{0,40}|像[^“”。；\n]{0,4})$")  # 引号前（或“她说”前）是举例
-OTHER_SPEAKER = re.compile(r"(?:小伴|他|Grok|Codex|Claude|agent|Agent|系统|助手|模型|bot|Bot|提示词)[^“”。；她\n]{0,6}"
-                           r"(?:说|回|答|问|写|讲|提示|会说|应该说|改成)[^“”。；\n]{0,4}[：:]?$")
+EXAMPLE = re.compile(r"(?:(?:比如|例如|譬如|举例|例[：])[^。\n]{0,40}|像[^“”。\n]{0,4})$")  # 引号前（或“她说”前）是举例
+OTHER_SPEAKER = re.compile(r"(?:小伴|他|Grok|Codex|Claude|agent|Agent|系统|助手|模型|bot|Bot|提示词)[^“”。她\n]{0,6}"
+                           r"(?:说|回|答|问|写|讲|提示|会说|应该说|改成)[^“”。\n]{0,4}[：]?$")
 LABEL_HEAD = re.compile(r"(?:进了|进|在|叫|叫做|名为|点|显示|按钮|回答|回复|答复|写着|标成|标)\s*$")  # 引号里是名字、按钮、系统的回答
 EXAMPLE_TAIL = re.compile(r"^（[^）\d她]{1,6}）")  # “这件事暂停到下周”（暂停）：给例子贴的类型标签
 SAMPLE_MARK = re.compile(r"示意|样例|示例|案例|编的")  # 标题或“（示意……）”“**样例 1**”这类行之后到下一个标题都是编的例子
@@ -73,7 +73,7 @@ PRIVATE = [re.compile(p) for p in (r"[\w.+-]+@[\w-]+\.[\w.]+", r"(?<![\d-])\+?\d
 
 
 def _plain_len(s: str) -> int:
-    return len(re.sub(r"[\s，。、！？…,.!?：:；;“”\"'（）()]", "", s))
+    return len(re.sub(r"[\s，。、！？…,.!?：“”\"'()]", "", s))
 
 
 def _norm(s: str) -> str:
@@ -152,7 +152,7 @@ def scan_text(text: str, path: str, wide: bool = False) -> list:
         taken = []
         for m in QUOTE.finditer(line):
             pre, mid = m.group("pre"), m.group("mid")
-            before = line[max(0, m.start() - 20):m.start()]  # “（2026-10-29 她说‘…’”：日期写在“她”前面
+            before = line[max(0, m.start() - 20):m.start()]  # “（‘…’”：日期写在“她”前面
             before = before[before.rfind("。") + 1:]
             if wide:
                 if (EXAMPLE.search(line[:m.start()]) or EXAMPLE.search(line[:m.start("q") - 1]) or mid.startswith("的")

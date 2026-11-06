@@ -1,4 +1,4 @@
-"""她 2026-11-02：邮件里读出 The Devonshire 15:00–17:00，和她日历上自己约的 Sunday Roast 撞了，没人找她确认。"""
+"""邮件里读出 The Devonshire 15:00–17:00，和她日历上自己约的 Sunday Roast 撞了，没人找她确认。"""
 
 import tempfile
 import unittest
@@ -46,7 +46,7 @@ class ClashTest(unittest.TestCase):
 
 
     def test_training_clash_with_new_calendar_event_is_asked(self):
-        """她 2026-11-02：Sunday Roast 和训练撞了，为什么没先问要不要把训练往后推。"""
+        """Sunday Roast 和训练撞了，为什么没先问要不要把训练往后推。"""
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             db = store.db

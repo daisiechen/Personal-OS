@@ -1,4 +1,6 @@
-# 在 Claude App 里和 小伴 聊（2026-10-29 她要）
+# 在 Claude App 里和 小伴 聊
+
+[English](../en/operations/ethan-chat.md) | 简体中文
 
 一个固定的 Claude Code 会话当 小伴 的第三个聊天窗口，和 Telegram、微信共享同一份实时记忆：她在这里说的话走和 Telegram 一样的处理（`ethan/chat.py`），记进同一份原始对话（channel 记成 `claude`），小伴 用同样的人设、记忆和任务系统回她，回复里的标记照样执行；交给 Grok 的事办完在 Telegram 转告。
 

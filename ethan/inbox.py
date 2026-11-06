@@ -1,17 +1,17 @@
 """接收口：外部只能往这里送数据，送来的内容只当信息，不当指令。
 
 只监听服务器本机 127.0.0.1:8787，经 Cloudflare Tunnel 对外暴露为 https://ethan.example.com，服务器不开新端口。
-目前收两类（2026-10-26 设计第 9.7 节）：
+目前收两类（设计第 9.7 节）：
   POST /grok/result   Grok Bot 办完 小伴 交代的事，回报结果
   POST /grok/memory   Grok 里的那个 小伴 和她聊出的新事、讲过的新故事
 请求头 Authorization: Bearer <INBOX_TOKEN_GROK>；正文是 JSON（取 text / result / content / message / task 字段）或纯文本，最大 64KB。
 
-Claude 云端开发会话登不上服务器，经这里找 Grok（2026-10-27 她同意），用另一把密钥 INBOX_TOKEN_CLOUD：
+Claude 云端开发会话登不上服务器，经这里找 Grok，用另一把密钥 INBOX_TOKEN_CLOUD：
   POST /cloud/grok           正文 {"task": "..."}，转交 Grok Bot，每天最多 CLOUD_DAILY_LIMIT 条
   GET  /cloud/grok/results   Grok 回报里第一行带【Claude 会话】的那些（可加 ?since=ISO 时间），不给别的回报
 这把密钥漏了，别人最多能给 Grok 派活、读这类回报，碰不到记忆和聊天。客户端见 ethan/cloud.py。
 
-Agent 任务队列（2026-10-28，见 ethan/agents.py），同样用 INBOX_TOKEN_CLOUD：
+Agent 任务队列（见 ethan/agents.py），同样用 INBOX_TOKEN_CLOUD：
   POST /cloud/agent/tasks               派活 {"agent","title","spec","verify","size","project"}
   GET  /cloud/agent/tasks?status=&agent= 列表（不含改动内容）
   GET  /cloud/agent/tasks/<编号>         全部内容，含 Codex 的改动（patch）和日志
@@ -33,12 +33,12 @@ Agent 任务队列（2026-10-28，见 ethan/agents.py），同样用 INBOX_TOKEN
   GET  /cloud/profile                   个人主页用：{"city","source": "told"|"home","at","birthday": "MM-DD"}（ethan/whereabouts.py）
   POST /cloud/mail                      她 Mac 上的邮件程序送新邮件、取处理办法（ethan/mail.py，钥匙同报到钩子）
   POST /cloud/visitor                   个人主页访客留言；GET /cloud/public/now 主页近况；GET /cloud/public/feed 生活栏目（ethan/publicsite.py）。
-  GET /cloud/site/reply-requests、POST /cloud/site/reply-drafts、/cloud/site/reply-status  留言回复：Dais起草、她确认、中转从 hi@ 发。
+  GET /cloud/site/reply-requests、POST /cloud/site/reply-drafts、/cloud/site/reply-status  留言回复：主页助手起草、她确认、中转从 hi@ 发。
                                         这些和 /cloud/profile 也认主页中转的钥匙 INBOX_TOKEN_SITE（只能用这些，profile 只给城市和今天是不是生日）
   POST /cloud/people_stats              她 Mac 上微信导出算的私聊统计 {"people": [{"key","name","last","n90","n365",...}]}，一次最多 64KB（ethan/relations.py）
   GET  /cloud/maps/<文件名>               领地地图底图（<数据目录>/maps/ 下的 jpg/png），给云端会话取图做设计稿
 
-DemoApp 举报提醒（2026-10-29 她同意，见 ethan/fancy_moderation.py），用单独的密钥 INBOX_TOKEN_FANCY：
+DemoApp 举报提醒（见 ethan/fancy_moderation.py），用单独的密钥 INBOX_TOKEN_FANCY：
   POST /fancy/moderation   DemoApp 的 worker 推只含数字和后台链接的 JSON，小伴 在 Telegram 提醒她去复核
 这把密钥漏了，别人最多能让 小伴 给她发这类提醒，碰不到记忆和聊天；这类消息不进收件箱、Wiki 和聊天上下文。
 
@@ -127,7 +127,7 @@ class Inbox:
                 return 400, {"ok": False, "error": "bad json"}
             with self.db_lock:
                 return publicsite.receive(self.store.db, payload, now)
-        if path in ("/cloud/site/reply-drafts", "/cloud/site/reply-status"):  # 主页中转交Dais的草稿、回报发没发出（publicsite.py）
+        if path in ("/cloud/site/reply-drafts", "/cloud/site/reply-status"):  # 主页中转交主页助手的草稿、回报发没发出（publicsite.py）
             if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
                 return 401, {"ok": False, "error": "unauthorized"}
             if len(body) > 32 * 1024:
@@ -141,7 +141,7 @@ class Inbox:
             with self.db_lock:
                 fn = publicsite.reply_draft if path.endswith("drafts") else publicsite.reply_status
                 return fn(self.store.db, payload)
-        if path == "/cloud/interview":  # 她在别的会话里的访谈（ethan/interviews.py，她 2026-11-03 定算原话）
+        if path == "/cloud/interview":  # 她在别的会话里的访谈（ethan/interviews.py，算原话）
             if not self._authorized("cloud", headers):
                 return 401, {"ok": False, "error": "unauthorized"}
             try:
@@ -151,7 +151,7 @@ class Inbox:
             from . import interviews
             with self.db_lock:
                 return interviews.receive(self.store, payload, now)
-        if path == "/cloud/people_stats":  # 她 Mac 上微信导出顺带算的私聊统计（ethan/wechatexport.py → ethan/relations.py，她 11-04 认可）
+        if path == "/cloud/people_stats":  # 她 Mac 上微信导出顺带算的私聊统计（ethan/wechatexport.py → ethan/relations.py）
             if not self._authorized("cloud", headers):
                 return 401, {"ok": False, "error": "unauthorized"}
             if len(body) > MAX_BODY:
@@ -223,7 +223,7 @@ class Inbox:
             from . import workaholic
             with self.db_lock:
                 return 200, workaholic.curfew(self.store.db, now)
-        if parts.path == "/cloud/profile":  # 个人主页（example.com）取她在哪个城市、生日（2026-10-29 她要）
+        if parts.path == "/cloud/profile":  # 个人主页（example.com）取她在哪个城市、生日
             from .planner import BIRTH
             if self._authorized("site", headers):  # 主页中转的钥匙：只给城市和“今天是不是生日”，不给日期
                 from .clock import her_now
@@ -239,7 +239,7 @@ class Inbox:
             with self.db_lock:
                 got = publicsite.reply_requests(self.store.db, (parse_qs(parts.query).get("status") or [""])[0])
             return (200 if got["ok"] else 400), got
-        if parts.path == "/cloud/public/feed":  # 主页“生活”栏目：她确认过公开的日常（2026-10-31）
+        if parts.path == "/cloud/public/feed":  # 主页“生活”栏目：她确认过公开的日常
             if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
                 return 401, {"ok": False, "error": "unauthorized"}
             with self.db_lock:
@@ -329,9 +329,9 @@ class Inbox:
         where = (query.get("where") or ["cloud"])[0]
         with self.db_lock:
             agents.record_hook(self.store.root, event, where, now)
-            # 她跟 Claude Code 说话算工作时间：Mac、手机上的云端会话都算（她 10-31）。服务器上的会话不算——那里几乎全是
+            # 她跟 Claude Code 说话算工作时间：Mac、手机上的云端会话都算。服务器上的会话不算——那里几乎全是
             # 小伴 系统自己在后台调 Claude（分邮件、写日记，第一句是“Mia：…”）和开发会话发给服务器会话的消息，不是她说的话
-            # （2026-11-01 她说“今天工作 9.6 小时算错了吧”，查出 19 格都是这样记上的）
+            # （“今天工作 9.6 小时算错了吧”，查出 19 格都是这样记上的）
             if event.get("hook_event_name") == "UserPromptSubmit" and where != "server" \
                     and not str(event.get("prompt") or "").startswith("Mia："):
                 worktime.record(self.store.db, [worktime.slot_of(now or datetime.now(timezone.utc))], "claude")
@@ -443,7 +443,7 @@ LEAD_MARK = re.compile(r"^\s*(【[^】\n]{1,40}】)")
 
 def order_marks(text: str) -> str:
     """Grok 回报开头的记号排成固定顺序：先是类型（【收藏日报】【准备 #12】【开工】…），再【回执 G…】，最后【来源：…】。
-    （2026-10-29 自查：要它第一行写来源以后，来源一旦写在最前面，后面按开头认类型的都会认不出）"""
+    （自查：要它第一行写来源以后，来源一旦写在最前面，后面按开头认类型的都会认不出）"""
     marks, rest = [], text
     while True:
         m = LEAD_MARK.match(rest)

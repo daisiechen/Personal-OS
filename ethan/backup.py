@@ -64,8 +64,19 @@ def decrypt(blob: bytes, key: Path) -> bytes:
     return _openssl(["-d"], blob, key)
 
 
+class GitFailed(RuntimeError):
+    pass
+
+
 def _git(repo: Path, *args):
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    """失败时把 git 自己的报错写进异常（11-05 体检只看到 CalledProcessError，看不出是提交还是推送、为什么）。"""
+    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace").strip().splitlines()
+        key = ("error", "rejected", "fatal", "denied", "exceeds", "remote:", "hint:")
+        picked = [l.strip() for l in err if any(k in l.lower() for k in key) and not l.lower().startswith("hint:")]
+        reason = " / ".join((picked or err)[-3:])[:240] or f"退出码 {proc.returncode}"  # 11-06：先挑报错行，“To 仓库”那行没用
+        raise GitFailed(f"备份 git {args[0]} 失败：{reason}")
 
 
 def backup(data: Path, repo: Path, key: Path, push: bool = False) -> bool:

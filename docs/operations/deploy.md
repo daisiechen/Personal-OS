@@ -1,5 +1,7 @@
 # 部署到服务器
 
+[English](../en/operations/deploy.md) | 简体中文
+
 所有内容放在独立用户 `ethan` 的 `/home/ethan/` 下，服务以 `ethan2-` 开头，不触碰旧版目录和服务。
 
 ## 服务器
@@ -155,14 +157,14 @@ iPhone：同样用 Obsidian Git 插件 clone 仓库（需要 GitHub 个人访问
 3. 登录失效（日志出现“登录失效”）时重复第 1 步即可，不用重启：服务每 30 秒检查一次凭据文件，发现新凭据自动换上（日志出现“已换用重新扫码后的凭据”）。注意：重新扫码会让旧凭据立即作废。
 
 能力和限制：
-- 文字、语音（用微信自带的转写）、图片、文件（PDF、文字文件、Word）、视频（只截画面）都能收（2026-10-27 起）。
+- 文字、语音（用微信自带的转写）、图片、文件（PDF、文字文件、Word）、视频（只截画面）都能收。
 - 回复发文字和图片（小伴 生成的照片、转发的网图，上传到微信 CDN 再发），`[VOICE]` 的内容改成文字发。
 - 回复必须带她最近一条消息的 context_token。她约 11–24 小时没说话后就发不出去，每次会话主动消息约 10 条上限，所以主动问候和周报仍走 Telegram。
 - 状态（游标、最近的 context_token）存在 `<数据目录>/weixin-state.json`。
 
 ## 交给 Grok Bot
 
-小伴 自己不能上网、查地图、打开网页、预订。Mia 让他办这类事时，他直接交给 Mia 的 Grok Bot（2026-10-26 她同意，不用再问她）：回复里的 `[交给Grok]……[/交给Grok]` 不会发给她，由系统 POST 到 Grok Bot 的 webhook。Grok 办完把结果 POST 到接收口 `https://ethan.example.com/grok/result`（见下一节）。
+小伴 自己不能上网、查地图、打开网页、预订。Mia 让他办这类事时，他直接交给 Mia 的 Grok Bot（不用再问她）：回复里的 `[交给Grok]……[/交给Grok]` 不会发给她，由系统 POST 到 Grok Bot 的 webhook。Grok 办完把结果 POST 到接收口 `https://ethan.example.com/grok/result`（见下一节）。
 
 1. 在 Grok Bot 的 Routines 里打开“Claude agent 来信”，复制 webhook 地址和发送密钥；问清楚 Grok 密钥要放在哪个请求头（默认按 `Authorization: Bearer <密钥>` 发）。
 2. Mia 在自己电脑的终端录入（其余项直接回车保留）：
@@ -190,7 +192,7 @@ iPhone：同样用 Obsidian Git 插件 clone 仓库（需要 GitHub 个人访问
 
 2026-10-27 上线时已按她同意做完：`systemctl enable --now ethan2-workbench`（那次执行部署的还是旧版自动部署，不认识新服务，只装了服务文件没启动，所以手动启了一次；之后的部署会自己重启它），隧道加了 `os.example.com`（改前备份 `config.yml.bak-20261027-os`）并建了 DNS。验证：`https://os.example.com/health` 返回 `{"ok": true}`，没登录访问 `/api/...` 返回 401。
 
-头像放 `/home/ethan/data/avatars/avatar-day.jpg` 和 `avatar-night.jpg`（不进仓库）；今日卡由计划器每天早上画，存 `/home/ethan/data/cards/`，生成失败时用 `avatars/library/` 里的同类图兜底。
+头像放 `/home/ethan/data/avatars/avatar-day.jpg` 和 `avatar-night.jpg`（不进仓库）；昨日卡由计划器每天早上画，存 `/home/ethan/data/cards/`，生成失败时用 `avatars/library/` 里的同类图兜底。
 
 ## 接收口与两个 小伴 共享记忆
 
@@ -233,9 +235,9 @@ ingress:
   - service: http_status:404
 ```
 
-`/fancy/moderation` 是 DemoApp 举报提醒（2026-10-29 她同意，合并上线后再加），见 [fancy-moderation.md](fancy-moderation.md)。
+`/fancy/moderation` 是 DemoApp 举报提醒（合并上线后再加），见 [fancy-moderation.md](fancy-moderation.md)。
 
-`/cloud/` 和 `/health` 是 2026-10-27 她同意后加的：云端会话凭 `INBOX_TOKEN_CLOUD` 读 Grok 回报（没带令牌返回 401），`/health` 只回答服务是否活着。改配置前先备份（当时的备份是 `config.yml.bak-20261027`），改完 `cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate` 再 `systemctl restart cloudflared`。
+`/cloud/` 和 `/health` 是 后加的：云端会话凭 `INBOX_TOKEN_CLOUD` 读 Grok 回报（没带令牌返回 401），`/health` 只回答服务是否活着。改配置前先备份（当时的备份是 `config.yml.bak-20261027`），改完 `cloudflared tunnel --config /etc/cloudflared/config.yml ingress validate` 再 `systemctl restart cloudflared`。
 
 然后 `sudo cloudflared service install && sudo systemctl enable --now cloudflared`。检查：`curl -s -o /dev/null -w '%{http_code}' -X POST https://ethan.example.com/grok/result` 和 `curl -s -o /dev/null -w '%{http_code}' https://ethan.example.com/cloud/grok/results` 都应返回 401（没带密钥）。
 
@@ -254,15 +256,15 @@ ingress:
    sudo -iu ethan python3 -c "from ethan.core.router import Settings; s = Settings('/home/ethan/data/settings.json'); s.set('places', {'家': {'postcode': '<她的邮编>'}, '健身房': {'postcode': 'AB1 2CD', 'name': '某健身房', 'address': 'Example Gym, 1 Example Street, London AB1 2CD', 'lat': 51.5100, 'lon': -0.1300}}); s.set('cold_start_from', '<开始日期 YYYY-MM-DD>')"
    ```
    路程用 TfL 官方接口按“几点要到”算（`ethan/travel.py`），再留 10 分钟余量；查不到时按 30 分钟估。经纬度可用 postcodes.io 查。
-   日历事件带地点坐标和苹果日历的通行时间（`X-APPLE-TRAVEL-DURATION`），出发前 1 小时提醒，不再单独加“路上”日程（2026-10-26 Mia 要求）。
+   日历事件带地点坐标和苹果日历的通行时间（`X-APPLE-TRAVEL-DURATION`），出发前 1 小时提醒，不再单独加“路上”日程。
 3. 苹果日历：Mia 在 account.apple.com → 登录与安全 → App 专用密码 生成一个密码，自己用 `setup_secrets` 录入 Apple ID 邮箱和这个密码（其余项回车保留）。系统只写一个单独的“小伴 计划”日历，不改其他日历，只读它们的忙闲。不录入时计划照常生成，只是不写日历。
-4. `ethan2-planner.timer` 每天伦敦 06:30 运行 `python3 -m ethan.planner --data <数据目录>`：代码算事实 → 模型挑今天的待办和少量要出门的事 → 校验，不过就带着错误重试 2 次，仍失败用保底计划 → 代码加训练（具体动作和重量，`playbooks/body/`）、冷启动、路上时间和三餐（空气炸锅菜谱，`playbooks/food/`）。只有要出门的事进苹果日历（带通行时间和出发前 1 小时提醒），其余进待办清单。手动跑一次：`sudo systemctl start ethan2-planner`，结果看 `journalctl -u ethan2-planner -n 30`。要覆盖已有计划重排某天，用和服务相同的环境跑（直接 `sudo -u ethan python3 …` 找不到 `claude`，会落到保底计划）：`systemd-run --wait --pipe --uid=ethan -p WorkingDirectory=/home/ethan/Personal-OS -p EnvironmentFile=/home/ethan/.config/ethan/ethan.env -E PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin -E HOME=/home/ethan /usr/bin/python3 -m ethan.planner --data /home/ethan/data --day YYYY-MM-DD --force`，然后 `sudo systemctl start ethan2-vault` 刷新看板。重排会删掉上一版自动加给她、新版不要的待办，小伴 准备的事保留。
-5. 早报由 `ethan2-proactive` 在伦敦 07:30–09:30 之间随机一个时间发（最晚补到 11:00），分两条：先是 小伴 的几句话（模型写，不报时间和数字），紧跟着代码生成的今日卡片（`ethan/brief_card.py`，时间线、目标进度、主线下一步、任务，和输入框下“☀️ 今天”按钮是同一张；卡片上直接打卡，下面一行是训练 / 三餐 / 全部 / 刷新）；2026-10-27 之前生成的计划没有卡片素材，只发 小伴 的话。发了早报，原来的“早上”时段就不再发。
+4. `ethan2-planner.timer` 每天本地 06:30 运行 `python3 -m ethan.planner --data <数据目录>`：代码算事实 → 模型挑今天的待办和少量要出门的事 → 校验，不过就带着错误重试 2 次，仍失败用保底计划 → 代码加训练（具体动作和重量，`playbooks/body/`）、冷启动、路上时间和三餐（空气炸锅菜谱，`playbooks/food/`）。只有要出门的事进苹果日历（带通行时间和出发前 1 小时提醒），其余进待办清单。手动跑一次：`sudo systemctl start ethan2-planner`，结果看 `journalctl -u ethan2-planner -n 30`。要覆盖已有计划重排某天，用和服务相同的环境跑（直接 `sudo -u ethan python3 …` 找不到 `claude`，会落到保底计划）：`systemd-run --wait --pipe --uid=ethan -p WorkingDirectory=/home/ethan/Personal-OS -p EnvironmentFile=/home/ethan/.config/ethan/ethan.env -E PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin -E HOME=/home/ethan /usr/bin/python3 -m ethan.planner --data /home/ethan/data --day YYYY-MM-DD --force`，然后 `sudo systemctl start ethan2-vault` 刷新看板。重排会删掉上一版自动加给她、新版不要的待办，小伴 准备的事保留。
+5. 早报由 `ethan2-proactive` 在本地 07:30–09:30 之间随机一个时间发（最晚补到 11:00），分两条：先是 小伴 的几句话（模型写，不报时间和数字），紧跟着代码生成的今日卡片（`ethan/brief_card.py`，时间线、目标进度、主线下一步、任务，和输入框下“☀️ 今天”按钮是同一张；卡片上直接打卡，下面一行是训练 / 三餐 / 全部 / 刷新）；2026-10-27 之前生成的计划没有卡片素材，只发 小伴 的话。发了早报，原来的“早上”时段就不再发。
 6. 聊天里 小伴 用 `[结果 #条目 完成/部分/没做 原因]`、`[体重 56.3]`、`[记数 #目标 …]`、`[漏斗 #目标 步骤 …]`、`[训练 动作 重量x次数/次数/次数 疼痛N]`、`[建档 模块 完成/进行中 …]` 记录；编号不存在或数字不合理时不记，并附一条【系统提醒】告诉她没记上。
 7. Obsidian 看板多了 `看板/今日计划.md`（出门安排、待办、训练动作、三餐菜谱）和 `看板/各方面.md`。
 8. 每次运行记在数据库 `job_runs` 表：`sqlite3 ~/data/ethan.sqlite "SELECT * FROM job_runs ORDER BY id DESC LIMIT 5"`。
 
-## 任务系统（2026-10-26 晚）
+## 任务系统
 
 她的待办按游戏任务系统管理（`ethan/quests.py`）：
 
@@ -270,7 +272,7 @@ ingress:
 |---|---|---|
 | 主线 | 每个今年目标完整拆成的步骤，计划器第一次拆好当草稿，小伴 发她过目，她说可以了记 `[主线 定稿 #目标]` | 小 / 中 / 大 = 20 / 50 / 100，阶段节点再 +200 |
 | 支线 | 其他零散待办（含冷启动） | 10 |
-| 日常 | 7 项坚持：训练、吃够蛋白质、训练前称体重、0 点前睡、睡前拉伸、练英语 3 句；每天出门按定位自动打卡，其余她自己打（2026-10-29） | 每项 10，满勤 +20 |
+| 日常 | 7 项坚持：训练、吃够蛋白质、训练前称体重、0 点前睡、睡前拉伸、练英语 3 句；每天出门按定位自动打卡，其余她自己打 | 每项 10，满勤 +20 |
 | 周常 | 每周 1 次新体验 | 50 |
 
 连续满勤 7 / 30 天另加 50 / 300；每周 1 张补签卡；不扣分。积分累计升级（10 级称号；从 L 级到 L+1 级要 L × 500 分），余额兑换惊喜（2500 / 10000 / 30000 三档，2026-10-31 改，小伴 每次自己策划，要花钱先问她）。小伴 答应她的事不算她的积分。
@@ -290,12 +292,12 @@ ingress:
 ## 总览和周报
 
 - 在 Telegram 发“看看总览”（或 `/overview`），小伴 按 Wiki 里 dashboard 页的顺序回一条完整总览。
-- `ethan2-weekly.timer` 每周日 20:00（伦敦时间）运行 `python3 -m ethan.report --weekly`，主动发本周周报。错过不补发。
+- `ethan2-weekly.timer` 每周日 20:00（本地时间）运行 `python3 -m ethan.report --weekly`，主动发本周周报。错过不补发。
 - 健康、财务、爱好还没有数据来源，总览里只一句带过，不编数字。
 
 ## 主动消息
 
-`ethan2-proactive.timer` 每 10 分钟运行 `python3 -m ethan.proactive`，按伦敦时间分四个时段，每段每天最多一次，具体时间在时段内随机：
+`ethan2-proactive.timer` 每 10 分钟运行 `python3 -m ethan.proactive`，按本地时间分四个时段，每段每天最多一次，具体时间在时段内随机：
 
 | 时段 | 时间 | 内容 |
 |---|---|---|
@@ -317,21 +319,21 @@ Mia 在 Telegram 里可以发：
 - 下次周报时间：`systemctl list-timers ethan2-weekly.timer`
 - 主动消息记录：`journalctl -u ethan2-proactive -n 50`
 - 微信入口日志：`journalctl -u ethan2-weixin -n 50`
-- 在 Telegram 发 `/openrouter on` / `/openrouter off` 开关 OpenRouter 兜底。兜底模型默认 `x-ai/grok-4.7`（2026-10-27 起，她的账号用不了 Claude），可用 `ETHAN_OPENROUTER_MODEL` 改。
+- 在 Telegram 发 `/openrouter on` / `/openrouter off` 开关 OpenRouter 兜底。兜底模型默认 `x-ai/grok-4.7`（她的账号用不了 Claude），可用 `ETHAN_OPENROUTER_MODEL` 改。
 
-## 自动部署（2026-10-27）
+## 自动部署
 
 `ethan2-autodeploy.timer`（root）每 2 分钟检查 main，有新提交就备份数据库、快进拉代码、装改过的 systemd 文件、跑测试、重启 Telegram/微信/收件箱，失败退回原版本。结果在 `/home/ethan/data/deploy-status.json` 和 `deploy-log.jsonl`，由 Claude 会话读取后在会话里告诉她，不发 Telegram。查看：`cat /home/ethan/data/deploy-status.json`。手动部署照旧可用。
 
-数据改动（`migrations/`，`ethan/migrate.py`）在重启之后跑：跑过的记在数据库 `migrations_done` 表，和脚本的改动同一个事务提交（`migrations.json` 只是给人看的副本）；有脚本失败时代码不退回（数据改动撤不回，退回旧代码会变成“新数据 + 旧代码”），结果写成“已上线，但数据改动出错：<名字>”，巡检当失败报（2026-11-05 Codex 评审）。
+数据改动（`migrations/`，`ethan/migrate.py`）在重启之后跑：跑过的记在数据库 `migrations_done` 表，和脚本的改动同一个事务提交（`migrations.json` 只是给人看的副本）；有脚本失败时代码不退回（数据改动撤不回，退回旧代码会变成“新数据 + 旧代码”），结果写成“已上线，但数据改动出错：<名字>”，巡检当失败报（Codex 评审）。
 
-## 系统巡检（2026-10-29 起，2026-11-02 现状）
+## 系统巡检（2026-11-02 现状）
 
-她 2026-10-29 要：系统出问题，开发会话主动找她，不要等她或 小伴 发现。
+系统出问题，开发会话主动找她，不要等她或 小伴 发现。
 
 - **服务器只汇总，不修**：`GET /cloud/health`（`ethan/checkup.py`）列出哪里不对：上线失败、数据改动出错、定时任务失败或该跑没跑、任务自己报的错（写日历失败、计划用了兜底等）、常驻服务没在跑。工作台设置页“系统体检”看的是同一份。
 - **巡检会话**：一个带仓库的云端巡检会话，由定时任务**全天每 3 小时**唤醒一次，取一次体检；没问题不出声；明显的 bug 自己修、跑测试、合进 main（按“明显的 bug 修复测试通过后直接上线、事后告诉她”的例外），再推送到她手机上的 Claude App。
-- **晚上也跑**：11 点后的收工钩子放行定时任务唤醒和“定时巡检”的消息（2026-11-02 她授权：“授权，你搞吧”，见 [devices.md](devices.md)），所以巡检恢复全天每 3 小时。2026-10-29 到 11-01 是每 2 小时；11-02 放行之前，夜里 11 点后的巡检会被收工钩子挡回。
+- **晚上也跑**：11 点后的收工钩子放行定时任务唤醒和“定时巡检”的消息（授权：“授权，你搞吧”，见 [devices.md](devices.md)），所以巡检恢复全天每 3 小时。2026-10-29 到 11-01 是每 2 小时；11-02 放行之前，夜里 11 点后的巡检会被收工钩子挡回。
 - **2026-11-04 统一巡检后的体检内容**（`ethan/syscheck.py`，设置页“系统体检”和 `/cloud/health` 看同一份）：
   - 定时任务：`ethan/jobs.py` 的 JOBS 和 deploy/systemd 的每个定时器一一对应（名字、定时器那一行一字不差，测试对着查），按定时器算“下次”，超过下次 + 宽限（间隔和 2 小时取小，至少 10 分钟）没跑算超时；开跑先记“在跑”，跑几个小时的不误报，被杀掉留下的“在跑”超过 3 小时（Codex 4.5 小时）算卡住；从没跑过的过了第一次该跑的时间也报（以前从不报）。新登记：大批整理 `backlog`、Codex 自动领活 `codex`（服务都改成经 `ethan.jobs` 留痕）。
   - 自动上线：每 2 分钟看 main 时写心跳 `deploy-check.json`，15 分钟没心跳或拉不到代码就报；测试没过时把挂掉的测试名写进 `deploy-status.json` 的 `failed_tests`（以前只留最后 600 字，FAIL 那几行常被截掉）。
@@ -339,9 +341,9 @@ Mia 在 Telegram 里可以发：
     11-05 起（Codex 评审 P2）：`ethan2-backlog` 每轮两步各最多 30 分钟（`--max-minutes 30`），到点停下、下一轮接着跑，对话和人物卡轮流推进；整理中每批记一次心跳进 `jobs.json`，系统体检“大批整理”那一行在跑时显示“最近一次进展”；收件口另起的后台整理输出写进 `<数据目录>/logs/interviews.log`、`relations.log`（超过约 1MB 滚成 `.log.1`）；每晚整理的人物卡和后台共用一把锁（`.relations-organize.lock`），后台在整理就跳过。
   - 服务器可用内存（`/proc/meminfo`）：低于 300MB 设置页标黄，低于 200MB 进巡检。
   - 来源健康、红点自检、聊聊 / 周末推荐 / 派 Grok、Mac 上的导出（只看最近一次收到）。
-- **失败时写出真正不及格的那项**（2026-11-02）：定时任务记结果时，除了输出的最后几行，还把标了 ✗ 的不及格行一起留下。以前题集评测只显示最后一行“visitor_triage 通过 100%”，看不出是哪项挂了。代码 `ethan/jobs.py` 的 `run`。
+- **失败时写出真正不及格的那项**：定时任务记结果时，除了输出的最后几行，还把标了 ✗ 的不及格行一起留下。以前题集评测只显示最后一行“visitor_triage 通过 100%”，看不出是哪项挂了。代码 `ethan/jobs.py` 的 `run`。
 
-## 读链接和发照片（2026-10-27）
+## 读链接和发照片
 
 - 她发的 PDF、文字文件、Word：服务器要装 `poppler-utils`（`apt-get install -y poppler-utils`，Claude 按页读 PDF 要用 pdftoppm；2026-10-27 已装，没装时按页读会报错，小伴 就说打不开）。PDF 存到 `<数据目录>/media/<日期>/` 交给模型打开，文字和 Word 抽正文接进消息；20MB 以上 Telegram 下载不了。
 - 读链接不用配置（小红书视频笔记的截帧和转文字复用 ffmpeg 和 faster-whisper，只在 Telegram 入口开）：她发来的链接由 `ethan/links.py` 在服务器上抓，配图存到 `<数据目录>/media/links/`。

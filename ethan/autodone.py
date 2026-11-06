@@ -1,4 +1,4 @@
-"""系统自己看得出来做完了的事，自动勾上（2026-10-29 她问：我跟你一起做完的事，系统能不能自己认出来勾上）。
+"""系统自己看得出来做完了的事，自动勾上（我跟你一起做完的事，系统能不能自己认出来勾上）。
 
 每次打开工作台、小伴 回话前检查一遍：某个数据源真的接上了（有数据进来），就把标题里提到它的待办勾掉，照常给分。
 只认这些确定的信号，认不准的不勾：她在聊天里说做完了，还是靠 小伴 加 [结果 #编号 完成]。
@@ -12,7 +12,7 @@ from . import finance, places_log, quests, worktime
 
 # (待办标题里出现的词, 怎么判断做完了, 说明)
 RULES = [
-    # 只认“接上某个数据源”这类设置型待办，免得“还招行信用卡”“Monzo 转账”被误勾（2026-10-29 自查）
+    # 只认“接上某个数据源”这类设置型待办，免得“还招行信用卡”“Monzo 转账”被误勾（自查）
     (re.compile(r"(接|授权|连).{0,8}Monzo|Monzo.{0,8}(授权|接入|同步)|自动化数据接入", re.I),
      lambda db, root: bool(finance.load_tokens(root).get("last_sync")), "Monzo 已经在同步"),
     (re.compile(r"(招行|招商银行|银行).{0,10}(自动转发|转发|接入)|(消费|银行)(短信|邮件).{0,6}转发|转发.{0,6}(招行|银行|消费)"),
@@ -50,7 +50,7 @@ def _repair(db, day: date) -> list:
     return fixed
 
 
-ENABLED = False  # 2026-10-29 她定：所有待办和任务都由她自己勾，系统不再自动勾（以前误勾的照样撤回）
+ENABLED = False  # 所有待办和任务都由她自己勾，系统不再自动勾（以前误勾的照样撤回）
 
 
 def check(db, root, day: date) -> list:
@@ -71,7 +71,8 @@ def check(db, root, day: date) -> list:
         except Exception:
             continue
         for r in hits:
-            quests.complete_task(db, r["id"], day)
+            from . import taskrules
+            taskrules.complete(db, r["id"], day)  # 统一的完成入口（阶段任务按阶段任务的勾法）
             done.append((r["id"], r["title"], why))
             # 系统认出来的不是她点的，小伴 不用再侧面确认（agent.py 的 task_checks）
             db.conn.execute(CHECK_SQL)

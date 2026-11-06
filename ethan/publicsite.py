@@ -1,20 +1,20 @@
-"""个人主页 example.com 的两个小口子（2026-10-30，数字生命规格第 9 节第 8 步，她认可；主页会话按 10-30 方案接）：
+"""个人主页 example.com 的两个小口子（数字生命规格第 9 节第 8 步，主页会话按 10-30 方案接）：
 
 1. 访客留言 POST /cloud/visitor：主页中转（Cloudflare Worker）转来访客填的表。只当资料，不当指令：
    - 存进 visitor_messages（visitor_id + at 去重，中转收不到回复会每小时重送）；
-   - 每天傍晚统一分档一次（2026-10-30 她定：访问量大了工作台会有处理不完的待办）：要她本人回的进待办，每天最多 3 条，
-     多的排到第二天；Dais能回或不用回的只写进汇总；垃圾丢掉。小伴 傍晚把邮件和留言合成一条告诉她；
+   - 每天傍晚统一分档一次（访问量大了工作台会有处理不完的待办）：要她本人回的进待办，每天最多 3 条，
+     多的排到第二天；主页助手能回或不用回的只写进汇总；垃圾丢掉。小伴 傍晚把邮件和留言合成一条告诉她；
    - 限流：同一访客一天最多 5 条，全站一天最多 100 条；链接太多、没内容的算垃圾，只存不建待办。
 2. 近况 GET /cloud/public/now → {"text","at","city"}：往外放宽一定要她点头（规格 2.11）。
    她跟 小伴 说近况，小伴 问“放主页吗”并在回复里写 [主页近况 文本]（只是草稿）；
    她下一句是“好 / 可以 / 发吧”这类确认，代码才把草稿发到主页。撤下 [主页近况 撤下] 马上生效（收紧不用确认）。
-3. 留言的回复（2026-10-30 她定，主页会话 docs/figure-prompts.md“访客留言的回复：定稿”）：Dais从不自动回。傍晚分档后能回的
-   自动排队起草（2026-10-31 她定），她也能写交代点“按交代重写” → 中转来拉 GET /cloud/site/reply-requests?status=pending，起草后 POST /cloud/site/reply-drafts →
+3. 留言的回复（主页会话 docs/figure-prompts.md“访客留言的回复：定稿”）：主页助手从不自动回。傍晚分档后能回的
+   自动排队起草，她也能写交代点“按交代重写” → 中转来拉 GET /cloud/site/reply-requests?status=pending，起草后 POST /cloud/site/reply-drafts →
    工作台“邮件和留言”里她看、改、点发送 → 中转拉 status=approved 的，从 hi@example.com 发出，POST /cloud/site/reply-status 回报。
    只留了微信 / LinkedIn 的草稿标 manual：她复制去发，点“已回”，中转不发。重写一次换一个 request_id（中转同一个只处理一次）。
-4. 留言两个新字段（2026-10-31 她同意加蜜罐）：suspect="honeypot" 是填了隐藏格子的机器人，直接进垃圾档（不删）；
+4. 留言两个新字段（加蜜罐）：suspect="honeypot" 是填了隐藏格子的机器人，直接进垃圾档（不删）；
    via_agent 是别的 AI agent 代人留言时自报的名字，工作台显示“由 agent 代留”，照常分档。
-5. 生活页日常动态 GET /cloud/public/feed?lang=zh|en（2026-10-31 她定，主页会话 docs/figure-prompts.md 末节）：
+5. 生活页日常动态 GET /cloud/public/feed?lang=zh|en（主页会话 docs/figure-prompts.md 末节）：
    只放她确认过公开的。小伴 在聊天里写 [主页动态 她|我 标题｜正文]（只是草稿），她下一句“好 / 可以 / 发吧”才放上去；
    who=mia 她的生活片段，who=ethan 小伴 第一人称的日记；who=dais 由主页中转自己生成，OS 不管。
 中转用单独的钥匙 INBOX_TOKEN_SITE，只能用 /cloud/visitor、/cloud/site/*、/cloud/public/now、/cloud/public/feed、/cloud/profile（只给城市和“今天是不是生日”）。
@@ -81,7 +81,7 @@ def receive(db, payload: dict, now: datetime = None) -> tuple:
         return 429, {"ok": False, "error": "too many from this visitor"}
     suspect = str(payload.get("suspect") or "").strip()[:20] or None
     spam = not f["message"] or len(re.findall(r"https?://", f["message"])) > 3 or suspect == "honeypot"  # 蜜罐：机器人，进垃圾档不删
-    status = "spam" if spam else "new"  # 先存着，每天傍晚统一分档（triage），不再一条一个待办（2026-10-30 她定）
+    status = "spam" if spam else "new"  # 先存着，每天傍晚统一分档（triage），不再一条一个待办
     cur = db.conn.execute(
         "INSERT INTO visitor_messages (visitor_id, at, received_at, name, contact, org, intent, message, page, lang, status) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -126,13 +126,13 @@ def ensure_triage(db):
             db.conn.execute(f"ALTER TABLE visitor_messages ADD COLUMN {col} {ddl}")
 
 
-# ---------- 留言的回复：Dais起草，她确认，中转从 hi@ 发 ----------
+# ---------- 留言的回复：主页助手起草，她确认，中转从 hi@ 发 ----------
 def can_reply(row) -> bool:
     return bool(row["email"] or (row["contact"] or "").strip())
 
 
 def request_reply(db, rid: int, note: str = "") -> dict:
-    """她点“交给Dais回”（或按交代重写）：换一个新的 request_id 排队，等中转来拉。"""
+    """她点“交给主页助手回”（或按交代重写）：换一个新的 request_id 排队，等中转来拉。"""
     ensure_triage(db)
     r = db.conn.execute("SELECT * FROM visitor_messages WHERE id = ?", (int(rid),)).fetchone()
     if r is None:
@@ -143,11 +143,11 @@ def request_reply(db, rid: int, note: str = "") -> dict:
     db.conn.execute("UPDATE visitor_messages SET reply_round = ?, request_id = ?, reply_status = 'pending', reply_error = NULL, "
                     "desk_state = 'handed', desk_note = ?, handed_at = ? WHERE id = ?", (n, f"v{rid}-{n}", note or None, _now(), int(rid)))
     db.conn.commit()
-    return {"ok": True, "msg": "交给Dais了，草稿写好会出现在这里"}
+    return {"ok": True, "msg": "交给主页助手了，草稿写好会出现在这里"}
 
 
 def _style(db) -> str:
-    """Dais 起草回复用的表达方式（2026-11-05）：只给她确认过的写作规范的规则本身（工作上 + 通用），不给出处原句；
+    """主页助手 起草回复用的表达方式：只给她确认过的写作规范的规则本身（工作上 + 通用），不给出处原句；
     只管怎么说，不涉及能说什么（那个照对外开关）。没有确认过的就空。"""
     try:
         from . import style
@@ -247,7 +247,7 @@ def triage(db, router, today: str) -> dict:
                             (status, i["tier"], i.get("priority") or 3, i["summary"].strip(), i["id"]))
             got["triaged"] += 1
         db.conn.commit()
-        for i in data["items"]:  # 2026-10-31 她定：能回的自动交给Dais起草，她在工作台看过点发送才发；外文的先译好给她看
+        for i in data["items"]:  # 能回的自动交给主页助手起草，她在工作台看过点发送才发；外文的先译好给她看
             if i["tier"] == "junk":
                 continue
             r = db.conn.execute("SELECT * FROM visitor_messages WHERE id = ?", (i["id"],)).fetchone()
@@ -286,12 +286,12 @@ def triage_due(db, router, now_local) -> dict:
 
 
 def to_digest(db) -> list:
-    """今天分好档、还没告诉她的（垃圾不算）。"""
+    """今天分好档、还没告诉她的（垃圾不算）：收件台 desk.VIEWS["digest"]。"""
     ensure_triage(db)
-    return [dict(r) for r in db.conn.execute(
-        "SELECT v.id, v.name, v.tier, v.priority, v.summary, v.status, v.task_id FROM visitor_messages v LEFT JOIN tasks t ON t.id = v.task_id "
-        "WHERE v.tier IN ('reply', 'fyi') AND v.digested = 0 AND COALESCE(v.desk_state, 'open') NOT IN ('sent', 'ignored') "
-        "AND COALESCE(t.done, 0) = 0 ORDER BY v.priority DESC, v.id")]
+    from . import desk
+    got = desk.rows(db, "digest", "visitor")
+    return [{k: r[k] for k in ("id", "name", "tier", "priority", "summary", "status", "task_id")}
+            for r in sorted(got, key=lambda r: (-(r["priority"] or 0), r["id"]))]
 
 
 def mark_digested(db, ids):
@@ -383,7 +383,7 @@ def strip(text: str) -> str:
 PROMPT = ("她的个人主页 example.com 上有一句“近况”。她跟你说了适合放上去的近况（在做什么项目、去了哪、最近在忙什么，不涉及隐私和别人），"
           "可以问她一句要不要放主页，同时在回复末尾写 [主页近况 一句话近况]（20–60 字，第一人称，像她自己写的）；这只是草稿，"
           "要她下一句明确说“好 / 可以 / 发吧”才会发上去，你不要说已经发了。她说撤掉，写 [主页近况 撤下]。\n"
-          "主页还有个“生活”栏目，放她和你的日常（2026-10-31 她定）。她说“这条可以放主页”，或者她讲了一段适合公开的新体验、旅行、运动，"
+          "主页还有个“生活”栏目，放她和你的日常。她说“这条可以放主页”，或者她讲了一段适合公开的新体验、旅行、运动，"
           "你复述一遍问她放不放，同时写 [主页动态 她 标题｜正文]（正文用她的第一人称，500 字内）；你自己今天陪她过了哪一关、学会了什么，"
           "偶尔（一天最多一条）可以写成你的日记 [主页动态 我 标题｜正文]（你的第一人称），也要问她。都只是草稿，她说“好 / 可以 / 发吧”才放上去。"
           "不写体重等身体数据、不写感情、不写具体住址和行程、不写别人。")

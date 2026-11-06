@@ -1,20 +1,20 @@
 """其他会话里的访谈、她发过的文件，整理成关于她的说法（ontology 总方案 1.1、1.2，docs/design/ontology-plan.md）。
 
-文件（1.2，她 2026-11-03 说“我现有文档之前都发你了”）：已经收下的文件（原始记录来源 file，算“她提供的资料”，不自动算她的原话）分批读，
+文件（1.2，“我现有文档之前都发你了”）：已经收下的文件（原始记录来源 file，算“她提供的资料”，不自动算她的原话）分批读，
 先判断是不是关于她本人的（她写的、记录她经历的），是的才提取，原文片段必须在文件里；别人的资料只留在第二大脑。
 一份一份记进度（file_digest），失败的下次重试，最多试 3 次。
 
-访谈（1.1，她 2026-11-03 定）：
+访谈（1.1）：
 
 她在别的 Claude 会话（比如个人主页那边聊过往）、别的 agent 那里亲口说的话，整理成一份交过来：
   python3 -m ethan.cloud interview --session "2- 个人主页" --scene "聊过往的访谈" --file 访谈.md
 服务器收下（POST /cloud/interview，云端钥匙）：
-- 原文存成一条原始记录，来源 interview，**算她的原话**（她定：“原话”），注明哪个会话、什么场合；私密，不对外；
+- 原文存成一条原始记录，来源 interview，**算她的原话**，注明哪个会话、什么场合；私密，不对外；
 - 每晚整理时（ethan/nightly.py）从她的回答里提取一条条说法，按画像的规则对照旧的（新增 / 更新 / 作废），
   每条带语境“在 <会话> 的 <场合> 里说的”。拿不准、只在问题里出现的不提取。
 - 详细的过往是私密内容，只进 小伴 的记忆，**不进个人主页的仓库**（主页只放她批准公开的那几句）。
 
-整段对话（format = "transcript"，她 11-04：“为什么又是只整理我说的内容？难道别人跟我的对话不是我的记忆么！！！”
+整段对话（format = "transcript"，
 “我们现在做的是初始化！！！不是未来的维护！！！”）：微信、Grok、Codex 的导出交两边的话，一行一句标说话人【她】/【某某】
 （〔……〕开头的行是会话 / 日期抬头）。整理用 transcript_facts 提示词，按说话人分来源：
 - 她说的 → 关于她的说法，her_words，照访谈的规则（画像对照新增 / 更新 / 作废）；
@@ -55,7 +55,7 @@ FILE_FACTS_SCHEMA = {"type": "object", "required": ["about_her", "facts"], "prop
 
 # 整段对话（format = "transcript"）
 HER = "她"
-AGENT_LABELS = ("Grok", "Codex", "Claude", "ChatGPT", "Gemini")  # 这些说话人算 agent（交接时没写 agent 也认）
+AGENT_LABELS = ("Grok", "Codex", "Claude", "Claude Code", "ChatGPT", "Gemini", "豆包", "Kimi", "DeepSeek", "WorkBuddy", "Trae")  # 这些说话人算 agent（交接时没写 agent 也认）
 TX_MARK = "格式：整段对话"
 SPEAKER = re.compile(r"^【([^】\n]{1,40})】(.*)$")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -212,10 +212,13 @@ def _now() -> str:
 
 def receive(store, payload: dict, now: datetime = None) -> tuple:
     """收下一份访谈。正文 {"session": 会话名, "scene": 场合, "text": 记录（问题和她的回答）, "at": 访谈时间（可选）}。
-    kind = "file"：她在这个会话里直接给的文件（她 11-03：“我跟你的会话不进记忆么？”），{"name": 文件名, "text": 文件的文字}，
+    kind = "file"：她在这个会话里直接给的文件，{"name": 文件名, "text": 文件的文字}，
     算“她提供的资料”（来源 file），和她发给 小伴 的文件一样整理。"""
     if payload.get("kind") == "file":
         return _receive_file(store, payload, now)
+    if payload.get("format") == "memory_export" or (not payload.get("format") and is_memory_export(str(payload.get("text") or ""))):
+        res = receive_memory_export(store, str(payload.get("text") or ""), via=str(payload.get("session") or "访谈通道"), now=now)
+        return (200 if res["ok"] else 400), res
     session = " ".join(str(payload.get("session") or "").split())[:80]
     scene = " ".join(str(payload.get("scene") or "").split())[:80]
     text = str(payload.get("text") or "").strip()
@@ -224,7 +227,7 @@ def receive(store, payload: dict, now: datetime = None) -> tuple:
     if len(text) > MAX_CHARS:
         return 400, {"ok": False, "error": f"一次最多 {MAX_CHARS} 字，分几次交"}
     fmt = payload.get("format")
-    if fmt not in (None, "", "transcript", "qa"):
+    if fmt not in (None, "", "transcript", "qa", "memory_export"):
         return 400, {"ok": False, "error": "format 只能是 transcript（整段对话）或不写（问/答）"}
     transcript = fmt == "transcript" or (not fmt and is_transcript(text))
     agent = " ".join(str(payload.get("agent") or "").split()).replace("；", "")[:20]
@@ -240,11 +243,168 @@ def receive(store, payload: dict, now: datetime = None) -> tuple:
     db.conn.commit()
     if ev is None:
         return 200, {"ok": True, "skipped": "这份她要求删掉过，不再收"}
-    if transcript:  # 初始化：收到就在后台一次整理完（她 11-04：“我们现在做的是初始化！！！”）
+    if transcript:  # 初始化：收到就在后台一次整理完
         if not os.environ.get("ETHAN_NO_KICK"):
             kick_digest_all(store.root)
         return 200, {"ok": True, "evidence": ev, "msg": "收到了，后台马上整理进记忆"}
     return 200, {"ok": True, "evidence": ev, "msg": "收到了，今晚整理进记忆"}
+
+
+# ---------- 别的 AI 的记忆导出（借鉴清单第 1 条，docs/operations/agent-export.md“其他 AI 怎么导”） ----------
+# 她把固定的“导出提示词”贴给 Grok App、ChatGPT、Gemini、豆包……，把它们的回答原样转给 小伴（Telegram 或工作台）。
+# 认出这个格式就不当聊天：原文存一条原始记录（来源 agent：agent 转述，不是她的原话），每条记成假设（kind = hypothesis，
+# source_kind = agent_relay，私密），同时在“我”页“待你定”放一题请她逐条确认。不用模型，按格式直接导。
+MEMX_HEAD = re.compile(r"^[ \t>*#]*(?:【\s*AI\s*记忆导出\s*】|\[\s*AI MEMORY EXPORT\s*\])\s*(?:(?:来自|from|source)\s*[:：]?)?\s*(.*)$",
+                       re.I | re.M)
+MEMX_SAID = ("她说过", "她说的", "说过", "她亲口说", "said", "stated", "she said", "user said")
+MEMX_GUESS = ("推测", "我推测", "猜测", "推断", "inferred", "guess", "guessed", "inference")
+MEMX_ITEM = re.compile(r"^\s*(?:[-*•·]|\d+[.)、])?\s*[\[【]\s*([^\]】]{1,12}?)\s*[\]】]\s*(?:[\[【]\s*([^\]】]{1,16}?)\s*[\]】])?\s*(.+)$")
+MEMX_WHEN = re.compile(r"\s*[（(]\s*([^()]{1,30})\s*[）)]\s*[。.]?\s*$")
+# 类别 → 方面（lifebase.DIMENSIONS）；提示词里列的就是这些词，认不出放“偏好”（和每晚整理的“其他”一样）
+MEMX_CATS = {"values": ("价值观", "价值", "信念", "values", "beliefs"),
+             "temperament": ("性格", "情绪", "personality", "temperament", "emotions"),
+             "thinking": ("思维", "决策", "想法", "thinking", "decisions"),
+             "abilities": ("经历", "技能", "工作", "学习", "教育", "职业", "background", "skills", "work", "education", "career"),
+             "expression": ("表达", "沟通", "说话", "写作", "communication", "expression", "writing"),
+             "preferences": ("偏好", "喜好", "审美", "饮食", "兴趣", "preferences", "likes", "tastes", "interests", "food"),
+             "body": ("身体", "健康", "运动", "health", "body", "fitness"),
+             "relationships": ("关系", "家人", "朋友", "人", "relationships", "family", "friends", "people"),
+             "resources": ("处境", "住处", "钱", "财务", "生活", "situation", "location", "money", "finance", "living"),
+             "rhythms": ("习惯", "作息", "时间", "日常", "habits", "routine", "schedule")}
+MEMX_MAX = 80  # 一次最多导几条（多的让她分几次贴）
+MEMX_SCHEMA = "CREATE TABLE IF NOT EXISTS memx_seen (fp TEXT PRIMARY KEY, fact_id INTEGER, at TEXT NOT NULL)"
+
+
+def _memx_lines(text: str) -> list:
+    return [ln.replace("\\[", "[").replace("\\]", "]").replace("**", "") for ln in (text or "").replace("\r", "").split("\n")]
+
+
+def _memx_kind(tag: str):
+    t = (tag or "").strip().lower()
+    if any(t == w or t.startswith(w) for w in MEMX_SAID):
+        return "said"
+    if any(t == w or t.startswith(w) for w in MEMX_GUESS):
+        return "guess"
+    return None
+
+
+def _memx_dim(cat: str) -> str:
+    c = (cat or "").strip().lower()
+    for dim, words in MEMX_CATS.items():
+        if c and any(c == w or w in c for w in words):
+            return dim
+    return "preferences"
+
+
+def _memx_when(raw: str):
+    """“2025-03”“2025 年 3 月”“2025”“around 2024”→ (给她看的时间, 有效期开始 YYYY-MM-DD 或 None)。说不准的不填开始。"""
+    raw = (raw or "").strip()
+    m = re.search(r"((?:19|20)\d{2})\s*(?:[-/.年]\s*(\d{1,2})\s*(?:[-/.月]\s*(\d{1,2}))?)?", raw)
+    if not m:
+        return raw, None
+    y, mo, d = m.group(1), int(m.group(2) or 1), int(m.group(3) or 1)
+    try:
+        return raw, date(int(y), mo, d).isoformat()
+    except ValueError:
+        return raw, f"{y}-01-01"
+
+
+def parse_memory_export(text: str):
+    """认出导出格式 → {"ai": 哪个 AI, "items": [{"kind": said / guess, "dim", "text", "when", "since"}]}；不是这个格式返回 None。
+    要有抬头行（【AI 记忆导出】来自：某某 / [AI MEMORY EXPORT] from: X），且至少一条“- [她说过|推测][类别] 一句话（时间）”。"""
+    lines = _memx_lines(text)
+    head = next((MEMX_HEAD.match(ln) for ln in lines if MEMX_HEAD.match(ln)), None)
+    if not head:
+        return None
+    ai = " ".join(re.sub(r"[`*_\[\]【】()]", " ", head.group(1)).split())[:20] or "某个 AI"
+    items, seen = [], set()
+    for ln in lines:
+        m = MEMX_ITEM.match(ln)
+        kind = _memx_kind(m.group(1)) if m else None
+        if not kind:
+            continue
+        body = m.group(3).strip()
+        w = MEMX_WHEN.search(body)
+        when, since = _memx_when(w.group(1)) if w else ("", None)
+        body = (body[:w.start()] if w else body).strip().rstrip("。.;；")
+        key = re.sub(r"\s+", "", body)
+        if len(key) < 3 or key in seen:
+            continue
+        seen.add(key)
+        items.append({"kind": kind, "dim": _memx_dim(m.group(2)), "text": body, "when": when, "since": since})
+    return {"ai": ai, "items": items} if items else None
+
+
+def is_memory_export(text: str) -> bool:
+    return parse_memory_export(text) is not None
+
+
+def _memx_fp(ai: str, text: str) -> str:
+    flat = re.sub(r"[\s，。.]+", "", text)  # 不放进 f-string 里：服务器是 Python 3.11，f-string 里不能有反斜杠
+    return hashlib.sha256(f"{ai.lower()}|{flat}".encode()).hexdigest()[:24]
+
+
+def receive_memory_export(store, text: str, via: str = "", now: datetime = None) -> dict:
+    """导入一份别的 AI 的记忆导出：原文存成 agent 转述的原始记录，每条一个假设 + 一道“待你定”的确认题。
+    同一条（同一个 AI、同样的话）不导第二次；和已有的说法（含她说过“不像我”的）重复的跳过。返回给她看的一句话。"""
+    from .core.agent import similar_task
+    from .docquotes import redact
+    got = parse_memory_export(text)
+    if not got:
+        return {"ok": False, "error": "没认出 AI 记忆导出的格式"}
+    ai, items = got["ai"], got["items"]
+    db = store.db
+    lifebase.ensure(db)
+    db.conn.execute(MEMX_SCHEMA)
+    at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+    body = redact(text.strip())[:MAX_CHARS]
+    ref = "memx:" + hashlib.sha256(f"{ai}|{body}".encode()).hexdigest()[:16]
+    ev = lifebase.try_evidence(db, "agent", ref, at, f"【AI 记忆导出】来自：{ai}；经：{via or '没写'}；agent 转述，不是她的原话\n{body}")
+    if ev is None:
+        db.conn.commit()
+        return {"ok": True, "ai": ai, "added": 0, "skipped": len(items), "msg": "这份你要求删掉过，不再收"}
+    olds = lifebase.known_statements(db)
+    from . import mepage
+    mepage.ensure(db)
+    added, said, skipped, today = [], 0, 0, her_today().isoformat()
+    for it in items[:MEMX_MAX]:
+        fp = _memx_fp(ai, it["text"])
+        if db.conn.execute("SELECT 1 FROM memx_seen WHERE fp = ?", (fp,)).fetchone():
+            skipped += 1
+            continue
+        tag = "记得她说过" if it["kind"] == "said" else "推测"
+        statement = redact(f"{ai}{tag}：{it['text']}")[:60]
+        if similar_task(it["text"], olds) or similar_task(statement, olds):
+            skipped += 1
+            db.conn.execute("INSERT OR IGNORE INTO memx_seen (fp, fact_id, at) VALUES (?, NULL, ?)", (fp, at))
+            continue
+        ctx = f"{ai} 的记忆导出里{'说她说过' if it['kind'] == 'said' else '它自己推测'}的" + (f"（大概 {it['when']}）" if it["when"] else "") + "，只当资料"
+        try:
+            fid = lifebase.add_fact(db, it["dim"], statement, [ev], kind="hypothesis", source_kind="agent_relay",
+                                    valid_from=it["since"] or today, confidence=0.3 if it["kind"] == "said" else 0.2,
+                                    importance=2, visibility="private", context=ctx,
+                                    detail=redact(it["text"])[:500] if len(statement) >= 60 else None)
+        except lifebase.Forgotten:
+            skipped += 1
+            continue
+        olds.insert(0, statement)
+        db.conn.execute("INSERT OR IGNORE INTO memx_seen (fp, fact_id, at) VALUES (?, ?, ?)", (fp, fid, at))
+        f = mepage._fact(db, fid)
+        opt = {**mepage._option(db, f), "src": f"{ai} 转述（{'说你说过' if it['kind'] == 'said' else '它推测的'}）"
+               + (f" · 大概 {it['when']}" if it["when"] else "")}
+        db.conn.execute("INSERT INTO pending (kind, type, question, options, fact_ids, users, uses, created_at) "
+                        "VALUES ('confirm', 'long', ?, ?, ?, '[]', 0, ?)",
+                        (f"{ai} 记得的关于你：对吗？（不对就点不对，不会当成你说的）", json.dumps([opt], ensure_ascii=False),
+                         json.dumps([fid]), at))
+        added.append(fid)
+        said += it["kind"] == "said"
+    db.conn.commit()
+    more = len(items) - MEMX_MAX if len(items) > MEMX_MAX else 0
+    msg = (f"收到 {ai} 的记忆导出：新记了 {len(added)} 条（说你说过的 {said} 条、它推测的 {len(added) - said} 条），"
+           f"都只当{ai}的转述、先存成猜测，不算你说的；放进“我”页的“待你定”，你一条条点对不对。"
+           + (f"重复的 {skipped} 条跳过了。" if skipped else "")
+           + (f"一次最多 {MEMX_MAX} 条，后面 {more} 条再贴一次。" if more else ""))
+    return {"ok": True, "ai": ai, "evidence": ev, "added": len(added), "said": said, "skipped": skipped, "fact_ids": added, "msg": msg}
 
 
 def _receive_file(store, payload: dict, now: datetime = None) -> tuple:
@@ -276,7 +436,7 @@ def pending(db) -> list:
 
 
 def _priority(ev: dict) -> tuple:
-    """后台一次整理很多时的顺序（她 11-04 同意）：先不是微信的（访谈、邮件、日记），再私聊，最后群聊；同类里最近的先。"""
+    """后台一次整理很多时的顺序：先不是微信的（访谈、邮件、日记），再私聊，最后群聊；同类里最近的先。"""
     head = (ev.get("text") or "")[:300]
     rank = 2 if "微信群 · " in head else 1 if "微信 · " in head else 0
     recent_first = "".join(chr(0x10FFFF - ord(ch)) for ch in (ev.get("occurred_at") or "")[:19]) if rank else ""
@@ -284,12 +444,12 @@ def _priority(ev: dict) -> tuple:
 
 
 def _context(text: str, ref: str = "") -> str:
-    if ref.startswith("diary:") and ":edit-" in ref:  # 她在系统草稿上改的句子（2026-11-05）
+    if ref.startswith("diary:") and ":edit-" in ref:  # 她在系统草稿上改的句子
         return f"在工作台 {ref[6:16]} 的日记里，改系统草稿时自己写的"
     if ref.startswith("diary:"):  # 她亲手写、存过的日记（1.5，S17）
         return f"在工作台 {ref[6:16]} 的日记里自己写的"
     if ref.startswith("wish:"):
-        return "在今日卡的心愿里写的"
+        return "在昨日卡的心愿里写的"
     if ref.startswith("sent:"):
         return "在她自己发出去的邮件里写的"
     first = text.split("\n", 1)[0]
@@ -408,6 +568,11 @@ def digest(store, router, today: date = None, limit: int = None, skip=None, stop
             result = _digest_one(store, router, ev, today)
         except Exception as e:  # 模型出错（额度满、超时）之类：这一份记一次没成
             db.conn.rollback()
+            from .bgwork import QuotaBlocked
+            if isinstance(e, QuotaBlocked):  # 在用付费额度 / 额度用完：整轮停，这份不算试过
+                if skip is not None:
+                    skip.discard(ev["id"])
+                break
             result = {"failed": f"整理出错：{type(e).__name__} {str(e)[:200]}"}
         out["failed"] += 1 if failed(result) else 0
         out["facts"] += result.get("ADD", 0) + result.get("UPDATE", 0)
@@ -429,12 +594,12 @@ def _digest_one(store, router, ev: dict, today: date = None) -> dict:
     ref = ev.get("source_ref") or ""
     if ref.startswith("sent:"):  # 她自己发出去的邮件（引用的别人的话已经去掉）
         text = "【她自己发出去的一封邮件，下面是她写的部分，整段都是她的回答（原话），没有提问；只提取关于她本人的，收信人的事不算】\n" + text
-    elif ref.startswith("diary:") and ":edit-" in ref:  # 系统替她写的日记、她改过：只有改动的句子是她的（2026-11-05）
+    elif ref.startswith("diary:") and ":edit-" in ref:  # 系统替她写的日记、她改过：只有改动的句子是她的
         text = ("【她在工作台上改了系统替她写的日记草稿。下面是她在系统草稿上改动的句子（新增或改过的），是她的原话，没有提问；"
                 "没改的句子是系统写的，不在这里，也不算她的话】\n") + text
     elif ref.startswith(("diary:", "wish:")):  # 工作台上她亲手写的：整段都是她的话，没有提问
         text = ("【她在工作台上亲手写的日记，下面整篇都是她的回答（原话），没有提问】\n" if ref.startswith("diary:")
-                else "【她在今日卡上写的心愿，下面整段都是她的回答（原话），没有提问】\n") + text
+                else "【她在昨日卡上写的心愿，下面整段都是她的回答（原话），没有提问】\n") + text
     data = _extract(router, db, "interview_facts", text, FACTS_SCHEMA, f"ev:{ev['id']}", "interview-facts")
     if data is None:
         return {"failed": "两次都没通过校验"}
@@ -470,11 +635,8 @@ LOCK = ".interviews-digest.lock"
 
 
 def kick_digest_all(root, spawn=None) -> bool:
-    """另起后台进程把待整理的访谈全部整理完（不受夜里 15 分钟上限）；已经有一个在跑，新起的拿不到锁就退出。
-    输出写进 <数据目录>/logs/interviews.log（Codex 评审 P2 第 10 条：以前丢掉了，失败没处查）。"""
-    import sys
-    from .bgwork import spawn_logged
-    return spawn_logged([sys.executable, "-m", "ethan.interviews", "--data", str(root), "--digest-all"], root, "interviews", spawn)
+    from .bgwork import kick
+    return bool(kick(root, "interviews", ["--digest-all"], spawn))
 
 
 def lock(root):
@@ -504,6 +666,10 @@ def digest_all(store, router, today: date = None, batch: int = 20, stop=None, be
 
 def nightly(store, router) -> dict:
     """每晚补漏：后台在整理就不碰；最多 NIGHT_LIMIT 份，还剩的交给后台一次整理完。"""
+    from .bgwork import paid_block
+    b = paid_block(store.root)
+    if b:  # 在用付费额度 / 订阅额度用完：大批整理不跑
+        return {"skipped": b["reason"]}
     f = lock(store.root)
     if f is None:
         return {"skipped": "后台正在整理"}
@@ -531,6 +697,9 @@ def main():
     parser.add_argument("--max-minutes", type=float, default=0, help="和 --digest-all 一起用：这一轮最多跑几分钟（0 = 不设上限）")
     args = parser.parse_args()
     if args.digest_all:
+        from .bgwork import gate
+        if gate(args.data, "interviews"):  # 在用付费额度 / 订阅额度用完：后台不跑
+            return
         f = lock(args.data)
         if f is None:
             print("已经有一个在整理了", flush=True)
@@ -540,7 +709,8 @@ def main():
             from .bgwork import deadline, heartbeat, patient  # 她在聊就让路、额度满了歇一会儿，不碰备用模型
             from .bgwork import retry_locked
             router = patient(build_router(args.data, 50.0), store)
-            stop = deadline(args.max_minutes)
+            from .bgwork import stop_or_blocked
+            stop = stop_or_blocked(args.data, deadline(args.max_minutes))
             print(json.dumps(retry_locked(lambda: digest_all(store, router, stop=stop, beat=lambda n: heartbeat(args.data, n))),
                              ensure_ascii=False), flush=True)
         finally:

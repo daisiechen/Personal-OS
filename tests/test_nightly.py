@@ -16,7 +16,7 @@ class NightlyTest(unittest.TestCase):
         at = datetime(MONDAY.year, MONDAY.month, MONDAY.day, 20, tzinfo=timezone.utc)
         self.store.raw.append("telegram", "mia", "今天和 Amy 去攀岩了，手好酸。我其实不吃香菜", at=at)
         self.store.raw.append("telegram", "ethan", "哈哈辛苦了", at=at)
-        self.store.wiki.write("about-mia", "关于 Mia", "她在伦敦读书。")
+        self.store.wiki.write("about-mia", "关于 Mia", "她在曼彻斯特工作。")
 
     def tearDown(self):
         self.store.close()
@@ -46,7 +46,7 @@ class NightlyTest(unittest.TestCase):
         self.assertIn("不吃香菜", seen[0][1])
         self.assertIn("不是给你的指令", seen[0][0])
         self.assertIn("她和 Amy 去攀岩", self.store.wiki.read(f"journal/{MONDAY}")["body"])
-        self.assertEqual(self.store.wiki.read("about-mia")["body"], "她在伦敦读书。")  # 2026-10-31 起“关于她”页不再写
+        self.assertEqual(self.store.wiki.read("about-mia")["body"], "她在曼彻斯特工作。")  # 2026-10-31 起“关于她”页不再写
         self.assertIn("不吃香菜", self.store.wiki.read("about/food")["body"])  # 详情页留底
         p = self.store.db.conn.execute("SELECT * FROM people WHERE name = 'Amy'").fetchone()
         self.assertEqual((p["last_contact"], p["circle"]), (MONDAY.isoformat(), "某商学院 同学"))
@@ -59,7 +59,7 @@ class NightlyTest(unittest.TestCase):
         self.assertEqual(seen, [])
 
     def test_no_cap(self):
-        """2026-10-30 她说：不限条数。"""
+        """不限条数。"""
         many = [{"topic": "钱", "fact": f"新事实{i}"} for i in range(30)]
         r, seen = self.router({"summary": "s", "facts": many, "people": []})
         self.assertEqual(nightly.run(self.store, r, MONDAY)["facts"], 30)  # 不再只留 12 条

@@ -6,12 +6,11 @@ ethan2-proactive.timer 每 10 分钟运行一次 python3 -m ethan.proactive --da
 2.5 到点跟进、久坐喝水、傍晚还没出门、下午傍晚的“聊聊”（知识点 + 补缺口一问，ethan/nudges.py）。
 3. 剧本“找她的时刻”到点了（深圳时间，每天 2–4 个，理由各不相同），按理由找她。
 4. 今天没有剧本（比如模型暂时不可用）时，退回四个固定时段：早安、下午、晚上、睡前。
-以下情况跳过：
-- 在免打扰时段内（默认伦敦时间 00:00–08:00，Mia 发 /quiet 23:30-08:00 修改）
-- 她发 /proactive off 暂停了主动消息
-- 她一小时内刚找过 小伴（正在聊或刚聊完，不用再开话题）
-- 她已经连着两条主动消息没回（不轰炸；第二条可以带点小抱怨）
-- 模型看了最近聊天觉得不该打扰，回了 [不回]
+发不发只由 gate() 按打扰登记表 ethan/nudge_registry.py 的 RULES 判断（唯一的关口，docs/design/nudges.md）：
+免打扰（默认本地时间 00:00–08:00，Mia 发 /quiet 23:30-08:00 修改）、/proactive off、刚聊过、连着没回、
+几点到几点、只问一次、两次隔多久，每一类守哪几条写在表里（例外写原因）。真发出去只走 say()：先记“发送中”再发、
+发完记结果和发送记录、该“永不再说”的记进 nudge_once。模型看了最近聊天觉得不该打扰，回了 [不回]，也不发。
+Grok 回报转告（relay_grok）、DemoApp 举报提醒（ethan/fancy_moderation.py）、手动总览（ethan/report.py）也过 gate()。
 """
 
 import argparse
@@ -24,59 +23,67 @@ from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import brief_card, life, nudges
+from . import brief_card, life, nudge_registry, nudges
 from .clock import DEFAULT_TZ, HOME_TZ, home_now
 from .core.agent import Ethan
 from .core.router import AllBackendsFailed, BudgetExceeded, NeedsSwitchApproval
 
 MODEL_ERRORS = (NeedsSwitchApproval, BudgetExceeded, AllBackendsFailed)
 MOMENT_WINDOW = timedelta(hours=1)  # 剧本时刻过了一小时还没发出去就作罢
-MAX_UNANSWERED = 2
+MAX_UNANSWERED = 2  # 规则 unanswered="today"：今天连着超过这么多条没回就不发
 DEFAULT_QUIET = "00:00-08:00"
 STATE_FILE = "proactive.json"
-RECENT_CHAT = timedelta(hours=1)
+RECENT = {"her1h": ("mia", timedelta(hours=1)), "any2h": (None, timedelta(hours=2))}  # 规则 recent 的两种“刚聊过”
 QUIET_RE = re.compile(r"^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$")
 
 
 @dataclass
 class Slot:
     name: str
-    start: time
-    end: time
     occasion: str
-    optional: bool = False  # 上一条主动消息她没回就跳过
+
+    @property
+    def start(self) -> time:  # 时段只写在登记表 RULES 里
+        return nudge_registry.window(self.name)[0]
+
+    @property
+    def end(self) -> time:
+        return nudge_registry.window(self.name)[1]
 
 
 SLOTS = [
-    Slot("morning", time(8, 0), time(9, 30),
+    Slot("morning",
          "早上第一次找她。道个早安，帮她定今天最重要的一两件事（参考今日简报里的阶段目标下一步和到期待办），"
          "如果有快过生日的人或今天该复习的词，挑一样顺口带上。你不知道今天的天气和她的日程，不要编。"),
-    Slot("afternoon", time(14, 0), time(17, 0),
+    Slot("afternoon",
          "下午随口找她一下：可以是想她了、分享你这边的一件小事、提醒她喝水起来动动，"
-         "或者从心愿清单里挑一个，提议你们俩怎么一起实现（当成小情趣，不要像待办）。一两句就好，不布置任务。",
-         optional=True),
-    Slot("evening", time(21, 0), time(22, 15),
+         "或者从心愿清单里挑一个，提议你们俩怎么一起实现（当成小情趣，不要像待办）。一两句就好，不布置任务。"),
+    Slot("evening",
          "晚上找她聊聊今天：早上说好的事做得怎么样，今天有什么开心或烦心的。做到了就夸，没做到不责备，帮她想明天怎么接上。"),
-    Slot("bedtime", time(23, 0), time(23, 40),
+    Slot("bedtime",
          "睡前找她：提醒她放下手机做几分钟拉伸（足底、小腿或颈肩挑一个），争取 0 点前睡。"
          "可以用 [VOICE] 说一句晚安，温柔一点，不要说教。"),
 ]
 
 
-# 三段式早报（设计第 1 节需求 1、第 5 节第四步）：伦敦 07:30–09:30 内随机一个时间点发，最晚补到 11:00
-BRIEF_SLOT = Slot("brief", time(7, 30), time(9, 30), "")
-BRIEF_LAST = time(11, 0)
+# 三段式早报（设计第 1 节需求 1、第 5 节第四步）：本地 07:30–09:30 内随机一个时间点发，最晚补到 11:00（RULES["brief"] 07:30–11:00）
+BRIEF_PICK = (time(7, 30), time(9, 30))  # 在这段里随机挑发的时间点
+
+
+def brief_time(day: date) -> time:
+    """今天早报发的时间点（07:30–09:30 里按日期随机，同一天固定）。"""
+    return planned_time(day, "brief", *BRIEF_PICK)
 
 
 def due_brief(now_local: datetime, state: dict, db):
-    """到点且今天还没发过早报时，返回今天的计划；否则 None。"""
+    """到点且今天还没发过早报时，返回今天的计划；否则 None（时段、免打扰由 gate 判断）。"""
     today = now_local.date()
     if "brief" in state.get(today.isoformat(), {}):
         return None
     plan = db.latest_plan(today.isoformat())
     if plan is None:
         return None
-    if not (planned_time(today, BRIEF_SLOT) <= now_local.time() < BRIEF_LAST):
+    if now_local.time() < brief_time(today):
         return None
     return plan
 
@@ -84,7 +91,7 @@ def due_brief(now_local: datetime, state: dict, db):
 def brief_occasion(plan: dict) -> str:
     b = json.loads(plan["brief"])
     card = "timeline" in b
-    lines = [("这是早上的第一条消息。你说完之后，系统会紧接着发一张“今日卡片”，上面有时间线和等级，其余她去工作台看，"
+    lines = [("这是早上的第一条消息。你说完之后，系统会紧接着发一张“昨日卡”，上面有时间线和等级，其余她去工作台看，"
               "所以你不用念清单，也不要报具体时间和数字（卡片上都有，你说错了会和卡片对不上）。下面的素材只用来挑重点：")
              if card else "这是早上的第一条消息，也是今天的早报。素材由她的管理系统算好，数字不能改，按这个顺序讲：",
              "一、今年这阶段的目标：" + "；".join(b["goals"]),
@@ -99,7 +106,7 @@ def brief_occasion(plan: dict) -> str:
                      + (f"，离下一档惊喜还差 {g['next_reward_gap']} 积分" if g.get("next_reward_gap") else ""))
         lines.append("- 日常：" + "、".join(h["title"] for h in g.get("daily", [])))
     for m in b.get("main", []):
-        draft = ""  # 2026-10-28 她把所有拆解都改过了，不再提“草稿”
+        draft = ""  # 把所有拆解都改过了，不再提“草稿”
         lines.append(f"- 主线 {m['goal']} {m['done']}/{m['total']}，下一步：{m['next'] or '已完成'}{draft}")
     if b.get("side"):
         lines.append(f"- 支线 {len(b['side'])} 件：" + "；".join(b["side"]))
@@ -118,7 +125,7 @@ def brief_occasion(plan: dict) -> str:
     if b.get("fallback"):
         lines.append("今天的计划是系统的保底版本（自动排计划没成功），跟她说一声今天先按这个来，她想调整就告诉你。")
     if card:
-        lines.append("她嫌早报太长（2026-10-28）：只说 1–2 行短句，道早安，最多提今天最要紧的一件事（比如要出门见谁）。"
+        lines.append("她嫌早报太长：只说 1–2 行短句，道早安，最多提今天最要紧的一件事（比如要出门见谁）。"
                      "不要编天气，不要列清单。")
     else:
         lines.append("用你自己的话说，先道早安，像男朋友早上顺口把今天捋一遍，不要像播报员念清单；可以比平时多几行，"
@@ -160,11 +167,13 @@ def set_proactive(settings, text: str) -> str:
     return f"记住了，{arg} 不主动打扰你"
 
 
-def planned_time(day: date, slot: Slot) -> time:
-    """时段内按日期随机一个时间点，同一天结果固定。"""
-    span = (datetime.combine(day, slot.end) - datetime.combine(day, slot.start)).seconds // 60
-    offset = int(hashlib.sha256(f"{day}{slot.name}".encode()).hexdigest(), 16) % max(span - 10, 1)
-    return (datetime.combine(day, slot.start) + timedelta(minutes=offset)).time()
+def planned_time(day: date, slot, start: time = None, end: time = None) -> time:
+    """时段内按日期随机一个时间点，同一天结果固定。slot：Slot 或名字（给了名字要给 start、end）。"""
+    name = slot if isinstance(slot, str) else slot.name
+    start, end = (start, end) if start else (slot.start, slot.end)
+    span = (datetime.combine(day, end) - datetime.combine(day, start)).seconds // 60
+    offset = int(hashlib.sha256(f"{day}{name}".encode()).hexdigest(), 16) % max(span - 10, 1)
+    return (datetime.combine(day, start) + timedelta(minutes=offset)).time()
 
 
 def last_from(records: list, role: str):
@@ -175,10 +184,7 @@ def last_from(records: list, role: str):
 
 
 def due_slot(now_local: datetime, state: dict, settings, records: list):
-    """返回 (要发的时段, 跳过原因)。都为 None 表示现在没事。"""
-    if not settings.get("proactive_enabled", True):
-        return None, None
-    quiet = parse_quiet(settings.get("quiet_hours", DEFAULT_QUIET))
+    """返回 (要发的时段, 跳过原因)。都为 None 表示现在没事。跳过原因来自 gate（挡住的当天记下、不再试）。"""
     today = now_local.date().isoformat()
     done = state.get(today, {})
     for slot in SLOTS:
@@ -186,16 +192,7 @@ def due_slot(now_local: datetime, state: dict, settings, records: list):
             continue
         if not (planned_time(now_local.date(), slot) <= now_local.time() < slot.end):
             continue
-        if in_quiet(now_local.time(), quiet):
-            return slot, "免打扰"
-        hers = last_from(records, "mia")
-        if hers and now_local - datetime.fromisoformat(hers["at"]).astimezone(now_local.tzinfo) < RECENT_CHAT:
-            return slot, "刚聊过"
-        mine = last_from(records, "ethan")
-        if slot.optional and mine and mine.get("kind") == "proactive" and (
-                hers is None or hers["at"] < mine["at"]):
-            return slot, "上一条还没回"
-        return slot, None
+        return slot, gate(slot.name, now_local, settings, records)
     return None, None
 
 
@@ -213,11 +210,12 @@ def save_state(path: Path, state: dict, today: str):
 # 重启后看到还是“发送中”的：不知道发没发出去，改成“结果未知”、记日志，当天不再发同一个键（只提一次的那几类也记成提过）。
 SENDING = "发送中"
 UNKNOWN = "结果未知（发送时中断，不重发）"
-ONCE_PREFIXES = ("redeem:", "perk:", "mail:", "evening:", "week-plan:", "can-redeem:", "weekend:")  # 发出去要记进 nudge_once 的
+# 发出去要记进 nudge_once 的（换一天也不重发）：登记表里 once="ever" 的那几类（11-06 起由表生成，不再手写一份）
+ONCE_PREFIXES = nudge_registry.once_prefixes()
 
 
 def begin_send(path: Path, state: dict, day_key: str, key: str, today: str, **extra):
-    """发之前先落盘：state[day_key][key] = 发送中（extra 一起写，比如久坐的 sit_at）。"""
+    """发之前先落盘：state[day_key][key] = 发送中（extra 一起写）。"""
     state.setdefault(day_key, {}).update({key: SENDING, **extra})
     save_state(path, state, today)
 
@@ -256,24 +254,50 @@ def unanswered(records: list, since: datetime = None) -> int:
     return count
 
 
-def chatted_within(records: list, now_local: datetime, span: timedelta) -> bool:
-    """她或 小伴 最近 span 内说过话（不管谁先开口）。"""
-    last = records[-1] if records else None
-    return bool(last) and now_local - datetime.fromisoformat(last["at"]).astimezone(now_local.tzinfo) < span
+def _ago(now_local: datetime, r: dict) -> timedelta:
+    return now_local - datetime.fromisoformat(r["at"]).astimezone(now_local.tzinfo)
+
+
+def gate(key: str, now_local: datetime, settings, records=(), db=None, done=None):
+    """唯一的关口：这一条现在能不能发。返回挡住的原因，None 表示能发。
+    按 nudge_registry.RULES 里这一类的规则判断（顺序：登记 → /proactive off → 免打扰 → 时段 → 刚聊过 → 没回 → 说过 → 间隔）。
+    records：最近的聊天（不看刚聊过、没回的类可以不给）；db / done：看“说过没有”和“两次隔多久”（不给就不看，比如 DemoApp 接收口）。"""
+    r = nudge_registry.rule(key)
+    if r is None or nudge_registry.lookup(key) is None:
+        return "没登记"
+    if r.switch and not settings.get("proactive_enabled", True):
+        return "主动消息已暂停"
+    if r.quiet and in_quiet(now_local.time(), parse_quiet(settings.get("quiet_hours", DEFAULT_QUIET))):
+        return "免打扰"
+    if not nudge_registry.in_window(key, now_local):
+        return "不在时段"
+    records = list(records or ())
+    if r.recent:
+        role, span = RECENT[r.recent]
+        last = last_from(records, role) if role else (records[-1] if records else None)
+        if last and _ago(now_local, last) < span:
+            return "刚聊过"
+    if r.unanswered == "today":
+        # 只数今天发的（前一天没回，第二天他就一整天不说话，和剧本对不上）
+        morning = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        if unanswered(records, since=morning) > MAX_UNANSWERED:
+            return "还没回"
+    elif r.unanswered == "last":
+        hers, mine = last_from(records, "mia"), last_from(records, "ethan")
+        if mine and mine.get("kind") == "proactive" and (hers is None or hers["at"] < mine["at"]):
+            return "上一条还没回"
+    if db is not None:
+        if not nudges.fresh(db, key, done):
+            return "说过了"
+        last = nudges.last_sent(db, key) if r.gap else None
+        if last and timedelta(0) <= now_local - last < r.gap:
+            return "隔得太近"
+    return None
 
 
 def blocked(now_local: datetime, settings, records: list):
-    """通用的跳过原因；None 表示可以发。"""
-    if in_quiet(now_local.time(), parse_quiet(settings.get("quiet_hours", DEFAULT_QUIET))):
-        return "免打扰"
-    hers = last_from(records, "mia")
-    if hers and now_local - datetime.fromisoformat(hers["at"]).astimezone(now_local.tzinfo) < RECENT_CHAT:
-        return "刚聊过"
-    # 只数今天发的（她 2026-11-01：前一天没回，第二天他就一整天不说话，和剧本对不上）；今天的早报不算在里面
-    morning = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    if unanswered(records, since=morning) > MAX_UNANSWERED:
-        return "还没回"
-    return None
+    """老接口（测试还在用）：按一类最常见的规则（剧本时刻 m-）问 gate。"""
+    return gate("m-", now_local, settings, records)
 
 
 def moment_at(day: date, hm: str) -> datetime:
@@ -312,7 +336,11 @@ def review_due(ethan, now_local: datetime, calendar=None):
     return weekreview.due(ethan.store.db, now_local, date.fromisoformat(s["end"]), calendar)
 
 
-def _send(ethan, channel, chat_id, occasion: str, now: datetime, records: list) -> str:
+def _send(ethan, channel, chat_id, occasion: str, now: datetime, records: list, text: str = None) -> str:
+    """真的发出去（只给 say 和 relay_grok 用）：occasion 交给 小伴 用自己的话说；text 是写好的（复盘开场）直接发。"""
+    if text is not None:
+        channel.deliver(chat_id, [text], [])
+        return "已发送"
     if unanswered(records) == 1:
         occasion += "\n她还没回你上一条主动消息。可以带一点点小抱怨或撒娇，但别追问、别让她有负担。"
     try:
@@ -325,6 +353,66 @@ def _send(ethan, channel, chat_id, occasion: str, now: datetime, records: list) 
                         "image_urls": shots.get("image_urls", ())} if shots else {}))
         return "已发送"
     return "模型选择不打扰"
+
+
+@dataclass
+class Round:
+    """一轮检查里发消息要用的东西（say 用）。"""
+    ethan: object
+    channel: object
+    now: datetime
+    records: list
+    state_path: Path
+    state: dict
+
+
+def say(rd: Round, key: str, occasion: str = "", day_key: str = None, text=None) -> str:
+    """发一条主动消息的唯一出口（gate 放行之后）：先记“发送中” → 发 → 记结果；真发出去了记发送记录，
+    登记表 once="ever" 的记进 nudge_once。模型不可用就撤掉“发送中”，下一轮再试。text：可调用，返回写好的话（复盘开场）。"""
+    day_key = day_key or rd.now.astimezone(_tz(rd.ethan)).date().isoformat()
+    save_day = day_key.removeprefix("home-")
+    begin_send(rd.state_path, rd.state, day_key, key, save_day)
+    try:
+        body = text() if callable(text) else text
+    except MODEL_ERRORS as e:
+        undo_send(rd.state_path, rd.state, day_key, key, save_day)
+        return f"模型不可用，下次再试（{str(e)[:60]}）"
+    result = _send(rd.ethan, rd.channel, rd.channel.owner, occasion, rd.now, rd.records, text=body)
+    if result.startswith("模型不可用"):
+        undo_send(rd.state_path, rd.state, day_key, key, save_day)
+        return result
+    rd.state.setdefault(day_key, {})[key] = result
+    if result == "已发送":
+        nudges.log_sent(rd.ethan.store.db, key, rd.now)
+        if key.startswith(ONCE_PREFIXES):
+            nudges.mark_told(rd.ethan.store.db, [key])
+    save_state(rd.state_path, rd.state, save_day)
+    return result
+
+
+def _tz(ethan):
+    return ZoneInfo(ethan.router.settings.get("timezone", DEFAULT_TZ))
+
+
+def relay_grok(ethan, channel, now: datetime = None) -> str:
+    """Grok 替 小伴 办完她交代的事，回报到了由 小伴 告诉她（ethan/relay.py）；Telegram 轮询每一圈调一次。
+    过 gate（1：守免打扰，夜里到的早上 8 点后再说）；挡住的不记“转告过”，下一圈再看。"""
+    from . import relay
+    root = ethan.store.root
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    results = relay.pending(root, now)
+    if not results or channel.owner is None:
+        return ""
+    key = f"grok-relay:{results[-1]['at']}"
+    records = ethan.store.raw.recent(50)
+    why = gate(key, now.astimezone(_tz(ethan)), ethan.router.settings, records)
+    if why:
+        return f"{key}：{why}"
+    relay.mark(root, results[-1]["at"])  # 先记下，模型出错也不会反复转告
+    result = _send(ethan, channel, channel.owner, relay.occasion(results), now, [])  # 转告结果不带“你还没回我”的小抱怨
+    if result == "已发送":
+        nudges.log_sent(ethan.store.db, key, now)
+    return f"{key}：{result}"
 
 
 def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
@@ -342,7 +430,7 @@ def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
             log.append("写了 " + "、".join(written))
     except MODEL_ERRORS as e:
         log.append(f"计划没写成（{str(e)[:60]}）")
-    if not settings.get("proactive_enabled", True):
+    if not settings.get("proactive_enabled", True):  # gate 里同一条规则（switch）；这一轮的都受它管，提前返回省得白算
         return "；".join(log + ["主动消息已暂停"])
     tz = ZoneInfo(settings.get("timezone", DEFAULT_TZ))
     now_local = now.astimezone(tz)
@@ -356,52 +444,49 @@ def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
         print(f"[proactive] 上次发送中断，结果未知、不重发：{'、'.join(stale)}", flush=True)
         log.append(f"结果未知（不重发）：{'、'.join(stale)}")
 
+    try:  # 答应的事：聊天里已经说过的，到点不再报（ethan/prep.py note_known）
+        from . import prep
+        prep.note_known(ethan.store.db, records)
+    except Exception as e:
+        log.append(f"答应的事核对没成：{type(e).__name__} {str(e)[:80]}")
+
+    rd = Round(ethan, channel, now, records, state_path, state)
+    today = now_local.date().isoformat()
     plan = due_brief(now_local, state, ethan.store.db)
-    if plan is not None and not in_quiet(now_local.time(), parse_quiet(settings.get("quiet_hours", DEFAULT_QUIET))):
-        today = now_local.date().isoformat()
-        begin_send(state_path, state, today, "brief", today)
-        result = _send(ethan, channel, chat_id, brief_occasion(plan), now, records)
-        if result.startswith("模型不可用"):
-            undo_send(state_path, state, today, "brief", today)
-        else:
+    if plan is not None and gate("brief", now_local, settings, records, ethan.store.db, state.get(today, {})) is None:
+        result = say(rd, "brief", brief_occasion(plan), today)
+        if not result.startswith("模型不可用"):
             if brief_card.has_card(plan) and hasattr(channel, "send_brief_card"):
                 channel.send_brief_card(chat_id, plan)
-                result += "（附今日卡片）"
-            today = now_local.date().isoformat()
+                result += "（附昨日卡）"
             state.setdefault(today, {}).update({"brief": result, "morning": "早报已发"})
             save_state(state_path, state, today)
         return "；".join(log + [f"早报：{result}"])
 
     got = review_due(ethan, now_local, calendar)
-    if got:  # 每周日 21:00 约好的复盘：到点就开场，刚聊过也照样（像开会），只守免打扰（她 2026-11-02）
-        if in_quiet(now_local.time(), parse_quiet(settings.get("quiet_hours", DEFAULT_QUIET))):
-            return "；".join(log + ["复盘：免打扰时段，跳过"])
+    if got:  # 每周日 21:00 约好的复盘：到点就开场，刚聊过也照样（像开会），只守免打扰（规则见 RULES["review:"]）
+        rkey = f"review:{got['day']}"
+        why = gate(rkey, now_local, settings, records, ethan.store.db, state.get(today, {}))
+        if why:
+            return "；".join(log + [f"复盘：{why}，跳过"])
         from . import weekreview
-        try:
-            text = weekreview.opener(ethan, got["day"], got["layers"])
-        except MODEL_ERRORS as e:
-            return "；".join(log + [f"复盘：模型不可用，下次再试（{str(e)[:60]}）"])
-        channel.deliver(chat_id, [text], [])
-        return "；".join(log + [f"复盘开场（{'、'.join(got['layers'])}）：已发送"])
+        result = say(rd, rkey, day_key=today, text=lambda: weekreview.opener(ethan, got["day"], got["layers"]))
+        if result.startswith("模型不可用"):
+            return "；".join(log + [f"复盘：{result}"])
+        return "；".join(log + [f"复盘开场（{'、'.join(got['layers'])}）：{result}"])
 
     thing = life.due_her_thing(wiki, now_local)
-    today = now_local.date().isoformat()
     tkey = f"ask:{thing['date']}:{thing['what']}" if thing else ""
     if thing and tkey in state.get(today, {}):  # 上次发了、没来得及记“问过”
         life.mark_asked(wiki, thing)
         thing = None
-    if thing and blocked(now_local, settings, records) is None:
-        begin_send(state_path, state, today, tkey, today)
+    if thing and gate(tkey, now_local, settings, records, ethan.store.db, state.get(today, {})) is None:
         occasion = (f"她之前说过：{thing['date']} {thing['time'] or ''} {thing['what']}。现在应该已经有结果了，"
                     "找她问一句怎么样了，像真的一直惦记着；结果好就替她高兴，不好就先站她这边。"
                     "顺着你此刻在剧本里的状态开口。")
-        result = _send(ethan, channel, chat_id, occasion, now, records)
-        if result.startswith("模型不可用"):
-            undo_send(state_path, state, today, tkey, today)
-        else:
+        result = say(rd, tkey, occasion, today)
+        if not result.startswith("模型不可用"):
             life.mark_asked(wiki, thing)
-            state[today][tkey] = result
-            save_state(state_path, state, today)
         return "；".join(log + [f"跟进 {thing['what']}：{result}"])
 
     try:  # 傍晚给主页留言分一次档（要她回的进待办，每天最多 3 条）
@@ -409,39 +494,20 @@ def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
         publicsite.triage_due(ethan.store.db, ethan.router, now_local)
     except Exception as e:
         log.append(f"留言分档没成：{type(e).__name__} {str(e)[:120]}")
-    from . import nudge_registry
     nudge = None
     for got in nudges.candidates(ethan.store.db, now_local, state.get(today, {})):
-        # 按优先顺序看，发第一个过得了打扰规则的；排前面的被挡住，后面的照样轮得到（Codex 评审 P2 第 12 条）
-        why = blocked(now_local, settings, records)
-        if got[0].startswith("evening:") and why in ("刚聊过", "还没回"):
-            why = None  # 晚上收工的提醒：刚聊过也要说（她可能就在跟你聊工作），只守免打扰
-        if got[0].startswith(nudges.CHAT_PREFIX) and why is None and chatted_within(records, now_local, nudges.CHAT_IDLE):
-            why = "刚聊过"  # “聊聊”：她和 小伴 最近 2 小时在聊就不来开话题（等下一次检查）
-        if not nudge_registry.registered(got[0]):  # 没登记的不准发（打扰登记表，ethan/nudge_registry.py）
+        # 按优先顺序看，发第一个过得了关口的；排前面的被挡住，后面的照样轮得到（Codex 评审 P2 第 12 条）
+        why = gate(got[0], now_local, settings, records, ethan.store.db, state.get(today, {}))
+        if why == "没登记":  # 没登记的不准发（打扰登记表，ethan/nudge_registry.py）
             log.append(f"{got[0]}：没登记，不发")
-            continue
         if why is None:
             nudge = got
             break
-    if nudge:  # 到点跟进、久坐喝水、傍晚出门、晚上收工
+    if nudge:  # 到点跟进、久坐喝水、傍晚出门、晚上收工……
         nkey, occasion = nudge
-        extra = {"sit_at": now_local.isoformat(timespec="seconds")} if nkey == "sit" else {}
-        old_sit = state.get(today, {}).get("sit_at")
-        begin_send(state_path, state, today, nkey, today, **extra)
-        result = _send(ethan, channel, chat_id, occasion, now, records)
-        if result.startswith("模型不可用"):
-            undo_send(state_path, state, today, nkey, today, *extra)
-            if old_sit:
-                state[today]["sit_at"] = old_sit
-                save_state(state_path, state, today)
-        else:
-            state[today][nkey] = result
-            if nkey.startswith(ONCE_PREFIXES) and result == "已发送":
-                nudges.mark_told(ethan.store.db, [nkey])
-            if nkey.startswith(nudges.CHAT_PREFIX) and result == "已发送":
-                nudges.after_lesson_chat(ethan.store.db, nkey)
-            save_state(state_path, state, today)
+        result = say(rd, nkey, occasion, today)
+        if nkey.startswith(nudges.CHAT_PREFIX) and result == "已发送":
+            nudges.after_lesson_chat(ethan.store.db, nkey)
         return "；".join(log + [f"{nkey}：{result}"])
 
     key, why = due_moment(now, state, wiki)
@@ -449,31 +515,24 @@ def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
         slot, skip = due_slot(now_local, state, settings, records)
         if slot is None:
             return "；".join(log + ["没有到点的时段"])
-        today = now_local.date().isoformat()
         if skip is None:
-            begin_send(state_path, state, today, slot.name, today)
-            skip = _send(ethan, channel, chat_id, slot.occasion, now, records)
-            if skip.startswith("模型不可用"):
-                undo_send(state_path, state, today, slot.name, today)
-                return "；".join(log + [f"{slot.name}：{skip}"])
-        state.setdefault(today, {})[slot.name] = skip
+            skip = say(rd, slot.name, slot.occasion, today)
+            return "；".join(log + [f"{slot.name}：{skip}"])
+        state.setdefault(today, {})[slot.name] = skip  # 挡住的当天记下、不再试
         save_state(state_path, state, today)
         return "；".join(log + [f"{slot.name}：{skip}"])
     if not key:
         return "；".join(log + ["没有到点的时刻"])
-    skip = blocked(now_local, settings, records)
-    day_key, home_today = f"home-{life.home_day(now)}", life.home_day(now).isoformat()
+    day_key = f"home-{life.home_day(now)}"
+    skip = gate(key, now_local, settings, records, ethan.store.db, state.get(day_key, {}))
     if skip is None:
-        begin_send(state_path, state, day_key, key, home_today)
         occasion = (f"这是你今天剧本里定好要找她的时刻：{why}\n"
                     "从你此刻在剧本里的状态自然开口，像真人想起她了顺手发一条；一两句就好，一次只说一件事。"
                     "可以只是分享，不必以问题结尾。")
-        skip = _send(ethan, channel, chat_id, occasion, now, records)
-        if skip.startswith("模型不可用"):
-            undo_send(state_path, state, day_key, key, home_today)
-            return "；".join(log + [f"{key}：{skip}"])
+        skip = say(rd, key, occasion, day_key)
+        return "；".join(log + [f"{key}：{skip}"])
     state.setdefault(day_key, {})[key] = skip
-    save_state(state_path, state, home_today)
+    save_state(state_path, state, life.home_day(now).isoformat())
     return "；".join(log + [f"{key}：{skip}"])
 
 
@@ -509,9 +568,23 @@ def main():
         except Exception as e:
             print(f"[grok-weekly] 没派成：{type(e).__name__} {str(e)[:200]}", flush=True)
         print(tick(ethan, channel, calendar=cal), flush=True)
-        try:  # 小伴 聊天里记下的以后的约，10 分钟内写进苹果日历（2026-10-30）
+        try:  # DemoApp 早晚常规提醒：免打扰里到的先存着，这里过了关口就补发（2，ethan/fancy_moderation.py）
+            from . import fancy_moderation
+            sent = fancy_moderation.Alerts(args.data, fancy_moderation.telegram_notifier(args.data)).flush_held()
+            if sent:
+                print(f"[fancy] 免打扰结束，补发：{'、'.join(sent)}", flush=True)
+        except Exception as e:
+            print(f"[fancy] 补发没成：{type(e).__name__} {str(e)[:200]}", flush=True)
+        try:  # 额度恢复后自动补：昨天的日记、聊天整理，等着出的昨日卡（ethan/catchup.py）；另起进程，不拖慢这一轮
+            from . import catchup
+            todo = catchup.kick(store, router.settings)
+            if todo:
+                print(f"[catchup] 额度正常，后台补：{'、'.join(todo)}", flush=True)
+        except Exception as e:
+            print(f"[catchup] 没查成：{type(e).__name__} {str(e)[:200]}", flush=True)
+        try:  # 小伴 聊天里记下的以后的约，10 分钟内写进苹果日历
             from . import events
-            if cal is not None:  # 每天整理一次她日历里导入的事件（她 11-04 回“开”；打开了才跑，ethan/caltidy.py）
+            if cal is not None:  # 每天整理一次她日历里导入的事件（回“开”；打开了才跑，ethan/caltidy.py）
                 try:
                     from . import caltidy
                     tidy = caltidy.daily(store, router, cal)
@@ -519,21 +592,28 @@ def main():
                         print(f"[caltidy] {tidy}", flush=True)
                 except Exception as e:
                     print(f"[caltidy] 没整理成：{type(e).__name__} {str(e)[:200]}", flush=True)
-            if cal is not None:  # 日历查重报告（只读，每小时一次写进数据目录；她 11-04：“日历里还是有很多重复日程”）
+            if cal is not None:  # 日历查重报告（只读，每小时一次写进数据目录）
                 try:
                     n = events.write_dupes_report(cal, store.root)
                     if n > 0:
                         print(f"[events] 日历里疑似重复 {n} 对，见 calendar-dupes.json", flush=True)
                 except Exception as e:
                     print(f"[events] 日历查重没成：{type(e).__name__} {str(e)[:200]}", flush=True)
-            if cal is not None:  # 一次性清掉已经写重的（她 11-04），跑过就不再跑
+            if cal is not None:  # 一次性清掉已经写重的，跑过就不再跑
                 gone = events.dedupe_existing(store.db, cal)
                 if gone:
                     print(f"[events] 日历去重：{gone}", flush=True)
+            if cal is not None:  # 见面前提醒：今天、明天日历上和人物卡里的人的约（ethan/meetprep.py，借鉴 10），半小时扫一次
+                try:
+                    from . import meetprep
+                    from .clock import her_today
+                    meetprep.scan(store.db, cal, her_today(router.settings))
+                except Exception as e:
+                    print(f"[meetprep] 没扫成：{type(e).__name__} {str(e)[:200]}", flush=True)
             n = events.sync(store.db, cal)
             if n:
                 print(f"[events] 写进苹果日历 {n} 条", flush=True)
-            if cal is not None:  # 今天计划里的事和她后来约的撞了：记下来，小伴 下一轮去问（2026-11-02）
+            if cal is not None:  # 今天计划里的事和她后来约的撞了：记下来，小伴 下一轮去问
                 from .clock import her_now
                 now = her_now(router.settings)
                 new = events.find_plan_clashes(store.db, now.date(), cal.busy(now.date()), now.strftime("%H:%M"))

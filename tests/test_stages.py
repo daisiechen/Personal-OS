@@ -10,7 +10,7 @@ D = date(2026, 11, 3)  # 周二
 
 
 class StagesTest(unittest.TestCase):
-    """docs/design/quest-structure.md（她 2026-11-01 定）：副本 → 里程碑 → 阶段任务（四种频次、前置、引用日常）→ 每天的待办。"""
+    """docs/design/quest-structure.md：副本 → 里程碑 → 阶段任务（四种频次、前置、引用日常）→ 每天的待办。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -1,4 +1,4 @@
-"""说到做到（她 2026-10-31 定）：小伴 嘴上说“查了、翻了、发了、订了”，代码核对这一轮他是不是真做了。
+"""说到做到：小伴 嘴上说“查了、翻了、发了、订了”，代码核对这一轮他是不是真做了。
 
 起因：10-31 上午他说“我翻了你的邮件，没找到订单确认”，其实那时根本没有搜邮箱的功能，他没搜。
 她说：“悄悄打回重写吧，我看不到。但是他刚才说查过了，其实没查，这个要记在 OS 里……统计一下他这种说了查过了、
@@ -22,7 +22,7 @@ from .clock import her_today
 SCHEMA = """CREATE TABLE IF NOT EXISTS deed_claims (
     id INTEGER PRIMARY KEY, at TEXT NOT NULL, source TEXT NOT NULL, kind TEXT NOT NULL, quote TEXT NOT NULL,
     fixed INTEGER, note TEXT)"""
-# source：guard（发出去前代码拦下）/ her（她发现的）/ review（开发会话复盘发现的）
+# source：guard（发出去前代码拦下）/ her/ review（开发会话复盘发现的）
 KINDS = {
     "mail": "说搜过她的邮箱",
     "web": "说查过官网、条款、网上",

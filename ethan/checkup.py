@@ -1,4 +1,4 @@
-"""系统巡检（2026-10-29 她要：系统出问题开发会话主动找她，不要等她或 小伴 发现）。
+"""系统巡检（系统出问题开发会话主动找她，不要等她或 小伴 发现）。
 
 服务器这边只汇总“哪里不对”，不修东西：上线失败、数据改动出错、定时任务失败或该跑没跑、任务自己报的错（job_runs，
 比如写日历失败、计划用了兜底）、常驻服务没在跑。云端的定时巡检会话每 3 小时取一次 GET /cloud/health，
@@ -41,7 +41,7 @@ def problems(root, db=None, now: datetime = None, runner=subprocess.run, service
     for j in jobs.health(root, now):  # 从没跑过的：新加的等过了该跑的时间才报（jobs.overview 的 never）
         if not j["ok"]:
             out.append({"what": j["name"], "detail": j["detail"]})
-    try:  # 自动上线心跳、挂掉的测试名、大批整理卡住、内存太低（2026-11-04 统一巡检，ethan/syscheck.py）
+    try:  # 自动上线心跳、挂掉的测试名、大批整理卡住、内存太低（统一巡检，ethan/syscheck.py）
         from . import syscheck
         out += syscheck.problems(root, db, now, meminfo)
     except Exception as e:
@@ -53,7 +53,7 @@ def problems(root, db=None, now: datetime = None, runner=subprocess.run, service
         for r in rows:
             out.append({"what": f"任务 {r['job']}", "detail": f"{r['finished_at']} {str(r['error'])[:300]}"})
     if db is not None:
-        try:  # 连续登不上的邮箱（2026-10-31 的 126）
+        try:  # 连续登不上的邮箱（126）
             from . import imapmail
             for f in imapmail.failing(db):
                 out.append({"what": f"邮箱 {f['account']}", "detail": f"从 {f['failed_since']} 起连续 {f['fail_count']} 次登不上：{f['last_error']}。"

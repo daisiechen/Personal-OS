@@ -1,4 +1,4 @@
-"""她的写作规范（ontology.md 3.2 “语言习惯”，她 2026-11-05：“提前做”；docs/design/style-and-skills.md）。
+"""她的写作规范（ontology.md 3.2 “语言习惯”，docs/design/style-and-skills.md）。
 
 - 原料只取她自己写的（onto_query.style_materials，使用者 style）：她发出的邮件、她自己写的日记、她改系统草稿时的改前→改后、
   荧光笔标的句子（她喜欢的）、批注说“写得不好 / 不像我”的句子（她不喜欢的）、聊天里她的原话（抽样）。系统写的、她没改的不进。
@@ -7,7 +7,10 @@
 - 存：规则表 style_rules（分类、对象、词、出处）+ 说法（属性 writing_style）：草稿是假设、候选；她在“待你定”里逐条
   对 / 不对 / 改，对了、改了的记成她确认的偏好并锁住（locks：style:<编号>），不对的作废、以后不再提。
 - 增量：每次只看没用过的新原料（style_seen），确认过的、她说不对的不动、不重复；原料不足就跳过。每周日夜里自动跑一次（nightly）。
-- 用：只有确认过的才注入日记、邮件起草、人物卡“可以发的一句”、Dais 对外回复的提示词（style_block）；草稿不注入。
+- 迭代（——迭代，规范也一样）：
+  她最近写的和某条确认过的规则不一样了（模型在 replaces 里指那条），每次算一次信号（style_signals）；4 周里攒够 REVISE_AT 句，
+  出一条这条规则的“修订草稿”（revises 指原来那条），不另开新规则；她点对才替换（原来那条记“被取代”），不对就还按原来的。
+- 用：只有确认过的才注入日记、邮件起草、人物卡“可以发的一句”、主页助手 对外回复的提示词（style_block）；草稿不注入。
 
 命令：
   python3 -m ethan.style --data <数据目录> --draft          生成 / 增量更新草稿（--force 原料少也跑）
@@ -30,7 +33,11 @@ CREATE TABLE IF NOT EXISTS style_rules (id INTEGER PRIMARY KEY, category TEXT NO
   strength INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'draft', fact_id INTEGER, statement_id INTEGER, her_text TEXT,
   replaced_by INTEGER, created_at TEXT NOT NULL, decided_at TEXT);
 CREATE TABLE IF NOT EXISTS style_seen (ref TEXT PRIMARY KEY, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS style_signals (rule_id INTEGER NOT NULL, ref TEXT NOT NULL, text TEXT, at TEXT NOT NULL, used_by INTEGER,
+  PRIMARY KEY (rule_id, ref));
 """
+REVISE_AT = 3  # 她写的和确认过的某条不一样，攒够几句出修订草稿
+REVISE_WEEKS = 4
 CATEGORIES = {"length": "句子长短", "tone": "语气", "words": "常用词和口头禅", "avoid": "不用的词", "punctuation": "标点和 emoji",
               "mix": "中英混用", "opening": "开头", "closing": "结尾", "audience": "对不同对象", "other": "其他"}
 AUDIENCES = {"all": "对谁都一样", "friend": "对朋友", "elder": "对长辈", "work": "工作上"}
@@ -57,6 +64,8 @@ def _now() -> str:
 def ensure(db):
     if tx.once(db, "style"):
         db.conn.executescript(SCHEMA)
+        if "revises" not in {c[1] for c in db.conn.execute("PRAGMA table_info(style_rules)")}:  # 修订草稿：改的是哪条确认过的
+            db.conn.execute("ALTER TABLE style_rules ADD COLUMN revises INTEGER")
 
 
 def rules(db, status=None) -> list:
@@ -101,7 +110,7 @@ def build_input(items: list, existing: list) -> str:
         else:
             lines.append(f"【{TAG[i['kind']]}】{i['text']}")
     text = "\n".join(lines)[:MAX_INPUT]
-    groups = {"确认过的（不要改、不要重复）": "confirmed", "草稿（可以改进，replaces 写编号）": "draft", "她说不对的（不要再提）": "rejected"}
+    groups = {"确认过的（不要重复；她最近的写法明显和某条不一样了，才写一条修订版，replaces 写它的编号）": "confirmed", "草稿（可以改进，replaces 写编号）": "draft", "她说不对的（不要再提）": "rejected"}
     ex = []
     for title, st in groups.items():
         rs = [r for r in existing if r["status"] == st]
@@ -134,7 +143,7 @@ def check_rule(rule: dict, items: list, drafts=()) -> list:
     if any(lifebase.CONTACT.search(q) for q in qs) or lifebase.CONTACT.search(rule.get("rule") or ""):
         errs.append("出处里有联系方式或住址")
     if rule.get("replaces") is not None and rule["replaces"] not in {d["id"] for d in drafts}:
-        errs.append(f"replaces #{rule['replaces']} 不是草稿")
+        errs.append(f"replaces #{rule['replaces']} 不是草稿或确认过的")
     return errs
 
 
@@ -142,7 +151,7 @@ def induce(router, db, items: list, existing: list) -> list:
     """模型归纳 → 校验过的规则（不合格的条目丢掉；超过一半不合格就让模型重来一次）。"""
     from . import llm
     version, system = llm.load_prompt("style_guide")
-    drafts = [r for r in existing if r["status"] == "draft"]
+    drafts = [r for r in existing if r["status"] in ("draft", "confirmed")]  # 改进草稿，或者修订确认过的（攒够才出草稿）
 
     def check(data):
         bad = [f"第 {n + 1} 条：{'、'.join(e)}" for n, r in enumerate(data.get("rules") or []) if (e := check_rule(r, items, drafts))]
@@ -168,10 +177,17 @@ def apply(db, new_rules: list, items: list, used: list = None) -> dict:
     from .core.agent import find_similar
     ensure(db)
     existing = rules(db)
-    done = {"added": 0, "replaced": 0, "skipped": 0}
+    done = {"added": 0, "replaced": 0, "skipped": 0, "signals": 0, "revisions": 0}
     with tx.atomic(db):
         for r in new_rules:
             text = " ".join(r["rule"].split())[:60]
+            target = next((x for x in existing if x["status"] == "confirmed" and x["id"] == r.get("replaces")), None)
+            if target is not None:  # 她最近写的和这条确认过的不一样了：记信号，攒够才出修订草稿
+                got = _signal(db, target, r, text, items, existing)
+                done["signals"] += got != "same"
+                done["revisions"] += got == "revision"
+                done["skipped"] += got == "same"
+                continue
             settled = [x["her_text"] or x["rule"] for x in existing if x["status"] in ("confirmed", "rejected")]
             if find_similar(text, settled):
                 done["skipped"] += 1
@@ -180,22 +196,7 @@ def apply(db, new_rules: list, items: list, used: list = None) -> dict:
             if old and locks.locked(db, "style", old["id"], "rule"):
                 done["skipped"] += 1
                 continue
-            quotes, evidence, strength = [], [], 0
-            for q in r["quotes"][:3]:
-                i, side = _locate(q, items)
-                quotes.append({"text": q, "kind": i["kind"], "side": side, "ref": i["ref"]})
-                strength += i["kind"] in EDIT_KINDS
-                if i.get("evidence") and i["evidence"] not in evidence:
-                    evidence.append(i["evidence"])
-            fid = None
-            if evidence:  # 草稿也是一条说法：系统的假设、候选，只有 小伴 能看到（她认了才是偏好）
-                fid = lifebase.add_fact(db, "expression", text, evidence, confidence=0.5, importance=3, tags=("writing_style",),
-                                        status="candidate", kind="hypothesis", source_kind="system_inference", prop="writing_style",
-                                        context=_context(r["category"], r["audience"]))
-            cur = db.conn.execute("INSERT INTO style_rules (category, audience, rule, words, quotes, evidence, strength, fact_id, statement_id, created_at) "
-                                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                                  (r["category"], r["audience"], text, json.dumps(r.get("words") or [], ensure_ascii=False),
-                                   json.dumps(quotes, ensure_ascii=False), json.dumps(evidence), strength, fid, _statement_of(db, fid), _now()))
+            cur, fid = _insert_draft(db, r, text, items)
             if old:
                 db.conn.execute("UPDATE style_rules SET status = 'replaced', replaced_by = ?, decided_at = ? WHERE id = ?", (cur.lastrowid, _now(), old["id"]))
                 if old["fact_id"] and fid:
@@ -224,15 +225,64 @@ def draft(db, router, force: bool = False) -> dict:
     return {"new": len(new), **apply(db, got, new)}
 
 
+def _insert_draft(db, r: dict, text: str, items: list, revises: int = None):
+    """一条草稿写进规则表（草稿也是一条说法：系统的假设、候选，只有 小伴 能看到；她认了才是偏好）。返回 (游标, 说法编号)。"""
+    quotes, evidence, strength = [], [], 0
+    for q in r["quotes"][:3]:
+        i, side = _locate(q, items)
+        quotes.append({"text": q, "kind": i["kind"], "side": side, "ref": i["ref"]})
+        strength += i["kind"] in EDIT_KINDS
+        if i.get("evidence") and i["evidence"] not in evidence:
+            evidence.append(i["evidence"])
+    fid = None
+    if evidence:
+        fid = lifebase.add_fact(db, "expression", text, evidence, confidence=0.5, importance=3, tags=("writing_style",),
+                                status="candidate", kind="hypothesis", source_kind="system_inference", prop="writing_style",
+                                context=_context(r["category"], r["audience"]))
+    cur = db.conn.execute("INSERT INTO style_rules (category, audience, rule, words, quotes, evidence, strength, fact_id, statement_id, created_at, revises) "
+                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (r["category"], r["audience"], text, json.dumps(r.get("words") or [], ensure_ascii=False),
+                           json.dumps(quotes, ensure_ascii=False), json.dumps(evidence), strength, fid, _statement_of(db, fid), _now(), revises))
+    return cur, fid
+
+
+def _signal(db, target: dict, r: dict, text: str, items: list, existing: list) -> str:
+    """她最近写的和确认过的 target 不一样：她写的 / 改的那几句各记一次信号；4 周里没用过的攒够 REVISE_AT 句、
+    这条还没有在等她看的修订草稿，就出一条修订草稿（revises = target）。返回 same（说的是同一件事，不算）/ signal / revision。"""
+    from datetime import timedelta
+    from .core.agent import find_similar
+    if find_similar(text, [target["her_text"] or target["rule"]]):
+        return "same"
+    for q in r["quotes"][:3]:
+        i, _ = _locate(q, items)
+        if i is not None and i["kind"] in HER_KINDS:
+            db.conn.execute("INSERT OR IGNORE INTO style_signals (rule_id, ref, text, at) VALUES (?, ?, ?, ?)", (target["id"], i["ref"], text, _now()))
+    since = (datetime.now(timezone.utc) - timedelta(days=7 * REVISE_WEEKS)).isoformat(timespec="seconds")
+    n = db.conn.execute("SELECT COUNT(*) FROM style_signals WHERE rule_id = ? AND used_by IS NULL AND at >= ?", (target["id"], since)).fetchone()[0]
+    if n < REVISE_AT or any(x["status"] == "draft" and x.get("revises") == target["id"] for x in existing):
+        return "signal"
+    cur, _ = _insert_draft(db, {**r, "category": target["category"], "audience": target["audience"]}, text, items, revises=target["id"])
+    db.conn.execute("UPDATE style_signals SET used_by = ? WHERE rule_id = ? AND used_by IS NULL", (cur.lastrowid, target["id"]))
+    existing.append({"id": cur.lastrowid, "status": "draft", "rule": text, "her_text": None, "revises": target["id"]})
+    return "revision"
+
+
 # ---------- 待你定：一条“你的写作规范草稿”，里面逐条 对 / 不对 / 改 ----------
 QUESTION = "你的写作规范草稿"
 
 
-def _option(r: dict) -> dict:
-    return {"rule_id": r["id"], "text": r["rule"], "category": CATEGORIES.get(r["category"], r["category"]),
-            "audience": AUDIENCES.get(r["audience"], r["audience"]), "words": r["words"],
-            "quotes": [{"text": q["text"], "from": FROM.get(q["kind"], "") + ("（改前）" if q.get("side") == "before" else "")} for q in r["quotes"]],
-            "src": f"依据 {len(r['quotes'])} 句" + (f"，其中 {r['strength']} 句是你改草稿时的" if r["strength"] else "")}
+def _option(r: dict, db=None) -> dict:
+    out = {"rule_id": r["id"], "text": r["rule"], "category": CATEGORIES.get(r["category"], r["category"]),
+           "audience": AUDIENCES.get(r["audience"], r["audience"]), "words": r["words"],
+           "quotes": [{"text": q["text"], "from": FROM.get(q["kind"], "") + ("（改前）" if q.get("side") == "before" else "")} for q in r["quotes"]],
+           "src": f"依据 {len(r['quotes'])} 句" + (f"，其中 {r['strength']} 句是你改草稿时的" if r["strength"] else "")}
+    if r.get("revises") and db is not None:  # 修订草稿：原来生效的那条
+        old = db.conn.execute("SELECT rule, her_text FROM style_rules WHERE id = ?", (r["revises"],)).fetchone()
+        if old:
+            out["revises"] = {"id": r["revises"], "text": old["her_text"] or old["rule"]}
+            n = db.conn.execute("SELECT COUNT(*) FROM style_signals WHERE used_by = ?", (r["id"],)).fetchone()[0]
+            out["src"] = f"修订：你最近 {n} 次写的和原来那条不一样；点对就替换原来那条，不对就还按原来的 · " + out["src"]
+    return out
 
 
 def refresh_pending(db) -> int:
@@ -248,8 +298,9 @@ def refresh_pending(db) -> int:
             tx.commit(db)
         return 0
     n_ok = len(rules(db, "confirmed"))
-    q = f"{QUESTION}：{len(drafts)} 条等你看" + (f"（已生效 {n_ok} 条）" if n_ok else "")
-    opts = json.dumps([_option(r) for r in drafts], ensure_ascii=False)
+    n_rev = sum(1 for r in drafts if r.get("revises"))
+    q = f"{QUESTION}：{len(drafts)} 条等你看" + (f"（其中修订 {n_rev} 条）" if n_rev else "") + (f"（已生效 {n_ok} 条）" if n_ok else "")
+    opts = json.dumps([_option(r, db) for r in drafts], ensure_ascii=False)
     if row:
         db.conn.execute("UPDATE pending SET question = ?, options = ? WHERE id = ?", (q, opts, row[0]))
         pid = row[0]
@@ -279,6 +330,11 @@ def confirm(db, rule_id: int, text: str = None) -> dict:
             lifebase.supersede(db, r["fact_id"], fid, force=True)
         db.conn.execute("UPDATE style_rules SET status = 'confirmed', fact_id = ?, statement_id = ?, her_text = ?, decided_at = ? WHERE id = ?",
                         (fid, _statement_of(db, fid), final if final != r["rule"] else None, _now(), r["id"]))
+        old = next((x for x in rules(db, "confirmed") if x["id"] == r.get("revises")), None)
+        if old:  # 修订草稿她认了：原来那条被取代（留着能查），以后按新的
+            db.conn.execute("UPDATE style_rules SET status = 'replaced', replaced_by = ?, decided_at = ? WHERE id = ?", (r["id"], _now(), old["id"]))
+            if old["fact_id"]:
+                lifebase.supersede(db, old["fact_id"], fid, force=True)
         locks.lock(db, "style", r["id"], "rule", value=final, note=f"她在待你定里{how}")
     refresh_pending(db)
     return {"ok": True, "msg": f"记下了，以后按这条写：{final}"}
@@ -379,7 +435,7 @@ def offline_eval(store, router, n: int = 5, use_drafts: bool = False) -> dict:
     block = _block_from_rules(rs)
     banned = [w for r in rs if r["category"] == "avoid" for w in r["words"]]
     common = [w for r in rs if r["category"] in ("words", "mix") for w in r["words"]]
-    days = [r[0] for r in db.conn.execute("SELECT day FROM diary WHERE source = 'her_edited' AND draft_text IS NOT NULL ORDER BY day DESC LIMIT ?", (n,))]
+    days = [r[0] for r in db.conn.execute("SELECT day FROM diary WHERE source = ? AND draft_text IS NOT NULL ORDER BY day DESC LIMIT ?", (diary.EDITED, n))]
     rows = []
     for d in days:
         her = diary.get(db, d)["body"]

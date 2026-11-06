@@ -1,4 +1,4 @@
-"""ontology 第一批地基（docs/design/ontology.md 第 3、3.1、6.1、6.3 节，2026-11-02）：知识类型、来源类型、决定、授权。只建结构，不改现有行为。"""
+"""ontology 第一批地基（docs/design/ontology.md 第 3、3.1、6.1、6.3 节）：知识类型、来源类型、决定、授权。只建结构，不改现有行为。"""
 
 import tempfile
 import unittest

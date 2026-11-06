@@ -2,7 +2,7 @@
 # 旧服务器：Cumora 群聊服务一次性安装（可重复跑、出错即停）。洛杉矶服务器会话执行：
 #   scp -r deploy/cumora my-other-server:/tmp/
 #   ssh my-other-server sudo bash /tmp/cumora/install-seoul.sh
-# 避让旧服务器已有的东西（2026-11-04 实查）：443 是翻墙服务 → 入口用 8443；已有 Postgres 17（5433）→ 只建一个库；
+# 避让旧服务器已有的东西（实查）：443 是翻墙服务 → 入口用 8443；已有 Postgres 17（5433）→ 只建一个库；
 # 系统 Node 20 有别的程序在用 → Node 22 用 nvm 只装给 cumora 用户；已有 Caddyfile → 只追加一行 import。
 # 不启动 cumora 服务：等 Mia 本人把 GitHub 登录钥匙填进 /home/cumora/cumora.env。
 set -euo pipefail

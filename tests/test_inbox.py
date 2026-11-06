@@ -107,7 +107,7 @@ class FakeGrok:
 
 
 class CloudTest(unittest.TestCase):
-    """Claude 云端会话经接收口找 Grok（2026-10-27 她同意）。"""
+    """Claude 云端会话经接收口找 Grok。"""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = MemoryStore(Path(self.tmp.name) / "data")
@@ -176,7 +176,7 @@ class CloudTest(unittest.TestCase):
         self.assertIn("Dishoom", page)
 
     def test_client_end_to_end_over_http(self):
-        # 走真的 HTTP，服务端按真实时间取最近 7 天：回报也要按真实时间记（2026-11-02 19:00 起固定的 NOW 掉出了窗口）
+        # 走真的 HTTP，服务端按真实时间取最近 7 天：回报也要按真实时间记（19:00 起固定的 NOW 掉出了窗口）
         self.report(f"{CLOUD_MARK}\n查到了", datetime.now(timezone.utc))
         server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.inbox))
         threading.Thread(target=server.serve_forever, daemon=True).start()

@@ -1,9 +1,9 @@
 """把 小伴 自己做不了的事（上网、查地图、开网页、预订）交给 Mia 的 Grok Bot。
 
 Grok Bot 是 xAI 的常驻云端 agent，自带浏览器。它在 Routines 里建了一个 webhook
-“Claude agent 来信”，小伴 往那里 POST 一条任务就会叫醒它去办（2026-10-26 Mia 同意：
+“Claude agent 来信”，小伴 往那里 POST 一条任务就会叫醒它去办（
 小伴 做不了的直接交给 Grok，不用再问她）。Grok 办完把结果 POST 到 小伴 的收件箱 /grok/result（见 ethan/inbox.py），
-聊天里交代的事由 小伴 在聊天里转告她（见 ethan/relay.py，2026-10-27 她定：Grok 只是替 小伴 跑腿）。
+聊天里交代的事由 小伴 在聊天里转告她（见 ethan/relay.py，Grok 只是替 小伴 跑腿）。
 
 环境变量（Mia 用 python3 -m ethan.setup_secrets 录入，不进聊天和仓库）：
   GROK_WEBHOOK_URL            webhook 地址
@@ -23,9 +23,9 @@ LOG_FILE = "grok-tasks.jsonl"
 REPORT_TO = ("办完把结果回报到 小伴 的收件箱 https://ethan.example.com/grok/result（用原来的收件箱密钥），"
              "小伴 会在他和 Mia 的聊天里转告她；不用在 Grok 聊天里另外告诉她，除非要她付钱、登录或做决定。"
              "回报第一行写清来源，三选一：【来源：她的收藏/点赞】【来源：调研任务】【来源：情报收集】。")
-START_MARK = "【开工】"  # Grok 开始一件要花时间的活时先报一声，团队页才看得到它在干（2026-10-29 她说 Grok 在干活看板上没显示）
+START_MARK = "【开工】"  # Grok 开始一件要花时间的活时先报一声，团队页才看得到它在干（Grok 在干活看板上没显示）
 RECEIPT = "【回执 {ref}】"
-SOURCE_RULE = "每次回报第一行写清来源，三选一：【来源：她的收藏/点赞】【来源：调研任务】【来源：情报收集】。"  # 2026-10-29 她要分清
+SOURCE_RULE = "每次回报第一行写清来源，三选一：【来源：她的收藏/点赞】【来源：调研任务】【来源：情报收集】。"  # 分清
 
 
 class GrokWebhook:

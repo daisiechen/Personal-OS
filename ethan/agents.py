@@ -1,4 +1,4 @@
-"""Agent 任务队列和成绩单（2026-10-28 她同意，替代 Mia-Agent-OS 里 Codex 那套 Task Board 的重 PRD）。
+"""Agent 任务队列和成绩单（替代 Mia-Agent-OS 里 Codex 那套 Task Board 的重 PRD）。
 
 谁派活、谁干活、谁验收都记在同一张表 agent_tasks 里，工作台“团队”页和成绩单都从这里算：
   queued 排队 → running 在干 → review 等审查 → accepted 通过 / 打回重新 queued（返工 +1）
@@ -63,12 +63,12 @@ def now() -> str:
 def ensure(db):
     db.conn.executescript(SCHEMA)
     cols = {r[1] for r in db.conn.execute("PRAGMA table_info(agent_tasks)")}
-    if "archived_at" not in cols:  # 她直接点“归档”的时间（2026-10-30）
+    if "archived_at" not in cols:  # 她直接点“归档”的时间
         db.conn.execute("ALTER TABLE agent_tasks ADD COLUMN archived_at TEXT")
 
 
 def archive(db, tid: int) -> dict:
-    """她直接归档（2026-10-30）：失败的照样算失败，只是收进归档；还在等审查的不审了，算放弃（不扣分）再归档。"""
+    """她直接归档：失败的照样算失败，只是收进归档；还在等审查的不审了，算放弃（不扣分）再归档。"""
     ensure(db)
     t = get(db, tid)
     if t is None:
@@ -108,7 +108,7 @@ def record_done(db, agent: str, title: str, size: int, project: str = "", tokens
 
 
 def start(db, agent: str, title: str, size: int = 1, project: str = "", spec: str = "") -> int:
-    """Claude、Grok、小伴 自己开工的活：直接记成“在干”，工作台团队页马上看得到（2026-10-28 她说我在干活看板上却没显示）。"""
+    """Claude、Grok、小伴 自己开工的活：直接记成“在干”，工作台团队页马上看得到（我在干活看板上却没显示）。"""
     tid = add(db, agent, title, spec=spec, size=size, project=project, created_by=agent)
     update(db, tid, status="running", started_at=now())
     return tid
@@ -180,7 +180,7 @@ def review(db, tid: int, decision: str, note: str = "") -> dict:
         raise ValueError(f"这件活现在是 {t['status']}，不能审查")
     if decision == "accept":
         update(db, tid, status="accepted", reviewed_at=now(), review_note=note)
-    elif decision == "fail":  # 她看了判失败（2026-10-30 她要在“待你审查”里能直接选误报或失败）
+    elif decision == "fail":  # 她看了判失败（在“待你审查”里能直接选误报或失败）
         update(db, tid, status="failed", finished_at=now(), reviewed_at=now(), review_note=note or "她判失败")
     elif decision == "reject":
         spec = t["spec"] + (f"\n\n【第 {t['reworks'] + 1} 次返工，审查意见】{note}" if note else "")
@@ -203,7 +203,7 @@ def retry(db, tid: int) -> dict:
 
 
 def drop(db, tid: int, note: str = "") -> dict:
-    """她叫停一件活（2026-10-29：失败只由系统判，她主动不要的叫“放弃”，不扣分）。"""
+    """她叫停一件活（失败只由系统判，她主动不要的叫“放弃”，不扣分）。"""
     t = get(db, tid)
     if t is None:
         raise ValueError("没有这件活")
@@ -214,9 +214,9 @@ def drop(db, tid: int, note: str = "") -> dict:
 
 
 def report_title(text: str) -> str:
-    """Grok 回报的标题（2026-10-29 她说团队卡片写得太随便、看不出是哪件活）：取第一行像样的话，去掉 Markdown 和记号。"""
+    """Grok 回报的标题（团队卡片写得太随便、看不出是哪件活）：取第一行像样的话，去掉 Markdown 和记号。"""
     for line in str(text or "").splitlines():
-        line = re.sub(r"^[#>*\-\s]+|\*\*|【[^】]*】", "", line).strip(" ：:")
+        line = re.sub(r"^[#>*\-\s]+|\*\*|【[^】]*】", "", line).strip("")
         if len(line) >= 4:
             return line[:40] + ("…" if len(line) > 40 else "")
     return "Grok 回报"
@@ -248,7 +248,7 @@ def grok_live(root, hours: int = 48) -> dict:
             if e.get("path") == "/grok/result" and e.get("at", "") >= since:
                 back.append(e)
     sent.sort(key=lambda e: e["at"]), back.sort(key=lambda e: e.get("at", ""))
-    # 按记号配对（2026-10-29 她说 Grok 在干活看板上没显示：以前谁先回来就算哪件做完，收藏日报一来就把在干的抵掉了）：
+    # 按记号配对（Grok 在干活看板上没显示：以前谁先回来就算哪件做完，收藏日报一来就把在干的抵掉了）：
     # 【回执 G…】对 小伴 派的那件，【准备 #编号】对准备员那件；没记号的旧任务才按先后配，收藏日报、英语陪练、开发会话的回报不抵。
     waiting, done, started = list(sent), [], []
     own = ("【收藏日报】", "【英语陪练】", "【本周谈资", "【周末推荐", "【Claude 会话】", "【惊喜灵感", "【连通测试")
@@ -282,7 +282,7 @@ def grok_live(root, hours: int = 48) -> dict:
             "done": list(reversed(done))[:10]}
 
 
-SELF_STALE_HOURS = 12  # Claude、Grok、小伴 自己开工的活，开工 12 小时还没收尾就算没干成（2026-10-29 自查：以前会一直挂“在干”）
+SELF_STALE_HOURS = 12  # Claude、Grok、小伴 自己开工的活，开工 12 小时还没收尾就算没干成（自查：以前会一直挂“在干”）
 
 
 def expire_self_started(db, at: datetime = None) -> list:
@@ -295,7 +295,7 @@ def expire_self_started(db, at: datetime = None) -> list:
     return [r["id"] for r in rows]
 
 
-DEFAULT_RATING, RATE_DAYS = 3, 7  # 2026-10-29 她定：1–5 分，通过 7 天还没打分的默认 3 分
+DEFAULT_RATING, RATE_DAYS = 3, 7  # 1–5 分，通过 7 天还没打分的默认 3 分
 
 
 def rate(db, tid: int, rating: int):
@@ -367,8 +367,8 @@ def scoreboard(db, since: datetime = None, until: datetime = None) -> list:
     return out
 
 
-# ---------- Claude 会话快照（2026-10-28 她要团队页也看到 Claude 里别的会话） ----------
-# 两个来源：① 钩子实时报到（2026-10-28 她选的，Mac、服务器、各仓库的云端会话都装了 Claude Code 钩子），按会话编号记在
+# ---------- Claude 会话快照（团队页也看到 Claude 里别的会话） ----------
+# 两个来源：① 钩子实时报到（Mac、服务器、各仓库的云端会话都装了 Claude Code 钩子），按会话编号记在
 # claude-hooks.json；② 云端会话手动读一次会话列表推来的快照（claude-sessions.json，整份覆盖）。有钩子数据就只显示钩子的。
 SESSIONS_FILE = "claude-sessions.json"
 SESSION_STATES = {"working": "在干", "blocked": "等你", "review_ready": "等你看", "completed": "空闲", "failed": "出错",
@@ -410,7 +410,7 @@ REPORT_AGENTS = {"claude": "Claude", "codex": "Codex", "grok": "Grok", "chatgpt"
 
 
 def record_report(root, data: dict, now: datetime = None) -> str:
-    """别的 agent 自己报到（2026-10-29 她要所有 agent、会话、任务都汇总到团队页）：
+    """别的 agent 自己报到（所有 agent、会话、任务都汇总到团队页）：
     {"agent": "codex", "id": "会话或任务编号", "title": "在干什么", "state": "working|blocked|review_ready|completed|failed|ended",
      "summary": "一句话", "where": "mac|cloud|server"}。和 Claude 钩子记在同一个文件，同一个编号再报就是更新。"""
     now = now or datetime.now(timezone.utc)

@@ -1,4 +1,4 @@
-"""给 Claude Code 装“会话报到”钩子：会话开始、她发话、一轮做完、结束时，往接收口报一声，团队页实时显示（2026-10-28 她要）。
+"""给 Claude Code 装“会话报到”钩子：会话开始、她发话、一轮做完、结束时，往接收口报一声，团队页实时显示。
 
 她是 Max 个人套餐，没有账户层面的统一设置，所以分三处装（见 docs/design/agent-team.md）：
   Mac：      python3 -m ethan.setup_hook --where mac [--ssh 用户@服务器]   写进 ~/.claude/settings.json，Mac 上所有会话都报到
@@ -35,8 +35,8 @@ CURFEW_MARK = "ethan-curfew"
 
 
 def curfew_command(where: str) -> str:
-    """晚上 11 点后她给 Claude Code 发新指令时先问服务器，过点又没放行就挡回（她 2026-10-31 定）；连不上服务器就放行。
-    云端：定时任务唤醒会话的消息和“定时巡检”直接放行（2026-11-02 她授权：“授权，你搞吧”，docs/operations/devices.md）。"""
+    """晚上 11 点后她给 Claude Code 发新指令时先问服务器，过点又没放行就挡回；连不上服务器就放行。
+    云端：定时任务唤醒会话的消息和“定时巡检”直接放行（授权：“授权，你搞吧”，docs/operations/devices.md）。"""
     guard = ('[ "$CLAUDE_CODE_REMOTE" = true ] || exit 0; case "$(cat)" in *queued-remote-notifications*|*定时巡检*) exit 0;; esac; '
              if where == "cloud" else "")
     return (f'{guard}t="${{ETHAN_HOOK_TOKEN:-$ETHAN_CLOUD_TOKEN}}"; [ -n "$t" ] || exit 0; '
@@ -85,12 +85,12 @@ def token_from_ssh(host: str) -> str:
     return out.stdout.split("=", 1)[1].strip()
 
 
-# Codex（2026-10-29 她要所有 agent 都汇总到团队页）：Codex 没有 Claude 那样的钩子，只有 notify——每轮做完调一次外部程序，
+# Codex（所有 agent 都汇总到团队页）：Codex 没有 Claude 那样的钩子，只有 notify——每轮做完调一次外部程序，
 # 把一段 JSON 当参数传进去。装一个小脚本转发到 /cloud/agent/report，记成“Codex 会话 · 一轮做完等你看”。
 REPORT_URL = "https://ethan.example.com/cloud/agent/report"
 CODEX_SCRIPT = r'''#!/usr/bin/env python3
 # ethan-hook：Codex 每轮做完报到给 小伴 的团队页（python3 -m ethan.setup_hook --where codex 装的，重装会覆盖）
-# 每次被调用都在 ethan_notify.log 记一行（不记钥匙、不记对话全文），查“为什么没报到”用（2026-10-29 桌面 App 一直没报到）
+# 每次被调用都在 ethan_notify.log 记一行（不记钥匙、不记对话全文），查“为什么没报到”用（桌面 App 一直没报到）
 import json, os, subprocess, sys, time
 from pathlib import Path
 here = Path(__file__).resolve().parent
@@ -203,7 +203,7 @@ def install_codex(home: Path, token: str, where: str = "mac", schedule: bool = F
     line = f'notify = ["{py}", "{script}"]'
     lines = [l for l in text.splitlines() if not (l.startswith("notify") and "ethan_notify" in l)]
     other = [l for l in lines if l.strip().startswith("notify")]
-    if other:  # 她原来有别的 notify（2026-10-29 她 Mac 上就有）：存下来让我们的脚本接着调它，再换成我们的
+    if other:  # 她原来有别的 notify（Mac 上就有）：存下来让我们的脚本接着调它，再换成我们的
         try:
             prev = json.loads(other[0].split("=", 1)[1].strip())
             assert isinstance(prev, list) and all(isinstance(x, str) for x in prev)
@@ -218,7 +218,7 @@ def install_codex(home: Path, token: str, where: str = "mac", schedule: bool = F
 
 NOTE_BEGIN, NOTE_END = "<!-- ethan-memory-note: begin -->", "<!-- ethan-memory-note: end -->"
 MEMORY_NOTE = NOTE_BEGIN + """
-## Mia 本人的话要交给 小伴 的记忆（她 2026-11-03 定，所有会话都照这个做）
+## Mia 本人的话要交给 小伴 的记忆（所有会话都照这个做）
 
 在任何会话里，她说了**关于她自己**的话（经历、过往、处境、习惯、喜好、看法、做决定的方式），或者直接给了你她的文件（简历、自我介绍、测评报告……），一个话题聊完时交给 小伴 的记忆：
 - 只交她的原话：问题照写，回答可以去掉口头语，不改意思、不总结、不加你的推测；对系统设计、代码的要求不交（那是一次决定，不是她的性格）。
@@ -247,7 +247,7 @@ def install_memory_note(path: Path) -> Path:
 
 
 # ---------- 云端环境的启动脚本（docs/operations/cloud-curfew.md） ----------
-# 云端会话常从上层目录（/home/user）开，读不到仓库里的 .claude/settings.json，收工钩子就不生效（2026-11-04 统一巡检查出）。
+# 云端会话常从上层目录（/home/user）开，读不到仓库里的 .claude/settings.json，收工钩子就不生效（统一巡检查出）。
 # 在 claude.ai 云端环境的“启动脚本”里把收工钩子写进 ~/.claude/settings.json（用户级，不管从哪个目录开都读）。
 # 脚本里不放钥匙：钩子跑的时候才读环境里已有的 ETHAN_CLOUD_TOKEN（启动脚本本身读不到环境变量和密钥）。
 CLOUD_USER_SCRIPT = """# 小伴 收工钩子（python3 -m ethan.setup_hook --where cloud-user 生成，docs/operations/cloud-curfew.md）

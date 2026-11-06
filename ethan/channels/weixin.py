@@ -8,9 +8,9 @@
 协议要点（依据 @tencent-weixin/openclaw-weixin 2.4.6 的公开分析，非正式稳定接口）：
 - getupdates 长轮询约 35 秒，游标 get_updates_buf 持久化
 - 回复必须带她那条消息的 context_token；社区报告她约 24 小时没说话后 token 失效、每个 token 约 10 条下行，
-  官方没有文档；媒体转述 ClawBot“不支持 AI 主动推送”（2026-10-29 调研）。所以主动问候仍走 Telegram，微信只负责聊天
+  官方没有文档；媒体转述 ClawBot“不支持 AI 主动推送”（调研）。所以主动问候仍走 Telegram，微信只负责聊天
 - 语音自带微信转写文字（voice_item.text）；图片、文件、视频在 CDN 上用 AES-128-ECB 加密，下载后用 openssl 解密
-- 发图片（2026-10-27 她要微信也能收发文件、照片和链接）：getuploadurl 拿上传参数 → 加密后 POST 到 CDN，
+- 发图片（微信也能收发文件、照片和链接）：getuploadurl 拿上传参数 → 加密后 POST 到 CDN，
   响应头 x-encrypted-param 是下载参数 → sendmessage 发 image_item（aes_key 是 16 字节密钥的 hex 再 base64）。
   依据 openclaw-weixin 2.4.6 的 src/cdn/upload.ts 和 src/messaging/send.ts
 - 文件：PDF、文字文件、Word 和 Telegram 一样处理（见 media.py）；视频截几帧画面（微信进程不载语音转写模型，省内存）

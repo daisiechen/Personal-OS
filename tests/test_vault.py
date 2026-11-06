@@ -45,7 +45,7 @@ class VaultTest(unittest.TestCase):
         result = sync(self.store, self.repo, self.today)
         self.assertTrue(result["committed"])
         overview = self.read(f"{BOARD}/总览.md")
-        for text in ("创业项目有订单", "约代理商", "[小伴 答应的] 帮她查伦敦 physio", "小雨：快过生日",
+        for text in ("创业项目有订单", "约代理商", "[小伴 答应的] 帮她查伦敦 physio", "小雨：生日 10-25",
                      "复习的单词句子：1 条", "心愿：1 条"):
             self.assertIn(text, overview)
         tree = self.read(f"{BOARD}/目标树.md")

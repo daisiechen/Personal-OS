@@ -54,7 +54,7 @@ class DeskTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
-    def add_mail(self, i, sender="Mazen <m@london.edu>"):
+    def add_mail(self, i, sender="Mazen <m@school.example.edu>"):
         mail.receive(self.db, {"items": [{"account": "Gmail", "id": f"<m{i}@x>", "sender": sender, "subject": f"Re: 报告 {i}",
                                           "received_at": f"2026-10-30T1{i}:00:00", "body": "能周五前发我你的部分吗？"}]})
         mail.process(self.store, router(ATT))
@@ -65,7 +65,7 @@ class DeskTest(unittest.TestCase):
         publicsite.receive(self.db, {"visitor_id": "v", "at": "t", "name": "Lena", "intent": "合作", "message": "想合作", "contact": "l@x.com"},
                            datetime.now(timezone.utc))
         publicsite.triage(self.db, router({"items": [{"id": 1, "tier": "reply", "priority": 4, "summary": "Lena 想合作"}]}), "2026-10-30")
-        self.assertEqual([x["kind"] for x in desk.items(self.db)], ["mail", "mail"])  # Dais的草稿没好，留言先不给她看（2026-10-31 她定）
+        self.assertEqual([x["kind"] for x in desk.items(self.db)], ["mail", "mail"])  # 主页助手的草稿没好，留言先不给她看
         publicsite.reply_draft(self.db, {"request_id": "v1-1", "channel": "manual", "body": "谢谢，我们聊聊"})
         items = desk.items(self.db)
         v = next(x for x in items if x["kind"] == "visitor")
@@ -75,9 +75,9 @@ class DeskTest(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM tasks WHERE source_type = 'visitor'").fetchone()[0], 1)  # 分档时已建的不重复
         m1, m2 = [x for x in items if x["kind"] == "mail"]
         desk.ignore(self.db, "mail", m1["id"])
-        self.assertFalse(desk.quiet_sender(self.db, "m@london.edu"))
+        self.assertFalse(desk.quiet_sender(self.db, "m@school.example.edu"))
         desk.ignore(self.db, "mail", m2["id"])
-        self.assertTrue(desk.quiet_sender(self.db, "Mazen <m@london.edu>"))
+        self.assertTrue(desk.quiet_sender(self.db, "Mazen <m@school.example.edu>"))
         self.add_mail(3)  # 她连着两次不用管：以后不算要她看
         self.assertEqual(desk.items(self.db), [])
 
@@ -98,7 +98,7 @@ class DeskTest(unittest.TestCase):
         out = desk.send(self.db, rid, "Hi Mazen, by Friday. Mia", accounts=acc, smtp_factory=FakeSMTP)
         self.assertTrue(out["ok"])
         msg = FakeSMTP.sent[0]
-        self.assertEqual((msg["To"], msg["Subject"], msg["In-Reply-To"]), ("Mazen <m@london.edu>", "Re: 报告 1", "<m1@x>"))
+        self.assertEqual((msg["To"], msg["Subject"], msg["In-Reply-To"]), ("Mazen <m@school.example.edu>", "Re: 报告 1", "<m1@x>"))
         # 发了还留到今天结束，能再记个待办跟进（这条照样在“已发送”），点“收起”才走
         x = desk.items(self.db)[0]
         self.assertEqual((x["state"], x["draft"]), ("sent", "Hi Mazen, by Friday. Mia"))
@@ -201,14 +201,14 @@ if __name__ == "__main__":
 
 
 class OutboxTest(unittest.TestCase):
-    """小伴 起草的新邮件：她在工作台选邮箱点发送才发（2026-10-31 她：“邮件用新流程，从工作台发”）。"""
+    """小伴 起草的新邮件：她在工作台选邮箱点发送才发。"""
 
     def test_ethan_writes_she_sends(self):
         from ethan.core.agent import parse_reply
         with tempfile.TemporaryDirectory() as tmp:
             store = MemoryStore(Path(tmp))
             db = store.db
-            reply = ("写好了，你看一下\n[写邮件 收件人：bookings@ltmuseum.co.uk | 主题：Goodwill rebooking]\nHello,\n\nOrder [待填：订单号]\n\nMia Chen[/写邮件]")
+            reply = ("写好了，你看一下\n[写邮件 收件人：bookings@ltmuseum.co.uk | 主题：Goodwill rebooking]\nHello,\n\nOrder [待填：订单号]\n\nMia Lin[/写邮件]")
             self.assertEqual(parse_reply(reply)["bubbles"], ["写好了，你看一下"])
             oid = desk.note_outbox(db, reply)[0]
             x = next(i for i in desk.items(db) if i["kind"] == "out")
@@ -219,12 +219,12 @@ class OutboxTest(unittest.TestCase):
             self.assertFalse(desk.send_new(db, oid, "Hello", "Gmail", to="not-an-email", accounts=acc, smtp_factory=FakeSMTP)["ok"])
             self.assertFalse(desk.send_new(db, oid, "Hello", "Nope", accounts=acc, smtp_factory=FakeSMTP)["ok"])
             self.assertEqual(FakeSMTP.sent, [])  # 她没点、或者没填好，什么都不发
-            out = desk.send_new(db, oid, "Hello, order 123. Mia Chen", "Gmail", accounts=acc, smtp_factory=FakeSMTP)
+            out = desk.send_new(db, oid, "Hello, order 123. Mia Lin", "Gmail", accounts=acc, smtp_factory=FakeSMTP)
             self.assertTrue(out["ok"])
             msg = FakeSMTP.sent[0]
             self.assertEqual((msg["To"], msg["Subject"], msg["In-Reply-To"]), ("bookings@ltmuseum.co.uk", "Goodwill rebooking", None))
             self.assertEqual(next(i for i in desk.items(db) if i["kind"] == "out")["state"], "sent")
-            kicked = []  # 她写交代、点“按交代重写”：后台按交代改（2026-10-31 她要）
+            kicked = []  # 她写交代、点“按交代重写”：后台按交代改
             oid2 = desk.note_outbox(db, "[写邮件 收件人：a@b.com | 主题：Hi]Hello there[/写邮件]")[0]
             desk.ask_draft(db, "out", oid2, "语气软一点", kick=kicked.append)
             self.assertEqual((kicked, next(i for i in desk.items(db) if i["id"] == oid2 and i["kind"] == "out")["state"]), ([-oid2], "drafting"))

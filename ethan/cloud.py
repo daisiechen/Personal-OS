@@ -1,4 +1,4 @@
-"""Claude 云端开发会话找 Grok 用的客户端（2026-10-27 她同意）。
+"""Claude 云端开发会话找 Grok 用的客户端。
 
 云端会话登不上服务器，也没有 Grok 的 webhook 密钥，只能经 ethan.example.com 的 /cloud/grok 转交（见 ethan/inbox.py）。
 环境变量：ETHAN_CLOUD_TOKEN（她在云端环境设置里填，值是服务器上的 INBOX_TOKEN_CLOUD），ETHAN_URL（默认 https://ethan.example.com）。
@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 DEFAULT_URL = "https://ethan.example.com"
-USER_AGENT = "Ethan-cloud/1.0"  # Cloudflare 会拦默认的 Python-urllib（2026-10-27 实测 403）
+USER_AGENT = "Ethan-cloud/1.0"  # Cloudflare 会拦默认的 Python-urllib（实测 403）
 
 
 class CloudClient:

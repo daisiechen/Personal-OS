@@ -198,7 +198,7 @@ class WeChatExportTest(unittest.TestCase):
         self.assertTrue(all(k == KEY for _, k in PlainDB.opened))
         self.assertEqual(list(self.tmp_root.iterdir()), [])  # 临时副本删掉了
 
-    def test_send_full_transcript_and_redact(self):  # 她 11-04：“难道别人跟我的对话不是我的记忆么！！！”
+    def test_send_full_transcript_and_redact(self):
         client = FakeClient()
         rep = self.go("send", env={"ETHAN_CLOUD_TOKEN": "t"}, client=client)
         sessions = {s for s, _, _ in client.calls}
@@ -348,7 +348,8 @@ class PieceTest(unittest.TestCase):
     def test_launchd_plist(self):
         text = wx.plist_text("/opt/homebrew/bin/python3.14", Path("/Users/d/Personal-OS"),
                              ["--db-root", "/a b/db_storage", "--keys", "/k.json", "--self-id", "wxid_me", "--send"])
-        self.assertIn("<integer>0</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>43</integer>", text)
+        self.assertIn("<dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>43</integer></dict>", text)  # 每天（改的）
+        self.assertNotIn("Weekday", text)
         self.assertIn("<string>ethan.wechatexport</string>", text)
         self.assertIn("<string>--send</string>", text)
         self.assertIn("/opt/homebrew/bin", text)

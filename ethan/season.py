@@ -1,12 +1,9 @@
-"""赛季页：这个赛季她在七块领域上过得怎么样、彼此怎么此消彼长、下个赛季该怎么调（docs/design/season-page.md，她 2026-11-02 选了样稿 B）。
+"""赛季页：这个赛季她在七块领域上过得怎么样、彼此怎么此消彼长、下个赛季该怎么调（docs/design/season-page.md）。
 
-不放副本进度（首页有）。从上到下：
-- 小伴 的一句结论 + “看依据”三周小账（工作小时、训练、见朋友、0 点前睡）；
-- 失衡最严重的两块领域做大卡：开季 → 现在、几条具体事实、21 天小日历（该做没做的划掉）、一句原因、被谁挤 / 帮了谁；
-- 地图上画领域之间的关系线（代码从每天的数据算，样本不够就不画）；
-- 其余领域一行一块；
-- 下个赛季的建议：赛季过了三分之二才出现。
-数字都由代码算；结论、每块的原因、下季建议由 小伴 每周日写一次（season_notes），没写就用代码拼的一句兜底。
+的第二版：上面是样稿 A 的“赛季通行证”（等级、本季积分轨道、下一级 / 下一个成就 / 下一个奖励），
+中间 小伴 的一句话总评 + 下赛季建议（一直显示），下面是样稿 C 的“七块领地分数柱”（现在的分数、比开季 / 上季的变化），
+最后只留主副本一条关卡路线。目的是一眼看出哪些领域好、哪些不好、各有什么变化。
+数字都由代码算；总评、每块的原因、下季建议由 小伴 每周日写一次（season_notes），没写就用代码规则兜底（不额外调模型）。
 """
 
 import json
@@ -31,7 +28,6 @@ NOTES = """CREATE TABLE IF NOT EXISTS season_notes (
 WORK_CAP = 45          # 一周工作上限（小时），超过算“冲得猛”
 TRAIN_STD = 5          # 每周训练标准（这个赛季 5 次）
 SLEEP_STD = 6          # 每周 0 点前睡标准
-KEY_HABIT = {"body": "训练", "life": "每天出门", "study": "英语陪练（Grok）"}  # 小日历看哪项日常
 ICON_KEY = {"body": "健康", "career": "事业", "money": "财务", "social": "社交", "study": "学习", "academic": "学术", "life": "生活体验"}
 
 
@@ -70,7 +66,7 @@ def ledger(db, start: date, day: date, weeks: int = 3) -> dict:
         if b < start:
             continue
         a = max(a, start)
-        out.append({"from": a.isoformat(), "to": b.isoformat(), "n": ((a - timedelta(days=a.weekday())) - (start - timedelta(days=start.weekday()))).days // 7 + 1,  # 按自然周数（她 2026-11-02 看到“第 1、1 周”）
+        out.append({"from": a.isoformat(), "to": b.isoformat(), "n": ((a - timedelta(days=a.weekday())) - (start - timedelta(days=start.weekday()))).days // 7 + 1,  # 按自然周数（看到“第 1、1 周”）
                     "work": round(sum(worktime.hours(db, a + timedelta(days=n)) for n in range((b - a).days + 1)), 1),
                     "train": _habit_count(db, "训练", a, b), "friends": lifelog.count(db, "meet", a, b, distinct_days=True),
                     "sleep": _habit_count(db, "0 点前睡", a, b)})
@@ -141,32 +137,9 @@ def _score_at(db, key: str, day: date):
     return round(r["score"]) if r else None
 
 
-def calendar(db, key: str, day: date, days: int = 21) -> list:
-    """21 天小日历（从三周前的周一开始，到今天）：该做没做的划掉。[{day, state: done/miss/rest/future}]"""
-    first = day - timedelta(days=day.weekday()) - timedelta(weeks=2)
-    title = KEY_HABIT.get(key)
-    h = quests.habit_by_title(db, title) if title else None
-    met = set()
-    if key == "social":
-        lifelog.ensure(db)
-        met = {r[0] for r in db.conn.execute("SELECT DISTINCT day FROM life_log WHERE kind = 'meet' AND day >= ?", (first.isoformat(),))}
-    out = []
-    for n in range(days):
-        d = first + timedelta(days=n)
-        if d > day:
-            out.append({"day": d.isoformat(), "state": "future"})
-        elif key == "social":
-            out.append({"day": d.isoformat(), "state": "done" if d.isoformat() in met else "rest"})
-        elif h:
-            due = quests.due_today(h, d)
-            hit = quests.checked(db, h["id"], d)
-            out.append({"day": d.isoformat(), "state": "done" if hit else ("miss" if due and d < day else "rest")})
-        else:
-            out.append({"day": d.isoformat(), "state": "rest"})
-    return out
-
-
-def domains(db, start: date, day: date, notes: dict, rels: list) -> list:
+def domains(db, start: date, day: date, notes: dict, rels: list, past: list = None) -> list:
+    """七块领域的分数。past 是往季结算（nextseason.archive），有上一季就带上上季收官的分数（和上赛季比）。"""
+    prev = {d.get("name"): d.get("now") for d in ((past or [{}])[0].get("domains") or [])} if past else {}
     now = {r["key"]: r for r in attributes.compute(db, day, trend=False)}
     work = round(sum(worktime.hours(db, start + timedelta(days=n)) for n in range((day - start).days + 1)), 1)
     out = []
@@ -176,12 +149,13 @@ def domains(db, start: date, day: date, notes: dict, rels: list) -> list:
         score = None if r["score"] is None else round(r["score"])
         delta = None if score is None or before is None else score - before
         facts = [{"name": i["name"], "actual": i["actual"] if i.get("score") is not None else "还没有数据", "standard": i["standard"]}
-                 for i in r["items"]][:3]  # 没数据的也列出来写“还没有数据”（她 2026-11-02：学习卡片里怎么没有认知拓展）
+                 for i in r["items"]][:3]  # 没数据的也列出来写“还没有数据”（学习卡片里怎么没有认知拓展）
         out.append({
             "key": key, "name": r["name"], "start": before, "now": score, "delta": delta, "label": r["label"],
+            "prev": prev.get(r["name"]), "prev_delta": None if score is None or prev.get(r["name"]) is None else score - prev[r["name"]],
             "floor": score is not None and score < 40,  # 跌破保底（40 以下受损）
-            "hours": work if key == "career" else None, "facts": facts,
-            "why": (notes.get("why") or {}).get(key) or _why(r),
+            "hours": work if key == "career" else None, "facts": facts, "weak": _weakest(r),
+            "why": (notes.get("why") or {}).get(key) or _why(r), "why_by": "小伴" if (notes.get("why") or {}).get(key) else "",
             "crowded_by": [x["label"] for x in rels if x["to"] == key and x["kind"] == "crowd"],
             "crowds": [ICON_KEY[x["to"]] for x in rels if x["from"] == key and x["kind"] == "crowd"],
             "helped_by": [x["label"] for x in rels if x["to"] == key and x["kind"] == "help"],
@@ -191,10 +165,13 @@ def domains(db, start: date, day: date, notes: dict, rels: list) -> list:
     focus = [d["key"] for d in ranked if d["floor"] or (d["delta"] or 0) < 0][:2]
     for d in out:
         d["focus"] = d["key"] in focus
-        if d["focus"]:
-            d["calendar"] = calendar(db, d["key"], day)
         d["source"] = d["key"] in {x["from"] for x in rels if x["kind"] == "crowd"}
     return sorted(out, key=lambda d: (not d["focus"], not d["source"], attributes.ORDER.index(d["key"])))
+
+
+def _weakest(r: dict):
+    items = [i for i in r["items"] if i.get("score") is not None]
+    return min(items, key=lambda i: i["score"])["name"] if items else None
 
 
 def _why(r: dict) -> str:
@@ -219,7 +196,7 @@ def latest_note(db, season_name: str) -> dict:
 
 
 def fallback_line(led: dict, rels: list = None) -> str:
-    """小伴 还没写的时候：用小账和此消彼长拼一句“现在的状态和影响”，不只是数字（她 2026-11-02）。"""
+    """小伴 还没写的时候：用小账和此消彼长拼一句“现在的状态和影响”，不只是数字。"""
     if not led["weeks"]:
         return "赛季刚开始，数据攒一周再说。"
     w = led["weeks"][-2] if len(led["weeks"]) >= 2 else led["weeks"][-1]
@@ -270,15 +247,73 @@ def write_note(db, router, season: dict, start: date, day: date) -> dict:
     return body
 
 
-def page(db, season: dict, start: date, day: date) -> dict:
+def page(db, season: dict, start: date, day: date, past: list = None) -> dict:
     ensure(db)
     note = latest_note(db, season["name"])
     led = ledger(db, start, day)
     rels = relations(db, start, day)
     inf = info(season, start, day)
+    doms = domains(db, start, day, note, rels, past)
+    nxt = note.get("next") if inf["late"] else None
     return {"season": inf, "line": note.get("line") or fallback_line(led, rels), "stale": stale(note, day), "line_by": "小伴" if note.get("line") else "",
-            "line_at": (note.get("at") or "")[:10], "ledger": led, "relations": rels,
-            "domains": domains(db, start, day, note, rels), "next": note.get("next") if inf["late"] else None}
+            "line_at": (note.get("at") or "")[:10], "ledger": led, "relations": rels, "domains": doms, "next": nxt,
+            # 下赛季建议一直显示：小伴 过了三分之二才写正式的，之前用代码按这季的数字先拟
+            "suggest": {**nxt, "by": "小伴"} if nxt else suggest_next(doms, led, rels),
+            "pass": season_pass(db, start, day, date.fromisoformat(season["end"]))}
+
+
+# ---------- 赛季通行证（样稿 A 的上半部分） ----------
+def season_pass(db, start: date, day: date, end: date) -> dict:
+    """本季积分轨道：这季拿了多少分、本周多少、照这个节奏收官大约多少，轨道上标出升级的位置。"""
+    q = "SELECT COALESCE(SUM(delta), 0) FROM points WHERE delta > 0 AND day >= ? AND day <= ?"
+    pts = db.conn.execute(q, (start.isoformat(), day.isoformat())).fetchone()[0]
+    monday = max(start, day - timedelta(days=day.weekday()))
+    week = db.conn.execute(q, (monday.isoformat(), day.isoformat())).fetchone()[0]
+    gone = max(1, (min(day, end) - start).days + 1)
+    total = max(gone, (end - start).days + 1)
+    proj = round(pts / gone * total) if pts else 0
+    earned = db.conn.execute("SELECT COALESCE(SUM(delta), 0) FROM points WHERE delta > 0").fetchone()[0]
+    base = earned - pts  # 开季那天的累计分
+    scale = max(proj, pts, 1)
+    cut = quests.cutover(db)
+    ticks, e = [], base
+    for _ in range(12):  # 这季轨道范围里的升级点；没到的至少标出下一级
+        lvl, need = quests.level_for(e, cut)
+        if need - base > scale and any(not t["got"] for t in ticks):
+            break
+        ticks.append({"label": f"Lv.{lvl + 1}", "at": need - base, "got": need <= earned})
+        e = need
+    scale = max([scale] + [t["at"] for t in ticks])
+    got = [t for t in ticks if t["got"]]
+    ticks = got[-1:] + [t for t in ticks if not t["got"]]  # 已经升过的只留最近一级，免得挤在轨道开头
+    return {"points": pts, "week": week, "projected": proj, "scale": scale, "ticks": ticks,
+            "start": start.isoformat(), "end": end.isoformat(), "days_gone": gone, "days_total": total}
+
+
+# ---------- 下赛季建议的兜底（代码规则，不调模型） ----------
+def suggest_next(doms: list, led: dict, rels: list) -> dict:
+    """小伴 还没写正式建议时，按这季的分数和此消彼长先拟：好的保持、挤人的收一收、掉下去的补上，加一条硬线。"""
+    scored = [d for d in doms if d["now"] is not None]
+    keep = [f"{d['name']}照现在的节奏（{d['now']} 分）" for d in sorted(scored, key=lambda d: -d["now"])
+            if d["now"] >= 70 and not d["floor"] and (d["delta"] or 0) >= 0][:2]
+    pause = [f"{ICON_KEY[k]}少加码：挤了{'、'.join(sorted({ICON_KEY[x['to']] for x in rels if x['from'] == k and x['kind'] == 'crowd'}))}"
+             for k in sorted({x["from"] for x in rels if x["kind"] == "crowd"})]
+    start = []
+    for d in sorted(scored, key=lambda d: (not d["floor"], d["delta"] if d["delta"] is not None else 0, d["now"])):
+        if not (d["floor"] or (d["delta"] or 0) < 0):
+            continue
+        start.append(f"把{d['name']}拉回来，先补{d['weak']}" if d.get("weak") else f"把{d['name']}拉回来（{d['now']} 分）")
+        if len(start) == 2:
+            break
+    full = [w for w in led["weeks"][:-1]] or led["weeks"]
+    rule = ""
+    if any(w["work"] > WORK_CAP for w in full):
+        rule = f"工作每周不超过 {WORK_CAP} 小时"
+    elif any(w["sleep"] < SLEEP_STD for w in full):
+        rule = f"每周至少 {SLEEP_STD} 天 0 点前睡"
+    elif any(w["train"] < TRAIN_STD for w in full):
+        rule = f"每周训练 {TRAIN_STD} 次"
+    return {"keep": keep, "pause": pause, "start": start, "rule": rule, "by": "rule"}
 
 
 def stale(note: dict, day: date) -> bool:
@@ -287,25 +322,12 @@ def stale(note: dict, day: date) -> bool:
     return not at or at[:10] < (day - timedelta(days=2)).isoformat()
 
 
-LOCK = "season-note.lock"
 
 
 def kick(root, spawn=None) -> bool:
-    """打开赛季页发现结论旧了：后台让 小伴 重写（一次只跑一个，15 分钟内不重复）。"""
-    import subprocess
-    import sys
-    from pathlib import Path
-    lock = Path(root) / LOCK
-    try:
-        if lock.exists() and datetime.now().timestamp() - lock.stat().st_mtime < 900:
-            return False
-        lock.write_text(datetime.now().isoformat())
-        (spawn or subprocess.Popen)([sys.executable, "-m", "ethan.season", "--data", str(root)],
-                                    cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    start_new_session=True)
-        return True
-    except OSError:
-        return False
+    """打开赛季页发现结论旧了：后台让 小伴 重写（一次只跑一个，15 分钟内不重复，锁在 bgwork.kick 里）。"""
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "season-note", (), spawn))
 
 
 def main():

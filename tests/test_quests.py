@@ -124,7 +124,7 @@ class QuestTest(unittest.TestCase):
 
     def test_levels(self):
         self.assertEqual(quests.totals(self.db)["level"], 1)
-        quests.award(self.db, 500, "x", MON)  # 2026-10-31：从 L 级升到 L+1 要 L × 500
+        quests.award(self.db, 500, "x", MON)  # 从 L 级升到 L+1 要 L × 500
         self.assertEqual((quests.totals(self.db)["level"], quests.totals(self.db)["title"]), (2, "起步的人"))
         quests.award(self.db, 999, "x", MON)
         self.assertEqual(quests.totals(self.db)["level"], 2)
@@ -140,7 +140,7 @@ class QuestTest(unittest.TestCase):
         self.assertEqual((quests.totals(self.db)["level"], quests.totals(self.db)["next_level_at"]), (6, 6700))
         self.assertEqual(quests.level_for(600, quests.cutover(self.db))[0], 4)  # 切换前的历史按老规则
 
-    def test_project_goal_handed_to_agent_leaves_todo_and_plan(self):  # 2026-10-31 她定
+    def test_project_goal_handed_to_agent_leaves_todo_and_plan(self):
         from ethan.planner import quest_facts
         gid = self.db.add_goal("DemoApp 上线", "year", status="active")
         quests.add_breakdown(self.db, gid, [{"title": "自己走一遍", "size": "M"}], draft=False)

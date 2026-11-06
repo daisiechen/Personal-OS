@@ -12,7 +12,7 @@ SUNDAY = date(2026, 11, 1)
 
 class FocusTest(unittest.TestCase):
     def test_propose_then_confirm_and_planner_sees_it(self):
-        """2026-10-29 她选的 A：周报提 3 件下周重点，她点头或改，下周计划优先照顾。"""
+        """的 A：周报提 3 件下周重点，她点头或改，下周计划优先照顾。"""
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             db = store.db

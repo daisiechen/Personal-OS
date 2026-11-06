@@ -1,4 +1,4 @@
-"""任务结构：领域 → 副本 → 里程碑 → 阶段任务 → 每天的待办（docs/design/quest-structure.md，她 2026-11-01 定）。
+"""任务结构：领域 → 副本 → 里程碑 → 阶段任务 → 每天的待办（docs/design/quest-structure.md）。
 
 这一层只管数据：
 - 里程碑（milestones）：副本下面可检查的阶段结果，带截止日（和可选的目标值），按顺序一个个过；副本进度按过了几个算。
@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS stage_log (
 """
 TASK_COLS = (("milestone_id", "INTEGER"), ("cadence", "TEXT"), ("per_week", "INTEGER"), ("depends_on", "INTEGER"),
              ("habit_id", "INTEGER"), ("is_review", "INTEGER NOT NULL DEFAULT 0"),
-             ("start_day", "TEXT"))  # 从哪天起才做（比如“11/12 前没出签就催问”，她 2026-11-02）
+             ("start_day", "TEXT"))  # 从哪天起才做（比如“11/12 前没出签就催问”）
 
 
 def _now() -> str:
@@ -67,7 +67,7 @@ def current(db, goal_id: int):
     return next((m for m in milestones(db, goal_id) if m["status"] == "open"), None)
 
 
-# ---------- 转换记录（docs/design/system-rules.md 第 2 节，她 2026-11-02 认可） ----------
+# ---------- 转换记录（docs/design/system-rules.md 第 2 节） ----------
 # 每一步记下“前后状态”和“这一步连带产生了什么”（加了哪笔分、建了哪几件任务、有没有顺带结束里程碑）。
 # 撤回时按这条记录原样收回，不再按名字猜（11-01 M1 重开时按名字删掉了带到 M2 的 6 件任务）。
 def _record(db, kind: str, ref: int, frm, to: str, effects: dict) -> int:
@@ -197,7 +197,7 @@ def progress(db, task: dict, day: date) -> dict:
         need = max(0, (upto - start).days + 1)
         got = _count(db, task, start, upto)
         return {"done": got, "need": need, "text": f"{got} / {need} 天"}
-    if cad == "weekly":  # 每周 N 次：这周做了几次；这个阶段一共几周、达标了几周（她 2026-11-01：M2 两周要买两次菜）
+    if cad == "weekly":  # 每周 N 次：这周做了几次；这个阶段一共几周、达标了几周（M2 两周要买两次菜）
         per = task.get("per_week") or 1
         monday = day - timedelta(days=day.weekday())
         got = _count(db, task, monday, day)
@@ -218,7 +218,7 @@ def due_today(db, task: dict, day: date) -> bool:
     if task.get("start_day") and day.isoformat() < task["start_day"]:  # 还没到开始做的那天
         return False
     cad = task.get("cadence") or "once"
-    if task.get("is_review"):  # 复盘：阶段最后两天才排；没有截止日的，阶段里其他一次性任务都做完才排（她 2026-11-02：今天怎么这么多 M1 复盘）
+    if task.get("is_review"):  # 复盘：阶段最后两天才排；没有截止日的，阶段里其他一次性任务都做完才排（今天怎么这么多 M1 复盘）
         m = db.conn.execute("SELECT due FROM milestones WHERE id = ?", (task.get("milestone_id"),)).fetchone()
         if m and m["due"]:
             return day >= date.fromisoformat(m["due"]) - timedelta(days=2)
@@ -301,7 +301,7 @@ def uncheck(db, task_id: int, day: date) -> int:
         last = _last(db, "task", task_id, ("done",))
         db.conn.execute("UPDATE tasks SET done = 0, done_at = NULL WHERE id = ?", (task_id,))
         back = quests._take_back(db, f"task:{task_id}")
-        # 这一下当时顺带结束了里程碑（复盘，或交给 agent 的副本最后一件）：里程碑重新打开（她 2026-11-01 不小心勾了减脂 M1 复盘，退不回去）
+        # 这一下当时顺带结束了里程碑（复盘，或交给 agent 的副本最后一件）：里程碑重新打开（不小心勾了减脂 M1 复盘，退不回去）
         mid = (last or {}).get("effects", {}).get("closed_milestone") or (t["milestone_id"] if t["is_review"] else None)
         if mid:
             back += reopen(db, mid)
@@ -396,24 +396,27 @@ def has_structure(db, goal_id: int) -> bool:
 
 def view(db, goal_id: int, day: date) -> list:
     """副本详情显示用：每个里程碑和它的阶段任务（以后的里程碑不列任务）。"""
-    from . import msreview
+    from . import msreview, taskrules
     msreview.ensure(db)
     out, cur = [], current(db, goal_id)
+    rules = {t["id"]: t for t in taskrules.rows(db, "quest_detail", day, None) if t.get("goal_id") == goal_id}  # 她说算了的不列，在等的标出来（11-06）
     titles = {r["id"]: r["title"] for r in db.conn.execute("SELECT id, title FROM tasks WHERE goal_id = ?", (goal_id,))}
     habits = {r["id"]: r["title"] for r in db.conn.execute("SELECT id, title FROM habits")}
     for m in milestones(db, goal_id):
         state = "past" if m["status"] != "open" else "now" if cur and m["id"] == cur["id"] else "later"
         tasks = []
-        if True:  # 以后的里程碑也列出来看（她 2026-11-01），只是勾的时候要再确认
-            for t in tree(tasks_of(db, m["id"])):
+        if True:  # 以后的里程碑也列出来看，只是勾的时候要再确认
+            for t in tree([x for x in tasks_of(db, m["id"]) if x["id"] in rules]):
                 p = progress(db, t, day)
+                r = rules[t["id"]]
                 tasks.append({"id": t["id"], "title": t["title"], "cadence": t.get("cadence") or "once",
                               "cadence_name": CADENCE_NAME.get(t.get("cadence") or "once", ""), "per_week": t.get("per_week"),
                               "habit": habits.get(t.get("habit_id")), "review": bool(t.get("is_review")),
                               "depends_on": t.get("depends_on"), "depends": titles.get(t.get("depends_on")),
                               "blocked": blocked(db, t), "done": bool(t["done"]), "today": done_on(db, t, day),
-                              "progress": p["text"], "points": points_for(t), "depth": t["depth"], "habit_id": t.get("habit_id")})
-        if state == "later" and cur:  # 以后的阶段：反复做的会在进入时从当前阶段带过来，先列出来让她看到全貌（她 2026-11-01：M3 M4 没有引用任务了么）
+                              "progress": p["text"], "points": points_for(t), "depth": t["depth"], "habit_id": t.get("habit_id"),
+                              "state": r["state"], "label": r["label"] if r["state"] in ("waiting", "not_started", "postponed") else ""})
+        if state == "later" and cur:  # 以后的阶段：反复做的会在进入时从当前阶段带过来，先列出来让她看到全貌（M3 M4 没有引用任务了么）
             have = {t["title"] for t in tasks}
             for t in tasks_of(db, cur["id"]):
                 if (t.get("cadence") or "once") != "once" and t["title"] not in have:
@@ -451,7 +454,7 @@ def tree(tasks: list) -> list:
 
 def set_task(db, task_id: int, cadence: str = None, per_week: int = None, depends_on="keep", habit_id="keep") -> None:
     ensure(db)
-    if habit_id != "keep":  # 改引用哪个日常周常，或者不引用、自己打卡（她 2026-11-01：引用日常的我自己改不了么）
+    if habit_id != "keep":  # 改引用哪个日常周常，或者不引用、自己打卡（引用日常的我自己改不了么）
         db.conn.execute("UPDATE tasks SET habit_id = ? WHERE id = ?", (int(habit_id) if habit_id else None, task_id))
     if cadence is not None:
         if cadence not in CADENCES:

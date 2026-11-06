@@ -1,6 +1,5 @@
 """Grok Bot App 的数据导出：邮件到了 小伴 自动下载、导入（ontology-plan 1.8，数据源 S20）。
 
-她 11-04：“都发到邮箱里为什么你不能自动读？还要我拖一遍？”
 她在 https://accounts.x.ai/data 点 “Download account data”，xAI 把下载链接发到她邮箱。服务器收邮件时（ethan/mail.py）：
 1. 认出这封：发件人是 x.ai / xAI，主题或正文说导出、下载、数据；只认正文里 x.ai 域名下的 https 链接。
    这封在工作台“邮件和留言”里算“知道一下：小伴 在处理”，不算要她处理的事。
@@ -8,7 +7,7 @@
    最多 500MB、超时 120 秒。拿到登录页 / 401 / 403 就不硬来：把这封改成要她看，写清“要你登录才能下载：点链接下好，
    原样发给 小伴”。她用 Telegram / 微信发来的压缩包（或服务器上 --file）走同一个导入。
 3. 导入：zip 里所有 JSON 宽松解析（不认死格式）：找“含消息数组的对象”当会话，按 sender / role / author 认她
-   （human / user），按会话交整段对话（她 11-04：“难道别人跟我的对话不是我的记忆么！！！”）：每行标【她】/【Grok】，
+   （human / user），按会话交整段对话：每行标【她】/【Grok】，
    两边都交、不截短（单条超长 2000 字截断），经访谈记录（interviews.receive，format=transcript，直接写库）进记忆，
    会话名“Grok Bot App 会话（日期）”，场合 SCENE；她说的算原话，Grok 说的整理时记成“agent 转述”（只当资料）。
    她的话筛法同 Codex（agentexport.clean：去点头、代码、截长）；都去邮箱电话。原始包原样存档到 <数据目录>/agent-archive/（600，不进仓库；有密钥就加密）。
@@ -71,7 +70,7 @@ def links(text: str) -> list:
     """正文里 x.ai 域名下的 https 下载链接，像下载的排前面；页脚的隐私政策这类不要。"""
     strong, weak, seen = [], [], set()
     for raw in URL.findall(text or ""):
-        url = raw.rstrip(".,;:!?。，；）」”'")
+        url = raw.rstrip(".,;:!?。）」”'")
         p = urllib.parse.urlparse(url)
         if p.scheme != "https" or not is_xai_host(p.hostname or "") or url in seen:
             continue
@@ -547,13 +546,9 @@ def has_pending(db) -> bool:
         return False
 
 
-def kick(root, what: str = "--jobs", spawn=subprocess.Popen) -> bool:
-    try:
-        spawn([sys.executable, "-m", "ethan.grokexport", "--data", str(root), what], cwd=str(Path(__file__).resolve().parent.parent),
-              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except OSError:
-        return False
+def kick(root, what: str = "--jobs", spawn=None) -> bool:
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "grokexport", [what], spawn))
 
 
 def main(argv=None) -> int:

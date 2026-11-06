@@ -1,4 +1,4 @@
-"""执行保障：模型只出“提议”，格式由代码校验（docs/design/digital-life-spec.md 第 0 节，2026-10-30 她认可）。
+"""执行保障：模型只出“提议”，格式由代码校验（docs/design/digital-life-spec.md 第 0 节）。
 
 她担心“方案聊得好、执行有偏差”。业界有效的做法是：模型只负责理解，按固定格式输出；代码校验格式、取值、
 引用的原话是不是真在原文里；不合格带着错误重试一次，还不合格就丢弃并记下来。每次调用都留痕（llm_calls 表），
@@ -85,7 +85,7 @@ def extract_json(text: str):
 
 def quote_in(quote: str, source: str) -> bool:
     """模型引用的原话真在原文里（忽略空白和标点差别），防编造。"""
-    norm = lambda s: re.sub(r"[\s，。、,.!?！？：:；;“”\"'（）()]+", "", s or "")
+    norm = lambda s: re.sub(r"[\s，。、,.!?！？：“”\"'()]+", "", s or "")
     q = norm(quote)
     return bool(q) and q in norm(source)
 

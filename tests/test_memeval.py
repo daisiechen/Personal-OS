@@ -20,7 +20,7 @@ class Router:
         self.calls.append(purpose)
         if purpose == "memeval-judge":
             content = messages[0]["content"]
-            ok = "Islington" in content.split("回答：")[1].split("【正确说法】")[0]
+            ok = "Greenwich" in content.split("回答：")[1].split("【正确说法】")[0]
             return SimpleNamespace(text=json.dumps({"ok": ok, "why": "x"}))
         return SimpleNamespace(text=self.answer)
 
@@ -39,7 +39,7 @@ class MemEvalTest(unittest.TestCase):
 
     def test_ticket_becomes_items_by_layer(self):
         lifebase.add_fact(self.db, "resources", "她住在 Camden 公寓", [self.ev])
-        t = memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Camden", quote="我住 Islington 啊")
+        t = memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden", quote="我住 Greenwich 啊")
         tasks = [r["task"] for r in self.db.conn.execute("SELECT task FROM eval_items WHERE ticket_id = ?", (t["id"],))]
         self.assertEqual(tasks, ["fact_ops", "answer"])  # 记错了：每晚对照那步 + 回答
         self.assertEqual(memeval.add_for_ticket(self.db, t["id"]), [])  # 同一张单只出一次
@@ -52,9 +52,9 @@ class MemEvalTest(unittest.TestCase):
 
     def test_run_finds_regressions_and_gate_keeps_baseline(self):
         lifebase.add_fact(self.db, "resources", "她住在 Camden 公寓", [self.ev])
-        memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Camden")
+        memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden")
         self.db.conn.execute("UPDATE eval_items SET active = 0 WHERE task != 'answer'")
-        got = memeval.run(self.db, Router("你住 Islington 呀"), "weekly", self.store)
+        got = memeval.run(self.db, Router("你住 Greenwich 呀"), "weekly", self.store)
         self.assertEqual((got["total"], got["passed"], got["regressions"]), (1, 1, []))
         bad = memeval.run(self.db, Router("你不是住 Camden 吗"), "gate", self.store)
         self.assertEqual(len(bad["regressions"]), 1)  # 以前过、这次没过：退步
@@ -64,22 +64,40 @@ class MemEvalTest(unittest.TestCase):
         self.assertEqual((summary["纠错数"], summary["检验题通过率"]), (1, 1.0))
 
     def test_gate_retries_a_flaky_item(self):
-        """2026-11-01：照片那题一次判错就把整批上线退回了。闸门上没过的再跑两次，有一次过就不算退步；真退步照样拦。"""
+        """照片那题一次判错就把整批上线退回了。闸门上没过的再跑两次，有一次过就不算退步；真退步照样拦。"""
         lifebase.add_fact(self.db, "resources", "她住在 Camden 公寓", [self.ev])
-        memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Camden")
+        memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden")
         self.db.conn.execute("UPDATE eval_items SET active = 0 WHERE task != 'answer'")
-        memeval.run(self.db, Router("你住 Islington 呀"), "weekly", self.store)
+        memeval.run(self.db, Router("你住 Greenwich 呀"), "weekly", self.store)
 
         class Flaky(Router):
             def complete(self, system, messages, purpose="chat", images=()):
                 if purpose != "memeval-judge":
                     self.n = getattr(self, "n", 0) + 1
-                    self.answer = "你不是住 Camden 吗" if self.n == 1 else "你住 Islington 呀"
+                    self.answer = "你不是住 Camden 吗" if self.n == 1 else "你住 Greenwich 呀"
                 return super().complete(system, messages, purpose, images)
         got = memeval.run(self.db, Flaky(""), "gate", self.store)
         self.assertEqual(got["regressions"], [])
         self.assertEqual(got["passed"], got["total"])  # 重跑过了就算过（11-05：曾按第一次的结果计分，显示 4/6）
         self.assertEqual(len(memeval.run(self.db, Router("你不是住 Camden 吗"), "gate", self.store)["regressions"]), 1)
+
+    def test_database_lock_is_skipped_not_a_regression(self):
+        """11-05：上线时大批整理正在写库，检验题撞锁全算成退步，整批代码被退回。撞锁先等一会儿重试，一直锁着算跳过。"""
+        import sqlite3
+        from unittest import mock
+        lifebase.add_fact(self.db, "resources", "她住在 Camden 公寓", [self.ev])
+        memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden")
+        self.db.conn.execute("UPDATE eval_items SET active = 0 WHERE task != 'answer'")
+        memeval.run(self.db, Router("你住 Greenwich 呀"), "weekly", self.store)
+        locked = sqlite3.OperationalError("database is locked")
+        with mock.patch.object(memeval, "run_item", side_effect=locked), mock.patch.object(memeval, "LOCK_WAIT", 0):
+            got = memeval.run(self.db, Router(""), "gate", self.store)
+        self.assertEqual((got["regressions"], got["skipped"]), ([], 1))
+        calls = iter([locked, (True, "")])
+        with mock.patch.object(memeval, "run_item", side_effect=lambda *a, **k: (lambda r: (_ for _ in ()).throw(r) if isinstance(r, Exception) else r)(next(calls))), \
+                mock.patch.object(memeval, "LOCK_WAIT", 0):
+            got = memeval.run(self.db, Router(""), "gate", self.store)
+        self.assertEqual((got["passed"], got["skipped"]), (1, 0))  # 等一下锁就放开了：照常判分
 
     def test_judge_takes_first_json_only(self):
         class Two:

@@ -61,18 +61,18 @@ def _goal_lines(db, parent_id=None, depth=0) -> list:
         ).fetchall()
         for log in logs:
             lines.append(f"{'  ' * (depth + 1)}- {log['created_at'][:10]} {log['note']}")
-        for t in db.conn.execute(
-            "SELECT title, due FROM tasks WHERE goal_id = ? AND done = 0 ORDER BY due IS NULL, due, id",
-            (g["id"],),
-        ).fetchall():
+        from . import taskrules  # 导出也按统一规矩：说算了的不列，在等的、推到明天的标出来
+        for t in sorted((t for t in taskrules.rows(db, "export", None, None) if t.get("goal_id") == g["id"]),
+                        key=lambda t: (t["due"] is None, t["due"] or "", t["id"])):
             due = f"（{t['due']}）" if t["due"] else ""
-            lines.append(f"{'  ' * (depth + 1)}- [ ] 待办：{t['title']}{due}")
+            tag = f"〔{t['label']}〕" if t["label"] else ""
+            lines.append(f"{'  ' * (depth + 1)}- [ ] 待办：{t['title']}{due}{tag}")
         lines += _goal_lines(db, g["id"], depth + 1)
     return lines
 
 
 def recent_chat(store: MemoryStore, today: date, tz=None) -> list:
-    """最近几天的聊天原文（伦敦时间），小伴 的话去掉内部标记，只留她能看到的部分。"""
+    """最近几天的聊天原文（本地时间），小伴 的话去掉内部标记，只留她能看到的部分。"""
     from .core.agent import parse_reply  # 避免循环导入
     tz = tz or her_tz()
     since = today.toordinal() - RECENT_DAYS + 1
@@ -156,11 +156,11 @@ def board_pages(store: MemoryStore, today: date) -> dict:
     db = store.db
     goals = db.active_goals()
     stage = [g for g in goals if g["level"] in ("year", "stage", "task")]
-    tasks = db.due_tasks(today)
-    contact = db.people_to_contact(today)
+    tasks = store._tasks(today)["due_tasks"]  # 和 小伴 看的同一份（taskrules 的 ethan_ctx），说算了的不列
+    from . import relations  # “该联系谁”只用人物卡那套（5）
+    cs = relations.contact_status(db, today, "relations")
     wishes = db.open_wishes()
     review = db.due_learning_items(today, limit=50)
-    reason = {"long_no_contact": "很久没联系", "birthday_soon": "快过生日"}
 
     overview = [f"# 总览 {today.isoformat()}", "", NOTICE,
                 "## 进行中的阶段目标", ""]
@@ -170,7 +170,8 @@ def board_pages(store: MemoryStore, today: date) -> dict:
     overview += [("- [小伴 答应的] " if t["promised_by_ethan"] else "- ") + f"{t['title']}（{t['due']}）"
                  for t in tasks] or ["- 暂无"]
     overview += ["", "## 该联系的人", ""]
-    overview += [f"- {p['name']}：{'、'.join(reason[r] for r in p['reasons'])}" for p in contact] or ["- 暂无"]
+    overview += ([f"- {p['name']}：{p['days']} 天没联系" for p in cs["contact"]]
+                 + [f"- {p['name']}：{p['what'] or '重要日子'} {p['date'][5:]}" for p in cs["days"]]) or ["- 暂无"]
     overview += ["", f"## 今天要复习的单词句子：{len(review)} 条", "",
                  f"## 待实现的心愿：{len(wishes)} 条", "",
                  "## 更多", "",

@@ -94,14 +94,14 @@ class PortraitTest(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT dimension FROM facts WHERE id = ?", (misplaced,)).fetchone()[0], "rhythms")
         self.assertLess(self.db.conn.execute("SELECT confidence FROM facts WHERE id = ?", (stale,)).fetchone()[0], 0.6)
         from ethan import mepage
-        q = mepage.pending_items(self.db)[0]  # 确认问题进“待你定”，和工作台同一份（2026-10-31）
+        q = mepage.pending_items(self.db)[0]  # 确认问题进“待你定”，和工作台同一份
         self.assertEqual((q["kind"], q["question"], q["options"][0]["fact_id"]), ("question", "你现在还想当老师吗？", stale))
         mepage.resolve(self.db, q["id"], "yes")
         self.assertEqual(self.db.conn.execute("SELECT locked FROM facts WHERE id = ?", (stale,)).fetchone()[0], 1)
         self.assertEqual(memeval.weekly_summary(self.db, DAY)["她确认过的"], 1)
 
     def test_agent_uses_profile_instead_of_nightly_section(self):
-        self.store.wiki.write("about-mia", "关于 Mia", "她在伦敦读书。\n\n## 小伴 每晚整理\n\n### 饮食\n- 旧的整理")
+        self.store.wiki.write("about-mia", "关于 Mia", "她在曼彻斯特工作。\n\n## 小伴 每晚整理\n\n### 饮食\n- 旧的整理")
         self.fact("preferences", "她不吃香菜")
         portrait.rebuild_blocks(self.db, None)
         portrait.ensure(self.db)
@@ -115,7 +115,7 @@ class PortraitTest(unittest.TestCase):
             return SimpleNamespace(text=f"对了你还在学游泳吗 [待定 #{pid} 问了]", backend="x", model="m", cost_usd=0)
         ethan = Ethan(self.store, SimpleNamespace(complete=complete, settings=None), persona="人设")
         out = ethan.reply("cli", "晚上吃什么好", today=DAY)
-        self.assertIn("她在伦敦读书", systems[0])
+        self.assertIn("她在曼彻斯特工作", systems[0])
         self.assertNotIn("旧的整理", systems[0])
         self.assertIn("- 她不吃香菜", systems[0])
         self.assertIn(f"#{pid} [长期] 你还在学游泳吗？", systems[0])

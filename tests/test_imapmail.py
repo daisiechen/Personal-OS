@@ -102,7 +102,7 @@ class ImapTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_search_checks_words_itself_and_finds_chinese_all_mail(self):
-        """2026-10-31 线上：QQ 不认搜索条件、整箱都给回来；Gmail 中文界面的“所有邮件”不叫 All Mail。"""
+        """QQ 不认搜索条件、整箱都给回来；Gmail 中文界面的“所有邮件”不叫 All Mail。"""
         qq = FakeIMAP({1: raw(1, "QQ邮箱APP"), 2: raw(2, "Your Hidden London booking", sender="LTM <b@ltmuseum.co.uk>", body="Order 778899")})
         acc = [{"name": "qq", "user": "d@qq.com", "host": "imap.qq.com", "password": "x"}]
         hits = imapmail.search(["ltmuseum"], accounts=acc, factory=qq)
@@ -148,7 +148,7 @@ class ImapTest(unittest.TestCase):
         self.assertEqual(got["Gmail"]["new"], 0)
 
     def test_spam_folder_watched_and_not_junk_put_back(self):
-        """她 11-04 同意：垃圾箱里像签证 / 银行 / 学校的只提醒不移动；她说“不是垃圾”的放回收件箱。"""
+        """垃圾箱里像签证 / 银行 / 学校的只提醒不移动；她说“不是垃圾”的放回收件箱。"""
         class WithSpam(FakeIMAP):
             def list(self, *a):
                 return "OK", [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Junk) "/" "[Gmail]/Spam"']
@@ -177,7 +177,7 @@ class ImapTest(unittest.TestCase):
         self.assertEqual(db.conn.execute("SELECT restore FROM mail_items WHERE id = ?", (promo,)).fetchone()[0], 2)
 
     def test_sent_mail_becomes_her_words_without_quotes(self):
-        """她 11-04 “后面的继续做吧”（1.6）：已发送里她写的算她的原话，引用的别人的话去掉，只读不动。"""
+        """“后面的继续做吧”（1.6）：已发送里她写的算她的原话，引用的别人的话去掉，只读不动。"""
         from ethan import lifebase
 
         class WithSent(FakeIMAP):
@@ -199,7 +199,7 @@ class ImapTest(unittest.TestCase):
         self.assertEqual(imapmail.own_words("好的，周五见。\n\n在 2026年11月3日 周一，Amy 写道：\n> 周五有空吗"), "好的，周五见。")
 
     def test_backlog_old_unread_once(self):
-        """2026-10-31：接进来之前就在收件箱里的旧未读，补整理一次，补完不再看。"""
+        """接进来之前就在收件箱里的旧未读，补整理一次，补完不再看。"""
         imapmail.ensure(self.store.db)
         self.store.db.conn.execute("INSERT INTO imap_state (account, uidvalidity, last_uid) VALUES ('Gmail', '42', 10)")
         fake = FakeIMAP({3: raw(3, "限时大促 4 折优惠", body="unsubscribe"), 4: raw(4, "Payment declined")})
@@ -211,7 +211,7 @@ class ImapTest(unittest.TestCase):
         self.assertEqual(self.store.db.conn.execute("SELECT backlog_done FROM imap_state").fetchone()[0], 1)
 
     def test_login_failures_back_off_and_show_in_checkup(self):
-        """2026-10-31：126 授权码作废后每 10 分钟登一次、失败几十次。连续 3 次后改成 2 小时一次，体检里写清。"""
+        """126 授权码作废后每 10 分钟登一次、失败几十次。连续 3 次后改成 2 小时一次，体检里写清。"""
         from datetime import timedelta
         from ethan import checkup
 
@@ -238,7 +238,7 @@ class ImapTest(unittest.TestCase):
         self.assertEqual(imapmail.failing(self.store.db), [])  # 登上了就清零
 
     def test_netease_flat_folder_and_give_up(self):
-        """2026-11-01：126 建不了子文件夹（TRYCREATE Folder not exist），每封每轮都移不走、报错越积越多。
+        """126 建不了子文件夹（TRYCREATE Folder not exist），每封每轮都移不走、报错越积越多。
         改成一层的“小伴整理-推广”；还是不行就试三轮后留在收件箱，不再重试。"""
         class NoSub(FakeIMAP):
             def uid(self, cmd, *args):

@@ -19,7 +19,7 @@ def at(day, hh, mm=0):
 
 
 class WorkaholicTest(unittest.TestCase):
-    """她 2026-10-31 定：工作狂指数、产出只算事业和学术、9 点提醒 10 点劝 11 点停、她放行才继续。"""
+    """工作狂指数、产出只算事业和学术、9 点提醒 10 点劝 11 点停、她放行才继续。"""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = MemoryStore(Path(self.tmp.name))
@@ -53,7 +53,7 @@ class WorkaholicTest(unittest.TestCase):
         self.assertTrue(workaholic.day_stats(self.db, sat)["weekend"])
 
     def test_small_hours_belong_to_the_night_before(self):
-        """2026-11-01：凌晨 0–2 点是“昨晚”，不算进今天。"""
+        """凌晨 0–2 点是“昨晚”，不算进今天。"""
         nxt = self.day + timedelta(days=1)
         worktime.record(self.db, [f"{nxt.isoformat()}T00:{m:02d}" for m in range(0, 60, 5)] + [f"{nxt.isoformat()}T10:00"], "mac")
         self.assertEqual(worktime.hours(self.db, self.day), 1.0)

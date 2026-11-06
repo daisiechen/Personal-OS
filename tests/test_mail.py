@@ -61,8 +61,8 @@ class MailTest(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM evidence WHERE source = 'email'").fetchone()[0], 3)
 
     def test_visa_mail_never_archived_as_junk(self):
-        """她 11-04：“这个为什么是垃圾？”——芬兰签证中心经 london.edu 转发的补材料通知被判成垃圾。"""
-        mail.receive(self.db, {"items": [item(9, "关于您的申根签证申请", "Visa London <visa.london@utn.is>", "我们需要您提供有效的英国居留许可。")]})
+        """芬兰签证中心经 school.example.edu 转发的补材料通知被判成垃圾。"""
+        mail.receive(self.db, {"items": [item(9, "关于您的申根签证申请", "Visa Centre <visa@example.fi>", "我们需要您提供有效的英国居留许可。")]})
         router = Router({"category": "junk", "attention": False, "reason": "像冒充的钓鱼", "todo": None, "event": None})
         mail.process(self.store, router)
         r = self.db.conn.execute("SELECT category, attention FROM mail_items").fetchone()
@@ -70,7 +70,7 @@ class MailTest(unittest.TestCase):
         self.assertTrue(mail.receive(self.db, {"ask": ["msgid:m9@x"]})["actions"][0]["keep"])  # 留在收件箱，不归档
 
     def test_fyi_shows_on_desk_but_is_not_counted(self):
-        """她 11-04 同意：“不用你做什么”的进行中大事放进工作台，但不算待处理。"""
+        """的进行中大事放进工作台，但不算待处理。"""
         from ethan import desk
         mail.receive(self.db, {"items": [item(5, "Check your contact details are up to date", "MPS <automation.noreply@met.police.uk>",
                                               "If nothing has changed, you do not need to take any action.")]})
@@ -81,7 +81,7 @@ class MailTest(unittest.TestCase):
         self.assertEqual(desk.count(self.db), 0)
 
     def test_bill_already_paid_does_not_come_back_as_todo(self):
-        """2026-11-01：交行 16692.91 她 10-29 分三笔还清了，10-31 旧账单邮件又建了“还交通银行信用卡账单16692.91元”。"""
+        """交行 16692.91 分三笔还清了，10-31 旧账单邮件又建了“还交通银行信用卡账单16692.91元”。"""
         tid = self.db.add_task("还信用卡 9976：1692.91（最后一笔，还清 16692.91）")
         self.db.complete_task(tid)
         mail.receive(self.db, {"items": [item(5, "交通银行信用卡电子账单", "交通银行 <b@bocom.com>", "本期应还 16,692.91")]})
@@ -90,7 +90,7 @@ class MailTest(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM tasks WHERE done = 0").fetchone()[0], 0)
 
     def test_cmb_spend_email_goes_into_the_books(self):
-        """2026-11-01：126 里有招行的消费邮件，但 10-30 后一笔都没进账（邮件被整理走，Mac 上的规则不再触发）。"""
+        """126 里有招行的消费邮件，但 10-30 后一笔都没进账（邮件被整理走，Mac 上的规则不再触发）。"""
         from ethan import finance
         mail.receive(self.db, {"items": [item(7, "招商银行一卡通账户变动通知", "招商银行 <95555@message.cmbchina.com>",
                                                 "尊敬的客户：您账户0000于11月01日10:08在支付宝-瑞幸咖啡快捷支付29.90元，余额100.00")]})
@@ -132,7 +132,7 @@ class MailTest(unittest.TestCase):
 
 
     def test_digest_skips_what_she_already_handled(self):
-        """2026-10-31：交行账单她在工作台勾完了，傍晚 小伴 又说了一遍。"""
+        """交行账单她在工作台勾完了，傍晚 小伴 又说了一遍。"""
         mail.receive(self.db, {"items": [item(1), item(2)]})
         bill = {"category": "bill", "attention": True, "reason": "要还款", "todo": "还交行账单", "event": None}
         mail.process(self.store, Router(*[bill] * 8))
@@ -270,7 +270,7 @@ class AboutHerTest(unittest.TestCase):
 
     def test_sender_name(self):
         from ethan import lifebase
-        self.assertEqual(lifebase.mail_sender_name('"Visa London" <visa.london@utn.is>'), "Visa London")
+        self.assertEqual(lifebase.mail_sender_name('"Visa London" <visa@example.fi>'), "Visa London")
         self.assertEqual(lifebase.mail_sender_name("noreply@tlscontact.com"), "tlscontact.com")
         self.assertEqual(lifebase.mail_sender_name("<a@b.com>"), "b.com")
 
@@ -293,7 +293,7 @@ class MailEvalTest(unittest.TestCase):
 
 class HeldTest(unittest.TestCase):
     def test_quarantine_notice_needs_her(self):
-        got = mail.rules("postmaster@london.edu", "You have new held messages (Quarantined Emails)", "Release Permit Block unsubscribe")
+        got = mail.rules("postmaster@school.example.edu", "You have new held messages (Quarantined Emails)", "Release Permit Block unsubscribe")
         self.assertEqual((got["attention"], got["category"]), (True, "membership"))
         self.assertIsNone(mail.rules("a@b.com", "Your order is confirmed", "thanks"))
 

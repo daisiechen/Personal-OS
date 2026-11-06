@@ -1,22 +1,21 @@
-"""工作狂指数和晚上收工（她 2026-10-31 定）。
+"""工作狂指数和晚上收工。
 
-她说：“我现在跟 AI 工作起来就没完没了，也不愿意出门……希望扑在工作上的时间以后越来越少，但效率和产出越来越高，产出是稳定的。”
 
 工作时长从哪来（ethan/worktime.py 的 5 分钟格，一格 5 分钟）：
 - Mac 键盘鼠标真有人在动（Claude Code、Codex 在终端跑不碰键鼠，不算她的）；
-- 她给 Claude Code 发的每句话（Mac、云端、服务器上的会话都算，她 10-31：手机上发的也算）；
+- 她给 Claude Code 发的每句话（Mac、云端、服务器上的会话都算，手机上发的也算）；
 - iPhone 打开 Claude / Codex App 到关掉这段（快捷指令自动化报开、关）；
 - 工作台开着、在前台的时候（页面每分钟报一次）。
-不算：在 Telegram 跟 小伴 聊天（她 10-31：那是生活）。
+不算：在 Telegram 跟 小伴 聊天（那是生活）。
 
-指数 0–100，一天一个，一周取平均。健康区间 20–49（她 2026-11-01：不是越低越好，定一个健康区间）：
+指数 0–100，一天一个，一周取平均。健康区间 20–49（不是越低越好，定一个健康区间）：
   20 以下偏松（可能没在推进事业学术）、20–49 健康、50–69 偏高、70 以上过度。算法：
   总时长 40 分（12 小时封顶）+ 晚上 9 点后 20 分（3 小时封顶）+ 最长一段不停 15 分（4 小时封顶，中间停够 15 分钟才算歇）
   + 周末还在工作 15 分（周末 6 小时封顶）+ 一整天没出门 10 分（出门 2 小时就不扣）。
-产出只算事业和学术（她 10-31：学术算、学习不算、生活体验不算）：这周完成的事业 / 学术任务经验，另记 agent 交的活被她验收通过几件。
+产出只算事业和学术（学术算、学习不算、生活体验不算）：这周完成的事业 / 学术任务经验，另记 agent 交的活被她验收通过几件。
 效率 = 事业和学术经验 ÷ 工作小时。目标：时长一周比一周少，产出稳住，效率往上。
 
-晚上（她 10-31 定）：9 点提醒收尾，10 点劝收工，11 点停；她跟 小伴 说“今晚要赶，到几点”就放行到那时（[加班 到 01:00]）。
+晚上：9 点提醒收尾，10 点劝收工，11 点停；她跟 小伴 说“今晚要赶，到几点”就放行到那时（[加班 到 01:00]）。
 11 点后 Mac 和云端的 Claude Code 新指令被钩子挡回（ethan/setup_hook.py 的收工钩子），Mac 弹全屏提醒（不锁屏），
 终端里的 codex 先提示过点；iPhone 打开 Claude / Codex App 时快捷指令弹提醒并退回桌面。
 """
@@ -26,10 +25,11 @@ import re
 from datetime import date, datetime, time, timedelta, timezone
 
 from . import worktime
+from . import clock
 
 WORK_DOMAINS = ("事业", "学术")
 REMIND, PERSUADE, STOP = time(21, 0), time(22, 0), time(23, 0)
-MORNING = time(5, 0)  # 凌晨 5 点前还算前一晚
+MORNING = time(clock.DAY_START_HOUR, 0)  # 凌晨 5 点前还算前一晚（常量在 clock）
 OVERRIDE = "CREATE TABLE IF NOT EXISTS curfew_override (night TEXT PRIMARY KEY, until TEXT NOT NULL, at TEXT NOT NULL, said TEXT)"
 APPS = "CREATE TABLE IF NOT EXISTS app_sessions (id INTEGER PRIMARY KEY, app TEXT NOT NULL, opened TEXT NOT NULL, closed TEXT)"
 MARK = re.compile(r"\[加班\s*到\s*(\d{1,2})[:：](\d{2})\s*\]")
@@ -241,6 +241,6 @@ def curfew(db, now: datetime = None) -> dict:
             "hours_today": day_stats(db, _night(now_local))["hours"]}
 
 
-PROMPT = ("晚上收工（她 2026-10-31 定）：9 点提醒收尾，10 点劝收工，11 点停。她说今晚有明天一定要交的、要赶，"
+PROMPT = ("晚上收工：9 点提醒收尾，10 点劝收工，11 点停。她说今晚有明天一定要交的、要赶，"
           "先问清到几点，再在回复末尾写 [加班 到 01:00]（放行到那时，这个标记不会发给她），并提醒她一句别太晚。"
           "她没说要赶，就不要替她放行。")

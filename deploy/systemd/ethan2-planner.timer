@@ -1,5 +1,5 @@
 [Unit]
-Description=每天 06:30（伦敦时间）生成 Mia 当天按小时的计划
+Description=每天 06:30（本地时间）生成 Mia 当天按小时的计划
 
 [Timer]
 OnCalendar=*-*-* 06:30:00 Europe/London

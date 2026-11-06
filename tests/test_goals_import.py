@@ -16,7 +16,7 @@ EXAMPLE = {"season_end": "2026-12-31",
 
 class GoalsImportTest(unittest.TestCase):
     def test_table_becomes_season_and_rerun_does_not_duplicate(self):
-        """开源准备（2026-10-29）：用户给一张目标表格，agent 整理成 JSON，一条命令冷启动。"""
+        """开源准备：用户给一张目标表格，agent 整理成 JSON，一条命令冷启动。"""
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             goals_import.apply(store, EXAMPLE)

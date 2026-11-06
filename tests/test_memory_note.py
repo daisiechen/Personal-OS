@@ -1,4 +1,4 @@
-"""全局说明：她的话交给 小伴 的记忆（她 2026-11-03 要“全局自动生效”），写进 ~/.claude/CLAUDE.md、~/.codex/AGENTS.md。"""
+"""全局说明：她的话交给 小伴 的记忆（“全局自动生效”），写进 ~/.claude/CLAUDE.md、~/.codex/AGENTS.md。"""
 
 import tempfile
 import unittest

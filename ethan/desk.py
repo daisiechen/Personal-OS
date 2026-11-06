@@ -1,10 +1,10 @@
-"""收件台：工作台上“今日邮件和留言”（她 2026-10-30 同意做）。
+"""收件台：工作台上“今日邮件和留言”。
 
-列出要她处理的：需要她亲自看的邮件（ethan/mail.py 判的），和主页留言里要她回的、Dais能回的（ethan/publicsite.py 傍晚分好档的）。
+列出要她处理的：需要她亲自看的邮件（ethan/mail.py 判的），和主页留言里要她回的、主页助手能回的（ethan/publicsite.py 傍晚分好档的）。
 每条三个按钮，外加一句交代：
 - 记成待办：进她的待办（已经自动进了待办的不重复建）。
 - 起草回复：邮件由 小伴 在后台起草（她看、能改，点“发送”才用她的邮箱发出去，替她发消息必须她本人点）；
-  主页留言交给Dais起草（主页中转来拉，草稿回到这里），她点“发送”后中转从 hi@example.com 发；只留了微信 / LinkedIn 的她复制去发。
+  主页留言交给主页助手起草（主页中转来拉，草稿回到这里），她点“发送”后中转从 hi@example.com 发；只留了微信 / LinkedIn 的她复制去发。
 - 不用管：收起来。同一个发件人她连着两次点“不用管”，以后它的来信就不再算需要她看的（她的习惯，代码记，不靠猜）。
 运行（工作台点“起草回复”后自动在后台跑）：python3 -m ethan.desk --data <数据目录> --draft <邮件编号>
 """
@@ -13,19 +13,16 @@ import argparse
 import json
 import re
 import smtplib
-import subprocess
-import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid, parseaddr
 from pathlib import Path
 
-from . import mail, publicsite
+from . import clock, mail, publicsite
 
-STATES = ("open", "todo", "drafting", "draft", "sending", "sent", "handed", "ignored")
 SMTP = {"imap.gmail.com": ("smtp.gmail.com", 465), "imap.mail.me.com": ("smtp.mail.me.com", 587), "imap.126.com": ("smtp.126.com", 465),
         "imap.163.com": ("smtp.163.com", 465), "imap.qq.com": ("smtp.qq.com", 465), "mails.tsinghua.edu.cn": ("mails.tsinghua.edu.cn", 465)}
-# 小伴 起草的新邮件（不是回复）：她在工作台选邮箱、点“发送”才发（她 2026-10-31：“邮件用新流程，从工作台发”）
+# 小伴 起草的新邮件（不是回复）：她在工作台选邮箱、点“发送”才发
 OUTBOX = """CREATE TABLE IF NOT EXISTS outbox (
     id INTEGER PRIMARY KEY, to_addr TEXT NOT NULL, subject TEXT NOT NULL, draft TEXT NOT NULL, draft_zh TEXT, account TEXT,
     desk_state TEXT NOT NULL DEFAULT 'draft', desk_note TEXT, task_id INTEGER, sent_at TEXT, error TEXT, created_at TEXT NOT NULL)"""
@@ -44,7 +41,8 @@ def ensure(db):
     db.conn.execute(PREFS)
     db.conn.execute(OUTBOX)
     for table, cols in (("mail_items", (("desk_state", "TEXT NOT NULL DEFAULT 'open'"), ("desk_note", "TEXT"), ("draft", "TEXT"),
-                                         ("draft_at", "TEXT"), ("sent_at", "TEXT"), ("body_zh", "TEXT"), ("draft_zh", "TEXT"))),
+                                         ("draft_at", "TEXT"), ("sent_at", "TEXT"), ("body_zh", "TEXT"), ("draft_zh", "TEXT"),
+                                         ("ethan_draft", "TEXT"))),  # 小伴 起草的原稿：她改了再发，runlog 记成“自己改了”（skill 迭代用，11-05）
                         ("visitor_messages", (("desk_state", "TEXT NOT NULL DEFAULT 'open'"), ("desk_note", "TEXT"), ("handed_at", "TEXT"),
                                               ("body_zh", "TEXT")))):
         have = {r[1] for r in db.conn.execute(f"PRAGMA table_info({table})")}
@@ -57,57 +55,171 @@ def sender_addr(sender: str) -> str:
     return (parseaddr(sender or "")[1] or sender or "").lower()
 
 
-# ---------- 列表 ----------
-def items(db) -> list:
-    """收件台里还没处理完的，新的在前。今天发出去的回复也留着（她可能还要记个待办跟进），点“收起”或过了今天才走。"""
+# ---------- “等你处理”：唯一判断（docs/design/mail-desk.md，6） ----------
+# 决定 6：主页留言里“主页助手 能回 / 不用回”的不算红点；小伴 正在起草的算“等你”。
+# 红点、首页按钮、页面标签、傍晚汇总、巡检都从这里取，别处不再自己写 desk_state 条件（tests/test_desk_rules.py 守着）。
+WAIT = (
+    "hidden",       # 不上收件台：还没分好类、不要她看的邮件、不是要回的留言档、超过 7 天的“知道一下”
+    "done",         # 处理完了：不用管、收起、发出去且不是今天
+    "todo",         # 记成待办了（之后在待办里跟）
+    "handed",       # 留言交给 主页助手 起草、第一稿还没回来
+    "sending",      # 正在发
+    "sent_today",   # 今天发出去的
+    "drafting",     # 小伴 正在起草
+    "draft_ready",  # 草稿好了，等她看、点发送
+    "needs_her",    # 要她亲自看 / 回
+    "can_skip",     # 主页留言“主页助手能回或不用回”
+    "fyi",          # 邮件“知道一下”
+)
+LABEL = {"needs_her": "等你看", "drafting": "小伴 在起草", "draft_ready": "草稿好了", "can_skip": "主页助手能回或不用回",
+         "fyi": "知道一下", "sending": "正在发", "sent_today": "今天发了", "todo": "记成待办了", "handed": "主页助手 在起草"}
+# 每个地方自己的特殊规则：有名字、有原因
+RULES = {
+    "drafting_waits": "小伴 正在起草的也算“等你”：草稿出来就要你看（6）",
+    "site_skip_no_badge": "主页留言里“主页助手能回或不用回”的列出来，但不算红点（6），和邮件“知道一下”一样",
+    "handed_hidden": "留言交给 主页助手、第一稿还没回来的先不给她看，等“留言 + 草稿”齐了",
+    "sent_today_stays": "今天发出去的留到今天结束，能再记个待办跟进；“今天”按她的时区（clock）",
+    "fyi_7days": "邮件“知道一下”只列最近 7 天的",
+    "digest_task_open": "傍晚汇总：关联的待办勾掉了就不再说（交行账单）；记成待办还没勾的照样说",
+    "digest_site_skip": "傍晚汇总带一句主页上“N 条不用她回”（只说一声，不算要她处理）",
+    "digest_once": "傍晚汇总只说还没汇报过的（digested = 0）",
+}
+_BADGE = {"needs_her", "drafting", "draft_ready"}
+VIEWS = {
+    "badge":     {"states": _BADGE, "rules": ("drafting_waits", "site_skip_no_badge", "handed_hidden")},  # 首页按钮红点、页面两个标签上的数
+    "list":      {"states": _BADGE | {"can_skip", "fyi", "sending", "sent_today"}, "rules": ("handed_hidden", "sent_today_stays", "fyi_7days")},
+    "digest":    {"states": _BADGE | {"todo", "handed", "can_skip"}, "rules": ("digest_task_open", "digest_site_skip", "digest_once")},
+    "invariant": {"states": _BADGE, "rules": ()},  # 巡检：红点数 = 列表里标着“等你”的条数
+}
+FYI_DAYS = 7
+KINDS = {"mail": "mail_items", "visitor": "visitor_messages", "out": "outbox"}
+# desk_state 这一列允许的值（状态图，transitions.STATES 里也登记了，巡检报不认识的）
+DESK_STATES = {"mail": "mail_desk", "visitor": "visitor_desk", "out": "outbox_desk"}  # 对应 transitions.STATES 里的哪张状态图
+
+
+def _g(row, key):
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return None
+
+
+def _parse(ts):
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00").replace(" ", "T"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)  # 存的时间戳约定是 UTC
+
+
+def state_of(kind: str, row, now: datetime = None) -> str:
+    """一条邮件 / 留言 / 小伴 起草的新邮件在收件台里“现在”是什么情况（WAIT 里的一个）。“今天”按她的时区。"""
+    now = now or clock.utc_now()
+    ds = _g(row, "desk_state") or ("draft" if kind == "out" else "open")
+
+    def sent():
+        at = _parse(_g(row, "sent_at"))
+        return "sent_today" if at and at.astimezone(clock.her_tz()).date() == clock.her_today(now=now) else "done"
+
+    if kind == "out":
+        return {"draft": "draft_ready", "drafting": "drafting"}.get(ds) or (sent() if ds == "sent" else "done")
+    if kind == "mail":
+        if _g(row, "status") != "done":
+            return "hidden"
+        if not _g(row, "attention"):
+            at = _parse(_g(row, "created_at"))
+            fresh = at is not None and now - at <= timedelta(days=FYI_DAYS)
+            return "fyi" if _g(row, "fyi") and fresh and ds not in ("ignored", "todo", "closed") else "hidden"
+    elif kind == "visitor":
+        if _g(row, "tier") not in ("reply", "fyi"):
+            return "hidden"
+        if ds == "handed":
+            return "draft_ready" if _g(row, "draft") else "handed"
+    else:
+        raise ValueError("kind 只能是 mail、visitor 或 out")
+    if ds in ("ignored", "closed"):
+        return "done"
+    if ds == "sent":
+        return sent()
+    if ds in ("todo", "sending", "drafting"):
+        return ds
+    if ds == "draft":
+        return "draft_ready"
+    return "can_skip" if kind == "visitor" and _g(row, "tier") == "fyi" else "needs_her"  # open（不认识的值也当要她看，巡检会报）
+
+
+def rows(db, view: str, kind: str = None, now: datetime = None) -> list:
+    """视图唯一的取数口：返回原表的行（dict），带 kind 和 wait（state_of 的结果）。新的在前。"""
     ensure(db)
+    now = now or clock.utc_now()
+    want = VIEWS[view]["states"]
+    cut = (now - timedelta(days=2)).isoformat(timespec="seconds")  # 只取候选：发出去两天以上的、收起来的不用再看
+    cand = {
+        "mail": ("SELECT * FROM mail_items WHERE status = 'done' AND (attention = 1 OR fyi = 1) AND "
+                 "(desk_state NOT IN ('ignored', 'closed', 'sent', 'todo') OR (desk_state = 'sent' AND sent_at >= ?) "
+                 "OR (desk_state = 'todo' AND digested = 0)) ORDER BY id DESC LIMIT 400", (cut,)),
+        "visitor": ("SELECT * FROM visitor_messages WHERE tier IN ('reply', 'fyi') AND (desk_state NOT IN ('ignored', 'sent', 'todo') "
+                    "OR (desk_state = 'sent' AND sent_at >= ?) OR (desk_state = 'todo' AND digested = 0)) ORDER BY id DESC LIMIT 400", (cut,)),
+        "out": ("SELECT * FROM outbox WHERE desk_state != 'sent' OR sent_at >= ? ORDER BY id DESC LIMIT 100", (cut,)),
+    }
     out = []
-    for r in db.conn.execute("SELECT * FROM mail_items WHERE status = 'done' AND attention = 1 AND (desk_state NOT IN ('sent', 'ignored', 'todo', 'closed') "
-                             "OR (desk_state = 'sent' AND date(sent_at) = date('now'))) ORDER BY id DESC LIMIT 60"):
-        text = (r["body"] or "")[:1500]
-        out.append({"kind": "mail", "id": r["id"], "who": parseaddr(r["sender"] or "")[0] or sender_addr(r["sender"]),
-                    "title": r["subject"], "why": r["reason"], "text": text, "zh": r["body_zh"], "is_zh": not text or has_cjk(text), "at": r["received_at"],
-                    "account": r["account"], "via": r["via"], "state": r["desk_state"], "note": r["desk_note"], "draft": r["draft"],
-                    "draft_zh": r["draft_zh"], "draft_is_zh": has_cjk(r["draft"] or ""), "sent_at": r["sent_at"], "task_id": r["task_id"]})
-    try:  # “知道一下”（她 11-04 同意）：和她在办的大事有关、不用她做什么的，最近 7 天的；不算待处理，点“不用管”就收起
-        rows = db.conn.execute("SELECT * FROM mail_items WHERE status = 'done' AND attention = 0 AND fyi = 1 "
-                               "AND COALESCE(desk_state, 'open') NOT IN ('ignored', 'todo', 'closed') AND created_at >= datetime('now', '-7 days') "
-                               "ORDER BY id DESC LIMIT 30").fetchall()
-    except Exception:
-        rows = []
-    for r in rows:
-        text = (r["body"] or "")[:1500]
-        out.append({"kind": "mail", "id": r["id"], "who": parseaddr(r["sender"] or "")[0] or sender_addr(r["sender"]),
-                    "title": r["subject"], "why": "知道一下：" + (r["reason"] or ""), "text": text, "zh": r["body_zh"],
-                    "is_zh": not text or has_cjk(text), "at": r["received_at"], "account": r["account"], "via": r["via"],
-                    "state": "fyi", "note": r["desk_note"], "draft": None, "draft_zh": None, "draft_is_zh": False, "sent_at": None,
-                    "task_id": r["task_id"], "fyi": True})
-    for r in db.conn.execute("SELECT * FROM visitor_messages WHERE tier IN ('reply', 'fyi') AND (desk_state NOT IN ('ignored', 'todo', 'sent') "
-                             "OR (desk_state = 'sent' AND date(sent_at) = date('now'))) ORDER BY id DESC LIMIT 60"):
-        if r["desk_state"] == "handed" and not r["draft"]:  # Dais第一稿还没写好：等“留言+草稿”齐了再给她看（2026-10-31 她定）
-            continue
-        out.append({"kind": "visitor", "id": r["id"], "who": r["name"] or "访客", "title": r["summary"] or r["message"][:30],
-                    "why": "要你本人回" if r["tier"] == "reply" else "Dais能回或不用回", "text": r["message"], "zh": r["body_zh"],
-                    "is_zh": has_cjk(r["message"]), "at": r["received_at"], "email": r["email"], "contact": r["contact"],
-                    "can_reply": publicsite.can_reply(r), "channel": r["reply_channel"], "error": r["reply_error"],
-                    "state": r["desk_state"], "note": r["desk_note"], "draft": r["draft"], "draft_zh": r["draft_zh"],
-                    "draft_is_zh": has_cjk(r["draft"] or ""), "sent_at": r["sent_at"], "task_id": r["task_id"],
-                    "via_agent": r["via_agent"]})
-    for r in db.conn.execute("SELECT * FROM outbox WHERE desk_state IN ('draft', 'drafting') OR (desk_state = 'sent' AND date(sent_at) = date('now')) "
-                             "ORDER BY id DESC LIMIT 30"):
-        out.append({"kind": "out", "id": r["id"], "who": f"写给 {r['to_addr']}", "title": r["subject"], "why": "小伴 起草的新邮件，你看过选邮箱点发送才发",
-                    "text": "", "zh": None, "is_zh": True, "at": r["created_at"], "state": r["desk_state"], "note": r["desk_note"],
-                    "draft": r["draft"], "draft_zh": r["draft_zh"], "draft_is_zh": has_cjk(r["draft"] or ""), "sent_at": r["sent_at"],
-                    "task_id": r["task_id"], "to": r["to_addr"], "account": r["account"], "error": r["error"]})
-    # 草稿写好的在最前，其次要她本人处理的，“Dais能回”的放最后，今天已发出的垫底；同一档里新的在前
-    rank = lambda x: (0 if x["state"] == "draft" else 3 if x["state"] in ("sent", "sending") else 2 if x["why"] == "Dais能回或不用回" else 1)
+    for k in ([kind] if kind else KINDS):
+        sql, args = cand[k]
+        for r in db.conn.execute(sql, args):
+            st = state_of(k, r, now)
+            if st in want:
+                out.append({**dict(r), "kind": k, "wait": st})
+    if view == "digest":  # digest_once、digest_task_open
+        out = [x for x in out if not x.get("digested")]
+        tids = [x["task_id"] for x in out if x.get("task_id")]
+        done = {r[0] for r in db.conn.execute(f"SELECT id FROM tasks WHERE done = 1 AND id IN ({','.join('?' * len(tids)) or 'NULL'})", tids)}
+        out = [x for x in out if x.get("task_id") not in done]
+    return out
+
+
+def waiting(state: str) -> bool:
+    """算不算“等你处理”（红点、标签上的数）。"""
+    return state in VIEWS["badge"]["states"]
+
+
+# ---------- 列表 ----------
+def items(db, now: datetime = None) -> list:
+    """收件台里还没处理完的（VIEWS["list"]），新的在前。今天发出去的回复也留着（她可能还要记个待办跟进），点“收起”或过了今天才走。"""
+    out = []
+    for r in rows(db, "list", now=now):
+        k, st = r["kind"], r["wait"]
+        base = {"kind": k, "id": r["id"], "state": "fyi" if st == "fyi" else r["desk_state"], "wait": st, "waiting": waiting(st),
+                "note": r["desk_note"], "task_id": r["task_id"], "sent_at": r.get("sent_at")}
+        if k == "mail":
+            text = (r["body"] or "")[:1500]
+            fyi = st == "fyi"
+            out.append({**base, "who": parseaddr(r["sender"] or "")[0] or sender_addr(r["sender"]), "title": r["subject"],
+                        "why": "知道一下：" + (r["reason"] or "") if fyi else r["reason"], "text": text, "zh": r["body_zh"],
+                        "is_zh": not text or has_cjk(text), "at": r["received_at"], "account": r["account"], "via": r["via"],
+                        "draft": None if fyi else r["draft"], "draft_zh": None if fyi else r["draft_zh"],
+                        "draft_is_zh": False if fyi else has_cjk(r["draft"] or ""), **({"fyi": True, "sent_at": None} if fyi else {})})
+        elif k == "visitor":
+            out.append({**base, "who": r["name"] or "访客", "title": r["summary"] or r["message"][:30],
+                        "why": "要你本人回" if r["tier"] == "reply" else LABEL["can_skip"], "text": r["message"], "zh": r["body_zh"],
+                        "is_zh": has_cjk(r["message"]), "at": r["received_at"], "email": r["email"], "contact": r["contact"],
+                        "can_reply": publicsite.can_reply(r), "channel": r["reply_channel"], "error": r["reply_error"],
+                        "draft": r["draft"], "draft_zh": r["draft_zh"], "draft_is_zh": has_cjk(r["draft"] or ""), "via_agent": r["via_agent"]})
+        else:
+            out.append({**base, "who": f"写给 {r['to_addr']}", "title": r["subject"], "why": "小伴 起草的新邮件，你看过选邮箱点发送才发",
+                        "text": "", "zh": None, "is_zh": True, "at": r["created_at"], "draft": r["draft"], "draft_zh": r["draft_zh"],
+                        "draft_is_zh": has_cjk(r["draft"] or ""), "to": r["to_addr"], "account": r["account"], "error": r["error"]})
+    # 草稿写好的在最前，其次要她本人处理的，“主页助手能回”和“知道一下”放后面，今天已发出的垫底；同一档里新的在前
+    rank = {"draft_ready": 0, "needs_her": 1, "drafting": 1, "can_skip": 2, "fyi": 2, "sending": 3, "sent_today": 3}
     out.sort(key=lambda x: x["at"] or "", reverse=True)
-    return sorted(out, key=rank)
+    return sorted(out, key=lambda x: rank.get(x["wait"], 1))
 
 
 def count(db) -> int:
+    """首页“邮件和留言”按钮上的红点（VIEWS["badge"]）。"""
     try:
-        return sum(1 for x in items(db) if x["state"] in ("open", "draft"))
+        return len(rows(db, "badge"))
     except Exception:
         return 0
 
@@ -188,12 +300,12 @@ def ignore(db, kind, rid, note: str = "") -> dict:
 
 
 def ask_draft(db, kind, rid, note: str = "", kick=None) -> dict:
-    """邮件：后台让 小伴 起草；留言：记成给Dais的回复请求。"""
+    """邮件：后台让 小伴 起草；留言：记成给主页助手的回复请求。"""
     ensure(db)
     r = _row(db, kind, rid)
-    if kind == "visitor":  # Dais起草（主页中转来拉，publicsite.py），她在这里看过、点发送才发
+    if kind == "visitor":  # 主页助手起草（主页中转来拉，publicsite.py），她在这里看过、点发送才发
         return publicsite.request_reply(db, rid, note)
-    if kind == "out":  # 新邮件按她的交代重写（她 2026-10-31：“新邮件应该也有让我写交代去改的地方”）
+    if kind == "out":  # 新邮件按她的交代重写
         db.conn.execute("UPDATE outbox SET desk_state = 'drafting', desk_note = ? WHERE id = ?", (note or None, int(rid)))
         db.conn.commit()
         if kick:
@@ -246,19 +358,19 @@ def write_draft(store, router, rid: int) -> str:
     text = reply.text.strip()
     llm.log(db, "mail_reply", version, reply, f"mail:{rid}", text, bool(text), [] if text else ["空"], 1, datetime.now().timestamp())
     zh = None
-    if text and not has_cjk(text):  # 她默认看中文版（2026-10-30），一起译好
+    if text and not has_cjk(text):  # 她默认看中文版，一起译好
         try:
             zh = _zh(router, text)
         except Exception:
             zh = None
-    db.conn.execute("UPDATE mail_items SET draft = ?, draft_zh = ?, draft_at = ?, desk_state = ? WHERE id = ?",
-                    (text, zh, _now(), "draft" if text else "open", rid))
+    db.conn.execute("UPDATE mail_items SET draft = ?, draft_zh = ?, draft_at = ?, desk_state = ?, ethan_draft = ? WHERE id = ?",
+                    (text, zh, _now(), "draft" if text else "open", text or None, rid))
     db.conn.commit()
     return text
 
 
 def _mail_how(db) -> str:
-    """怎么写（2026-11-05）：她批准了“替你回邮件” skill 就按它（通用方法 + 当场重新查的她的做法和授权）；
+    """怎么写：她批准了“替你回邮件” skill 就按它（通用方法 + 当场重新查的她的做法和授权）；
     没批准就只带她确认过的写作规范。草稿都不注入。"""
     try:
         from . import skills, style
@@ -290,13 +402,9 @@ def _mail_questions(db, r) -> str:
     return "\n".join(parts)
 
 
-def kick_draft(root, rid: int, spawn=subprocess.Popen) -> bool:
-    try:
-        spawn([sys.executable, "-m", "ethan.desk", "--data", str(root), "--draft", str(int(rid))],
-              cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except OSError:
-        return False
+def kick_draft(root, rid: int, spawn=None) -> bool:
+    from .bgwork import kick
+    return bool(kick(root, "desk-draft", ["--draft", int(rid)], spawn))
 
 
 TRANSLATE = ("把下面的文字翻译成自然、通顺的简体中文，给 Mia 看懂意思用。保留人名、地名、专有名词和数字；"
@@ -360,7 +468,7 @@ def strip_outbox(text: str) -> str:
 def _smtp(acc: dict, to: str, subject: str, text: str, reply_to: str = None, smtp_factory=None):
     host, port = SMTP[acc["host"]]
     msg = EmailMessage()
-    msg["From"] = formataddr(("Mia Chen", acc["user"]))
+    msg["From"] = formataddr(("Mia Lin", acc["user"]))
     msg["To"] = to
     msg["Subject"] = subject
     if reply_to:

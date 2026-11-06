@@ -91,7 +91,7 @@ if __name__ == "__main__":
 
 class AgentReportTest(SessionHookTest):
     def test_any_agent_can_report_and_codex_notify_installs(self):
-        """2026-10-29：所有 agent 都汇总到团队页——Codex 等自己报到，和 Claude 钩子并排显示。"""
+        """所有 agent 都汇总到团队页——Codex 等自己报到，和 Claude 钩子并排显示。"""
         body = json.dumps({"agent": "codex", "id": "th1", "project": "DemoApp", "title": "修登录页", "state": "working", "where": "mac"}).encode()
         self.assertEqual(self.inbox.handle("/cloud/agent/report", {"Authorization": "Bearer h"}, body, T0)[0], 401)  # 只认云端钥匙
         code, got = self.inbox.handle("/cloud/agent/report", {"Authorization": "Bearer c"}, body, T0)
@@ -114,7 +114,7 @@ class AgentReportTest(SessionHookTest):
 
 class CodexChainTest(unittest.TestCase):
     def test_existing_notify_is_kept_and_chained(self):
-        """她 Mac 上 Codex 原来就有 notify（2026-10-29）：换成我们的，原来的存下来接着调。"""
+        """她 Mac 上 Codex 原来就有 notify：换成我们的，原来的存下来接着调。"""
         with tempfile.TemporaryDirectory() as d:
             home = Path(d)
             (home / ".codex").mkdir()
@@ -131,7 +131,7 @@ class CodexChainTest(unittest.TestCase):
 
 class CodexSpoolTest(unittest.TestCase):
     def test_sandboxed_report_is_spooled_and_flushed_later(self):
-        """Codex 桌面 App 的沙箱不让报到脚本联网：存进 spool，Mac 上的工作时长小程序替它发（2026-10-29）。"""
+        """Codex 桌面 App 的沙箱不让报到脚本联网：存进 spool，Mac 上的工作时长小程序替它发。"""
         from ethan import worktime
         with tempfile.TemporaryDirectory() as d:
             spool = Path(d) / "ethan_spool.jsonl"
@@ -156,7 +156,7 @@ class CodexSpoolTest(unittest.TestCase):
 
 class CodexWatchTest(unittest.TestCase):
     def test_live_state_from_rollout_files(self):
-        """Codex 实时报到（2026-10-29）：从会话记录看出在干还是做完了，状态变了才报，旧服务器的标旧服务器。"""
+        """Codex 实时报到：从会话记录看出在干还是做完了，状态变了才报，旧服务器的标旧服务器。"""
         import time as _t
         from ethan import codex_watch
         with tempfile.TemporaryDirectory() as d:

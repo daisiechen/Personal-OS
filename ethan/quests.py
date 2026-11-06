@@ -1,15 +1,15 @@
-"""任务系统（2026-10-26 晚 Mia 定：按游戏任务系统做，攒积分兑换 小伴 的惊喜）。
+"""任务系统（晚 Mia 定：按游戏任务系统做，攒积分兑换 小伴 的惊喜）。
 
 任务四类（她的部分；小伴 替她准备的事不算她的积分）：
   主线：每个目标完整拆成的步骤（一个目标一章），按大小 小/中/大 = 40/100/200 分，阶段节点再 +300；
-        “硬骨头”（最难开始的事）×1.5（2026-10-27 评审后翻倍，见 docs/design/game-review.md）。
+        “硬骨头”（最难开始的事）×1.5（评审后翻倍，见 docs/design/game-review.md）。
         第一次拆解是草稿，小伴 发她过目，她说定稿才算正式（草稿也能做、照样给分）。
   支线：其他随手的待办，每件 20 分。
   日常：每天坚持的事，每项 10 分；做简单版也算打卡、不断连续，拿一半分。当天该做的全部打卡“满勤” +20。
         每周可开 1 天休整日：那天做到 2 项日常就算满勤。
   周常：每周一次的事（新体验、周日复盘），完成 +50。
 连续奖励：满勤连续 7 天 +50、30 天 +300（每满一次给一次）。每周 1 张补签卡，漏一天不断连续。不扣分。
-做完一件事同时得经验和积分，数一样（2026-10-29 她要两个名字分清）：经验只涨不减，用来升级，等级不封顶；积分用来兑换，兑换会花掉。打卡和完成都能撤销，撤销时把这次给的分收回。兑换走 Telegram 按钮，不靠聊天推断，避免误扣。
+做完一件事同时得经验和积分，数一样（两个名字分清）：经验只涨不减，用来升级，等级不封顶；积分用来兑换，兑换会花掉。打卡和完成都能撤销，撤销时把这次给的分收回。兑换走 Telegram 按钮，不靠聊天推断，避免误扣。
 参考：Habitica 的日常 / 待办 / 奖励商店；关于连续打卡的研究——可见、可原谅（补签）、中断不清空进度。
 """
 
@@ -28,7 +28,7 @@ FULL_DAY_BONUS = 20
 STREAK_BONUS = {7: 50, 30: 300}
 FREEZES_PER_WEEK = 1
 
-# 2026-10-26 她确认的 7 项坚持。auto：系统接入的数据自动打卡（2026-10-29 她定：只有系统接入的才自动，
+# 的 7 项坚持。auto：系统接入的数据自动打卡（只有系统接入的才自动，
 # 现在是“每天出门”按 iPhone 定位、“英语陪练”按 Grok 回报；训练和称体重是她跟 小伴 说的，只记数、她自己打卡）
 DEFAULT_HABITS = [
     ("训练", "daily", 1, "0,1,2,3,4", 10, None),
@@ -42,7 +42,7 @@ DEFAULT_HABITS = [
 # 档位和积分她已确认；具体惊喜由 小伴 每次自己策划（下面只是方向，不是固定菜单）
 SURPRISE_NOTE = "小伴 自己策划，兑换后才揭晓"
 DEFAULT_REWARDS = [
-    ("小", 2500, "小惊喜", SURPRISE_NOTE),  # 2026-10-31 她定：小的约一周一个、中的约一个月、大的约一个季度
+    ("小", 2500, "小惊喜", SURPRISE_NOTE),  # 小的约一周一个、中的约一个月、大的约一个季度
     ("中", 10000, "中惊喜", SURPRISE_NOTE),
     ("大", 30000, "大惊喜", SURPRISE_NOTE),
 ]
@@ -61,7 +61,7 @@ def seed(db):
                         "VALUES (?, ?, ?, ?, ?, ?, ?)", (title, cadence, target, weekdays, pts, auto, n))
     if not db.conn.execute("SELECT 1 FROM rewards").fetchone():
         db.conn.executemany("INSERT INTO rewards (tier, cost, title, note) VALUES (?, ?, ?, ?)", DEFAULT_REWARDS)
-    db.conn.execute("UPDATE rewards SET note = ? WHERE note LIKE '小伴 自己策划：比如%'", (SURPRISE_NOTE,))  # 2026-10-27 她说举例就不算惊喜了
+    db.conn.execute("UPDATE rewards SET note = ? WHERE note LIKE '小伴 自己策划：比如%'", (SURPRISE_NOTE,))  # 举例就不算惊喜了
     db.conn.commit()
 
 
@@ -78,7 +78,7 @@ def _awarded(db, ref: str) -> bool:
 
 # 主线 / 支线
 def task_points(task: dict) -> int:
-    if task.get("source_type") == "email":  # 邮件里自动生成的检查、确认类杂事不计分（2026-10-31 她定：系统替她记的，不算进展）
+    if task.get("source_type") == "email":  # 邮件里自动生成的检查、确认类杂事不计分（系统替她记的，不算进展）
         return 0
     if task.get("quest") == "main":
         pts = SIZE_POINTS.get(task.get("size") or "M", 100) + (MILESTONE_BONUS if task.get("milestone") else 0)
@@ -87,7 +87,7 @@ def task_points(task: dict) -> int:
     return int(pts * HARD_FACTOR) if task.get("hard") else pts
 
 
-# 跟着日常走的任务显示进度（2026-10-29 她说“连续一周称体重”后面要有几分之几，打一次加一次）；只显示，勾不勾她自己定
+# 跟着日常走的任务显示进度（“连续一周称体重”后面要有几分之几，打一次加一次）；只显示，勾不勾她自己定
 STREAK_TASK = re.compile(r"^连续一周(.+)$")
 WEEKS_TASK = re.compile(r"连续\s*(\d+)\s*周每周(?:练满|训练)\s*(\d+)\s*次")
 
@@ -185,41 +185,18 @@ def approve_breakdown(db, goal_id: int) -> int:
     return cur.rowcount
 
 
-def main_quests(db, with_agent_goals: bool = False) -> dict:
+def main_quests(db, with_agent_goals: bool = False, day: date = None) -> dict:
     """with_agent_goals：交给 agent 的副本（DemoApp、个人品牌这类）也算上，工作台看副本详情用；计划器不排它们。
-    {目标编号: [主线任务…]}，副本按她排的顺序，步骤按 seq，含已完成的（显示进度用）。
-    只算进行中的副本：暂停、放弃的不出现（2026-10-29 她说暂停的写出来引人疑惑，候选放 docs/design/boss-pool.md）。"""
-    from . import stages
-    stages.ensure(db)
-    now_ms = {r[0] for r in db.conn.execute("SELECT MIN(id) FROM milestones m WHERE status = 'open' AND seq = "
-                                            "(SELECT MIN(seq) FROM milestones x WHERE x.goal_id = m.goal_id AND x.status = 'open') GROUP BY goal_id")}
-    out = {}
-    for r in db.conn.execute("SELECT t.* FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.quest = 'main' "
-                             "AND COALESCE(g.status, 'active') = 'active' " + ("" if with_agent_goals else "AND g.handled_by IS NULL ") +
-                             "ORDER BY g.sort IS NULL, g.sort, t.goal_id, t.seq, t.id"):
-        d = dict(r)
-        if d.get("milestone_id") and d["milestone_id"] not in now_ms:  # 新结构：只看当前里程碑的阶段任务
-            continue
-        if d.get("habit_id") and not with_agent_goals:  # 引用日常周常的步骤在那边打卡，计划和今天的任务里不再重复出现（她 2026-11-01）
-            continue
-        out.setdefault(r["goal_id"], []).append(d)
-    return out
+    {目标编号: [主线任务…]}，副本按她排的顺序，步骤按 seq，含已完成的（显示进度用）。只算进行中的副本；
+    新结构只看当前里程碑；她说算了的不列。规矩都在 ethan/taskrules.py（quest_steps），这里只是老名字。"""
+    from . import taskrules
+    return taskrules.quest_steps(db, day, with_agent_goals)
 
 
-def side_quests(db) -> list:
-    """赛季副本之外的事。暂停副本下的不列；截止日还在 30 天以后的先不列，到时候再出来（她 2026-11-01：约年度体检是明年的事）。"""
-    return [dict(r) for r in db.conn.execute(
-        "SELECT t.* FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
-        "AND COALESCE(t.quest, 'side') != 'main' AND COALESCE(g.status, 'active') NOT IN ('dropped', 'paused') "
-        "AND (t.due IS NULL OR t.due <= date('now', '+30 day')) "
-        "ORDER BY t.sort IS NULL, t.sort, t.due IS NULL, t.due, t.id")]
-
-
-def later_quests(db) -> list:
-    """暂停副本下没做完的待办：副本只影响优先级，不影响要不要做（2026-10-29 她定），放在支线后面，想做随时做。"""
-    return [dict(r) for r in db.conn.execute(
-        "SELECT t.*, g.title AS goal FROM tasks t JOIN goals g ON g.id = t.goal_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
-        "AND t.quest = 'main' AND g.status = 'paused' ORDER BY g.sort IS NULL, g.sort, t.goal_id, t.seq, t.id")]
+def side_quests(db, day: date = None) -> list:
+    """“其他”：taskrules 的 other 视图（不在今日任务里、30 天内、没在等、没推到明天、她没说算了，统一）。"""
+    from . import taskrules
+    return taskrules.rows(db, "other", day)
 
 
 # 日常 / 周常
@@ -327,7 +304,7 @@ def check_habit(db, habit_id: int, day: date, easy: bool = False) -> int:
                 db.conn.commit()
     elif week_count(db, habit_id, day) == h["target"] and not _awarded(db, f"week:{habit_id}:{_week_start(day)}"):
         gained += award(db, h["points"], f"周常：{h['title']}", day, f"week:{habit_id}:{_week_start(day)}")
-    elif week_count(db, habit_id, day) > h["target"]:  # 超额完成：每多一次 +20（2026-10-27 她问能不能多做几次）
+    elif week_count(db, habit_id, day) > h["target"]:  # 超额完成：每多一次 +20（能不能多做几次）
         gained += award(db, SIDE_POINTS, f"周常超额：{h['title']}", day, f"habitx:{habit_id}:{day}")
     return gained
 
@@ -396,7 +373,7 @@ def totals(db) -> dict:
             "next_level_at": need}
 
 
-# 升级规则（2026-10-31 她定：“级别越高升级越慢”）：从 L 级升到 L+1 级要 L × 500 分；
+# 升级规则：从 L 级升到 L+1 级要 L × 500 分；
 # 她已经到了的 Lv.5 不降：切换那一刻的累计分和等级记在 game_meta（migrations/20261031_game_pace.py），之后按新规则往上走
 LEVEL_STEP = 500
 META = "CREATE TABLE IF NOT EXISTS game_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -427,7 +404,7 @@ def level_for(earned: int, cut: dict = None) -> tuple:
     return level, start + LEVEL_STEP * level
 
 
-# 商店里每档下面那句话：隐晦地描一描这档惊喜，按天换一句（2026-10-29 她嫌“小伴 自己策划…”那句没意思）
+# 商店里每档下面那句话：隐晦地描一描这档惊喜，按天换一句（“小伴 自己策划…”那句没意思）
 TEASERS = {
     "小": ["可能是一句话，也可能是一样小东西", "拆开当天就会发生", "甜度刚好，不占你的时间", "会在某个不经意的时候冒出来"],
     "中": ["得给自己空出一点时间", "小伴 要先偷偷准备几天", "可能要出门，也可能不用", "比你想的多一点心思"],

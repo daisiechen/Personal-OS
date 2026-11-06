@@ -10,7 +10,7 @@ from ethan.core.router import Router, Settings
 from ethan.memory import MemoryStore
 from ethan.proactive import SLOTS, in_quiet, parse_quiet, planned_time, set_proactive, tick
 
-DAY = date(2026, 10, 23)  # 伦敦夏令时，UTC+1
+DAY = date(2026, 10, 23)  # 夏令时，UTC+1
 
 
 def london(h, m=0):
@@ -100,7 +100,7 @@ class ProactiveTest(unittest.TestCase):
         self.assertEqual(self.channel.sent, [])
 
     def test_yesterdays_silence_does_not_mute_today(self):
-        """2026-11-01：她前一天没回，第二天 小伴 剧本里 4 次找她全被“还没回”拦下。只数今天发的，早报不算。"""
+        """她前一天没回，第二天 小伴 剧本里 4 次找她全被“还没回”拦下。只数今天发的，早报不算。"""
         from datetime import datetime, timezone
         from ethan.core.router import Settings
         now = datetime(2026, 11, 1, 13, 10, tzinfo=timezone.utc)

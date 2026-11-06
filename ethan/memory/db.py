@@ -1,6 +1,6 @@
 """结构化记忆：目标树、任务、进度日志、学习条目、人物卡、心愿清单。
 
-目标树是一条链（2026-10-26 Mia 定）：她先定 80 岁时的样子，再倒推每一年，把每年拆到各方面。
+目标树是一条链：她先定 80 岁时的样子，再倒推每一年，把每年拆到各方面。
   vision 80 岁画像 → long 画像的各个方面 → year 今年的目标 → stage 阶段目标 → tasks 表里的每日待办
 """
 
@@ -232,7 +232,7 @@ class StructuredDB:
         from .. import retire
         retire.watch(self.conn, path)  # ontology-plan 3.4：记下还有哪些模块在读旧 facts（只在编译 SQL 时计数）
         # 多个服务同时读写同一个库（Telegram、工作台、定时任务）：开 WAL，写的时候别人照样能读；撞上写锁等 10 秒再报错
-        # （2026-11-02 服务器日志出现过“database is locked”，docs/design/system-rules.md 第 5 节）
+        # （服务器日志出现过“database is locked”，docs/design/system-rules.md 第 5 节）
         self.conn.execute("PRAGMA busy_timeout = 10000")
         if str(path) != ":memory:":
             try:
@@ -247,18 +247,18 @@ class StructuredDB:
         for col, ddl in (("quest", "TEXT"), ("size", "TEXT"), ("milestone", "INTEGER NOT NULL DEFAULT 0"),
                          ("seq", "REAL"), ("draft", "INTEGER NOT NULL DEFAULT 0"),
                          ("hard", "INTEGER NOT NULL DEFAULT 0"), ("star_day", "TEXT"), ("hide_day", "TEXT")):
-            if col not in task_cols:  # 2026-10-26 晚：任务系统（主线 / 支线、大小、阶段节点、拆解草稿）
+            if col not in task_cols:  # 任务系统（主线 / 支线、大小、阶段节点、拆解草稿）
                 self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
         if "easy" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(habit_log)")}:  # 2026-10-27 简单版打卡
             self.conn.execute("ALTER TABLE habit_log ADD COLUMN easy INTEGER NOT NULL DEFAULT 0")
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(plan_items)")}
-        if "task_created" not in cols:  # 2026-10-26 晚：记下哪些待办是计划器自动建的
+        if "task_created" not in cols:  # 记下哪些待办是计划器自动建的
             self.conn.execute("ALTER TABLE plan_items ADD COLUMN task_created INTEGER NOT NULL DEFAULT 0")
             self.conn.commit()
 
     def _migrate(self):
-        """给旧库补列：待办和心愿的手动排序（2026-10-22 加入可交互清单）；
-        目标层级加上 year（2026-10-26），SQLite 改不了 CHECK，只能重建表。"""
+        """给旧库补列：待办和心愿的手动排序（加入可交互清单）；
+        目标层级加上 year，SQLite 改不了 CHECK，只能重建表。"""
         sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name = 'goals'").fetchone()[0]
         if "'year'" not in sql:
             self.conn.commit()
@@ -278,12 +278,12 @@ class StructuredDB:
         if "sort" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(goals)")}:  # 2026-10-28 副本排序（她定先后）
             self.conn.execute("ALTER TABLE goals ADD COLUMN sort REAL")
         if "handled_by" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(goals)")}:
-            # 项目类副本交给对应的 agent（2026-10-31 她定）：步骤不进她的待办和每日计划，副本还留在“世界”里
+            # 项目类副本交给对应的 agent：步骤不进她的待办和每日计划，副本还留在“世界”里
             self.conn.execute("ALTER TABLE goals ADD COLUMN handled_by TEXT")
         self.conn.commit()
 
     def _tasks_autoincrement(self):
-        """待办编号不再重用（2026-11-02 她点头修）：删掉的编号以前会被新待办拿去，翻旧记录对不上（#208 从“测体脂”变成“完成工作台改版”）。
+        """待办编号不再重用（修）：删掉的编号以前会被新待办拿去，翻旧记录对不上（#208 从“测体脂”变成“完成工作台改版”）。
         旧库重建成 AUTOINCREMENT，从现在见过的最大编号往后数（计划、积分里记过的也算）。"""
         sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'tasks'").fetchone()[0]
         if "AUTOINCREMENT" in sql.upper():
@@ -376,7 +376,7 @@ class StructuredDB:
     def goal_chain(self) -> list:
         """没完成、没放弃的目标，按树的顺序排好，给 小伴 看整条链（带编号，记待办和进展时用）。"""
         rows = [dict(r) for r in self.conn.execute(
-            "SELECT * FROM goals WHERE status NOT IN ('done', 'dropped') ORDER BY id")]  # 带上 scope（管哪些事，2026-11-02）
+            "SELECT * FROM goals WHERE status NOT IN ('done', 'dropped') ORDER BY id")]  # 带上 scope（管哪些事）
         alive = {r["id"] for r in rows}
         children = {}
         for r in rows:
@@ -460,7 +460,7 @@ class StructuredDB:
             return None
         plan = dict(r)
         plan["items"] = [dict(i) for i in self.conn.execute(
-            # 待办改过名字的，计划里跟着显示新名字（2026-11-01：冷启动改了名，今天的计划还是旧名字，看着像两条重复）
+            # 待办改过名字的，计划里跟着显示新名字（冷启动改了名，今天的计划还是旧名字，看着像两条重复）
             "SELECT i.*, COALESCE((SELECT title FROM tasks WHERE id = i.task_id), i.title) AS title, "
             "COALESCE((SELECT result FROM item_results WHERE item_id = i.id ORDER BY id DESC LIMIT 1), "
             "CASE WHEN (SELECT done FROM tasks WHERE id = i.task_id) = 1 THEN '完成' END) AS result "
@@ -523,13 +523,13 @@ class StructuredDB:
         ]
 
     def delete_task(self, task_id):
-        """连同准备员的记录一起删（2026-10-28：prep_work 外键挡着，删有准备记录的待办会报错）；中途出错整体退回。"""
+        """连同准备员的记录一起删（prep_work 外键挡着，删有准备记录的待办会报错）；中途出错整体退回。"""
         try:
             self.conn.execute("UPDATE plan_items SET task_id = NULL WHERE task_id = ?", (task_id,))
             if self.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'prep_work'").fetchone():
                 self.conn.execute("DELETE FROM prep_work WHERE task_id = ?", (task_id,))
             row = self.conn.execute("SELECT title, goal_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
-            if row:  # 记下她删了什么，计划器别再排回来（2026-10-28）
+            if row:  # 记下她删了什么，计划器别再排回来
                 self.conn.execute("CREATE TABLE IF NOT EXISTS deleted_tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, "
                                   "goal_id INTEGER, at TEXT NOT NULL)")
                 self.conn.execute("INSERT INTO deleted_tasks (title, goal_id, at) VALUES (?, ?, ?)",
@@ -618,30 +618,6 @@ class StructuredDB:
     def delete_person(self, name):
         self.conn.execute("DELETE FROM people WHERE name = ?", (name,))
         self.conn.commit()
-
-    def people_to_contact(self, today: date) -> list:
-        """超过约定联系间隔的人，以及 7 天内过生日的人（生日格式 MM-DD）。"""
-        result = []
-        for r in self.conn.execute("SELECT * FROM people ORDER BY id"):
-            person = dict(r)
-            reasons = []
-            if person["contact_every_days"] and person["last_contact"]:
-                last = date.fromisoformat(person["last_contact"])
-                if (today - last).days >= person["contact_every_days"]:
-                    reasons.append("long_no_contact")
-            if person["birthday"]:
-                month, day = (int(x) for x in person["birthday"].split("-"))
-                for year in (today.year, today.year + 1):
-                    try:
-                        bday = date(year, month, day)
-                    except ValueError:  # 2 月 29 日在平年按 3 月 1 日算
-                        bday = date(year, 3, 1)
-                    if 0 <= (bday - today).days <= 7:
-                        reasons.append("birthday_soon")
-                        break
-            if reasons:
-                result.append({"name": person["name"], "reasons": reasons})
-        return result
 
     # 心愿清单
     def add_wish(self, quote, context=None) -> int:

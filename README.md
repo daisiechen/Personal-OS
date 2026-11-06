@@ -1,38 +1,83 @@
 # Personal OS · Build your own Earth Online!
 
-把人生当成一场游戏来过：按赛季打副本、守住七块领地、每天做日常攒积分，解锁成就，到商店兑换惊喜。陪你玩的是一个有自己生活的 AI 伙伴，默认叫“小伴”，名字和性格都由你定。它在微信或 Telegram 里陪你聊天、帮你排每天的计划、到点提醒你、替你查资料准备东西。另外有一个网页工作台，你在上面看进度、打卡、拆惊喜。
+English | [简体中文](README.zh-CN.md)
 
-这个仓库是作者给自己做的那一套的公开版，功能完整，只是把她的个人内容换成了示例。
+**Play your life like a game, with an AI companion that remembers you and checks in on its own. Self-hosted: your data never leaves your machine.**
 
-## 怎么装：交给你的 AI
+<!-- First-screen slot: demo screenshot / GIF (workbench home + the morning brief in chat). Put it in docs/media/ and replace the line below. -->
+<p align="center"><em>Demo screenshot / GIF coming soon</em></p>
 
-把这个仓库交给你常用的 AI 编程助手（Claude Code、Codex、Qwen Code、Trae、Cursor 这类能读文件、跑命令的都行），跟它说：
+## One-command install
 
-> 照 SETUP-FOR-AGENTS.md 帮我把它装起来。
+<!-- First-screen slot: replace with a single installer command once there is one -->
+```sh
+git clone https://github.com/your-name/Personal-OS.git && cd Personal-OS
+claude "Follow SETUP-FOR-AGENTS.md and set this up for me"
+```
 
-它会一步步问你几个问题（在哪跑、用哪个模型、用哪个聊天入口、你的 AI 叫什么、这个赛季想完成什么），然后替你装好、改好。有现成的目标表格就直接丢给它，它会按规则拆成副本、日常和待办。
+Not on Claude Code? Open the folder in any coding agent that can read files and run commands (Codex, Qwen Code, Trae, Cursor, ...) and say the same thing.
 
-你需要自己准备的只有两样：
-- 一台一直开着的电脑，或者一台最便宜的云服务器（2 核 2 GB 就够）；
-- 一个模型的钥匙（国内推荐 DeepSeek）。
+## How it compares
 
-## 里面有什么
+<!-- First-screen slot: comparison table -->
+| | Personal OS | Gamified habit apps | AI companion apps | To-do / notes apps |
+|---|---|---|---|---|
+| Self-hosted, you own the data | ✓ | rarely | ✗ | rarely |
+| AI plans your day and reminds you on time | ✓ | ✗ | ✗ | partly (you plan) |
+| Long-term memory, messages you first | ✓ | ✗ | ✓ | ✗ |
+| Seasons, quests, territories, points, achievements | ✓ | ✓ | ✗ | ✗ |
+| Lives in WeChat / Telegram | ✓ | ✗ | partly | ✗ |
+| Open source | ✓ (AGPL-3.0) | some | ✗ | some |
 
-| 部分 | 在哪 |
+## What it is
+
+Personal OS turns your life into a long-running game. Each **season** (about three months) you pick a few **quests** — goals with a deadline and a clear finish line. You guard seven **territories** (health, career, money, social, learning, academic, life experiences) with simple baselines, do **dailies** to earn points, unlock **achievements**, and spend points in the **shop** on surprises.
+
+You play it with **Buddy**, an AI companion with a life of its own. You choose its name and personality. Buddy chats with you on WeChat or Telegram, builds your plan every morning, nudges you when it's time, and does the legwork — research, price checks, drafts — before handing things over. A web **workbench** shows your progress, lets you check things off and open surprises.
+
+This is the public edition of a system the author built for herself and uses every day. It is feature-complete; her personal content has been replaced with examples.
+
+## Set it up: hand it to your agent
+
+Give this repo to the coding agent you already use and say:
+
+> Follow SETUP-FOR-AGENTS.md and set this up for me.
+
+It will ask a handful of questions, one at a time — where to run it, which model, which chat app, what your AI is called, what you want to finish this season — then install and customize everything. If you already keep a goals spreadsheet, hand it over; the agent splits it into quests, dailies and to-dos.
+
+You only need two things:
+- a computer that stays on, or the cheapest cloud server you can find (2 vCPU / 2 GB is plenty);
+- an API key for a model (any OpenAI-compatible API such as DeepSeek, or a Claude subscription via Claude Code).
+
+## Language
+
+The **UI is Chinese-only for now** — the workbench and all chat messages. The docs come in English and Chinese. UI internationalization (i18n) is on the roadmap. Buddy itself replies in whatever language you write to it, but buttons, cards and system messages are still in Chinese.
+
+## What's inside
+
+| Part | Where |
 |---|---|
-| AI 伙伴：人设、记忆、聊天、主动找你 | `ethan/core/`、`persona/` |
-| 游戏系统：赛季、副本、主线、日常、积分、商店、成就 | `ethan/quests.py`、`ethan/achievements.py`、`ethan/territory.py` |
-| 每天排计划、训练和饮食 | `ethan/planner.py`、`playbooks/` |
-| 网页工作台 | `ethan/workbench/` |
-| 微信、Telegram 入口 | `ethan/channels/` |
-| 定时任务和部署 | `deploy/` |
+| The companion: persona, memory, chat, proactive messages | `ethan/core/`, `persona/` |
+| The game: seasons, quests, questlines, dailies, points, shop, achievements | `ethan/quests.py`, `ethan/achievements.py`, `ethan/territory.py` |
+| Daily planning, training and meals | `ethan/planner.py`, `playbooks/` |
+| Web workbench | `ethan/workbench/` |
+| WeChat and Telegram channels | `ethan/channels/` |
+| Scheduled jobs and deployment | `deploy/` |
 
-代码里的 `ethan` 是内部名字，不影响你的 AI 叫什么。
+`ethan` is the internal package name; it has nothing to do with what your AI is called.
 
-## 许可
+Docs: [docs/README.md](docs/README.md). Terms and their Chinese UI names: [docs/glossary.md](docs/glossary.md).
 
-AGPL-3.0（见 LICENSE）：可以自由使用、修改、分发；如果你把改过的版本做成服务给别人用，也要把你的代码公开。
+## Roadmap
 
-## 参与
+- UI i18n, starting with English.
+- A one-line installer script.
+- More play packs: territory templates, personas, achievements, training and meal playbooks.
 
-欢迎在 Issues 里提问题和建议。也欢迎贡献“玩法包”：新的成就、领地模板、人设、训练和饮食手册、惊喜点子。
+## License
+
+AGPL-3.0 (see LICENSE). Use, modify and redistribute freely; if you run a modified version as a service for other people, you must publish your source too.
+
+## Contributing
+
+Questions and ideas are welcome in Issues, in English or Chinese. We especially welcome "play packs": new achievements, territory templates, personas, training and meal playbooks, surprise ideas.

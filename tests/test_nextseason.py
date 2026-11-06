@@ -1,4 +1,4 @@
-"""下个赛季：拆副本草稿、开季、结算（她 2026-11-02：“1-5 先做吧”第 1 件；做法见 docs/design/tasks-and-schedule.md 第 7 节）。"""
+"""下个赛季：拆副本草稿、开季、结算（第 1 件；做法见 docs/design/tasks-and-schedule.md 第 7 节）。"""
 
 import json
 import tempfile

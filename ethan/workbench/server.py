@@ -11,7 +11,7 @@
   GET  /api/relations         “关系”页：该联系、生日、待回复三张清单和人物卡
   GET  /api/brain?tab=new|all|archived|trash&q=&kind=&k=  第二大脑
   POST /api/act               她的操作：{"action": "habit.check", ...}
-  GET  /img/avatar/day|night  两张头像；/img/card/<日期> 今日卡
+  GET  /img/avatar/day|night  两张头像；/img/card/<日期> 昨日卡
 除了页面和登录，其余都要会话令牌（cookie eo_session，或请求头 Authorization: Bearer）。
 
 运行：python3 -m ethan.workbench.server --data <数据目录>（systemd：ethan2-workbench）
@@ -22,8 +22,6 @@ import json
 import mimetypes
 import os
 import re
-import subprocess
-import sys
 import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -164,18 +162,18 @@ class App:
                 return self.json(200, self.wb.territory_page((query.get("k") or [""])[0]))
             except ValueError as e:
                 return self.json(404, {"ok": False, "error": str(e)})
-        if method == "POST" and path == "/api/heartbeat":  # 工作台开着、在前台：算工作时间（ethan/workaholic.py，她 10-31 定）
+        if method == "POST" and path == "/api/heartbeat":  # 工作台开着、在前台：算工作时间（ethan/workaholic.py）
             from .. import workaholic
             return self.json(200, {"ok": True, "saved": workaholic.heartbeat(self.wb.db)})
         if method == "GET" and path == "/api/explore":
             return self.json(200, self.wb.explore_page())
-        if method == "POST" and path == "/api/explore":  # 设置页上传探索地图 xlsx（ethan/explore.py，她 2026-11-01）
+        if method == "POST" and path == "/api/explore":  # 设置页上传探索地图 xlsx（ethan/explore.py）
             from .. import explore
             try:
                 return self.json(200, {"ok": True, "sheets": explore.save(self.root, body)})
             except ValueError as e:
                 return self.json(400, {"ok": False, "error": str(e)})
-        if path == "/api/voice":  # 说一段话转文字（ethan/voice.py，她 2026-11-01：浏览器自带的识别不准）
+        if path == "/api/voice":  # 说一段话转文字（ethan/voice.py，浏览器自带的识别不准）
             from .. import voice
             try:
                 if method == "POST":
@@ -273,10 +271,10 @@ def make_handler(app: App):
 
 
 class CardRunner:
-    """现画今日卡：另起进程跑 python3 -m ethan.cards（要半分钟，不能卡住服务）。"""
+    """现画昨日卡：另起进程跑 python3 -m ethan.cards（要半分钟，不能卡住服务）。"""
 
-    def __init__(self, data: Path, module: str = "ethan.cards", extra=()):
-        self.data, self.proc, self.module, self.extra = Path(data), None, module, list(extra)
+    def __init__(self, data: Path, name: str = "card", extra=()):
+        self.data, self.proc, self.name, self.extra = Path(data), None, name, list(extra)
 
     def busy(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -284,9 +282,22 @@ class CardRunner:
     def __call__(self) -> bool:
         if self.busy():
             return False
-        self.proc = subprocess.Popen([sys.executable, "-m", self.module, "--data", str(self.data), *self.extra],
-                                     cwd=Path(__file__).resolve().parents[2])
-        return True
+        from ..bgwork import kick
+        got = kick(self.data, self.name, self.extra)  # 统一起进程入口（后台任务表 ethan/bgjobs.py）
+        self.proc = got if hasattr(got, "poll") else None
+        return bool(got)
+
+
+class RefreshRunner(CardRunner):
+    """昨天的日记改了：另起进程只重出那天卡上的字（python3 -m ethan.cards --refresh --day …）。"""
+
+    def __call__(self, day) -> bool:
+        if self.busy():
+            return False
+        from ..bgwork import kick
+        got = kick(self.data, "card-refresh", ["--refresh", "--day", day.isoformat()])
+        self.proc = got if hasattr(got, "poll") else None
+        return bool(got)
 
 
 def build(data: Path, env=os.environ) -> App:
@@ -298,9 +309,10 @@ def build(data: Path, env=os.environ) -> App:
     settings = Settings(Path(data) / "settings.json")
     store = MemoryStore(data)
     wb = Workbench(store, settings, calendar=build_calendar(env), places=places(settings), background=True,
-                   card_runner=CardRunner(data), replan_runner=CardRunner(data, "ethan.planner", ["--force"]))
-    wb.redo_runner = CardRunner(data, "ethan.cards", ["--redo"])
-    wb.warm_busy()  # 苹果日历后台读好，首页不等 iCloud（2026-11-02 她说切页面慢）
+                   card_runner=CardRunner(data), replan_runner=CardRunner(data, "replan", ["--force"]))
+    wb.redo_runner = CardRunner(data, "card-redo", ["--redo"])
+    wb.card_refresh = RefreshRunner(data)
+    wb.warm_busy()  # 苹果日历后台读好，首页不等 iCloud（切页面慢）
     from .. import diary
     wb.diary_kick = lambda: diary.kick_backfill(data)
     from .. import season

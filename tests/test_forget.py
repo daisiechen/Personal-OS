@@ -1,4 +1,4 @@
-"""删除防复活（docs/design/ontology.md 7.3 节，2026-11-03）：她删掉的来源，同步、整理、从备份恢复后都不再长回来。"""
+"""删除防复活（docs/design/ontology.md 7.3 节）：她删掉的来源，同步、整理、从备份恢复后都不再长回来。"""
 
 import json
 import tempfile

@@ -142,7 +142,7 @@ class TravelTest(unittest.TestCase):
                          "默认")
 
     def test_depart_time(self):
-        """出发 = 开始 − 路上 − 20 分钟（2026-10-29 她定），按 5 分钟往前取整。"""
+        """出发 = 开始 − 路上 − 20 分钟，按 5 分钟往前取整。"""
         self.assertEqual(depart_at("16:00", 23), "15:15")
         self.assertEqual(depart_at("09:00", 30), "08:10")
 

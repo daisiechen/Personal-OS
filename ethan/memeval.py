@@ -1,4 +1,4 @@
-"""记忆对齐第二步：错题回流、每周一圈、上线闸门、周报（docs/design/memory-alignment.md 第 5 节，她 2026-10-31 同意）。
+"""记忆对齐第二步：错题回流、每周一圈、上线闸门、周报（docs/design/memory-alignment.md 第 5 节）。
 
 1. 每张纠错单按错在哪一层自动变成一道检验题，存在她自己的数据库里（eval_items），不进代码仓库：
    - 没查到 → 查记忆：当时那句话应该查出这条锁定的事实；
@@ -17,7 +17,9 @@ ontology 正式评估（ontology-plan 4.3）：python3 -m ethan.memeval --formal
 
 import argparse
 import json
+import sqlite3
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from .clock import her_today
@@ -138,6 +140,25 @@ def run_item(db, router, item: dict, store=None) -> tuple:
     return False, f"不认识的题型 {item['task']}"
 
 
+LOCK_TRIES, LOCK_WAIT = 3, 20  # 撞上数据库锁：等 20 秒再试，最多 3 次
+
+
+def _run_waiting(db, router, item, store=None, sleep=None):
+    """数据库被别的任务锁着就等一会儿再跑这题；一直锁着就把锁的错抛出去，由 run 记成跳过。"""
+    sleep = sleep or time.sleep
+    for i in range(LOCK_TRIES):
+        try:
+            return run_item(db, router, item, store)
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e) or i == LOCK_TRIES - 1:
+                raise
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
+            sleep(LOCK_WAIT)
+
+
 def run(db, router, kind: str = "weekly", store=None) -> dict:
     """跑全部检验题；返回 {total, passed, by_layer, failed, regressions, skipped}。"""
     from .core.backends import BackendUnavailable
@@ -148,15 +169,20 @@ def run(db, router, kind: str = "weekly", store=None) -> dict:
     by_layer, failed, regressions, skipped, results = {}, [], [], 0, []
     for it in items:
         try:
-            ok, note = run_item(db, router, it, store)
+            ok, note = _run_waiting(db, router, it, store)
         except (BackendUnavailable, AllBackendsFailed, NeedsSwitchApproval):  # 模型连不上：这题不算
             skipped += 1
+            continue
+        except sqlite3.OperationalError as e:
+            if "locked" not in str(e):
+                raise
+            skipped += 1  # 一直被别的任务锁着（大批整理在写库）：不是记忆退步，这题不算（11-05 上线被它退回）
             continue
         except Exception as e:
             ok, note = False, f"{type(e).__name__}: {str(e)[:100]}"
         if not ok and kind == "gate" and it["last_pass"] == 1:
             # 闸门上以前过、这次没过：模型回答和判分都有随机性，再跑两次，有一次过就不算退步
-            # （2026-11-01 照片那题回答基本对、判分说“含糊”，把整批上线退回了；真退步会三次都不过）
+            # （照片那题回答基本对、判分说“含糊”，把整批上线退回了；真退步会三次都不过）
             for _ in range(2):
                 try:
                     ok, note2 = run_item(db, router, it, store)

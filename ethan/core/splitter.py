@@ -3,7 +3,7 @@
 import re
 
 SENTENCE_END = re.compile(r"(?<=[。！？!?～~])")
-SOFT_BREAK = re.compile(r"(?<=[，,；;])")
+SOFT_BREAK = re.compile(r"(?<=[，])")
 
 
 def split_bubbles(text: str, max_len: int = 40) -> list:
@@ -12,7 +12,7 @@ def split_bubbles(text: str, max_len: int = 40) -> list:
         line = line.strip()
         if not line:
             continue
-        # 一行就是一条消息；只有太长的行才按句子、逗号拆（2026-10-22 Mia 嫌每次都满满三条）
+        # 一行就是一条消息；只有太长的行才按句子、逗号拆（每次都满满三条）
         sentences = [line] if len(line) <= max_len else SENTENCE_END.split(line)
         for sentence in (s.strip() for s in sentences):
             if not sentence:
@@ -37,7 +37,7 @@ def _drop_trailing_period(bubble: str) -> str:
 
 
 def limit_bubbles(bubbles: list, max_count: int = 3) -> list:
-    """Mia 嫌一次回太多条（2026-10-22）：超出的部分并进最后一条。"""
+    """Mia 嫌一次回太多条：超出的部分并进最后一条。"""
     if len(bubbles) <= max_count:
         return bubbles
     head = bubbles[:max_count - 1]

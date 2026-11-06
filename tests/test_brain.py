@@ -57,7 +57,7 @@ class BrainTest(unittest.TestCase):
         self.assertNotIn("【收藏日报】2026-10-30", [x["title"] for x in kinds["grok"]])
 
     def test_long_grok_report_kept_whole_and_old_ones_refilled(self):
-        """Grok 回报不截在 1200 字（她 11-04：“调研内容被截断了”）；以前截了的从收件箱补全，她改过的不动。"""
+        """Grok 回报不截在 1200 字；以前截了的从收件箱补全，她改过的不动。"""
         long = "【来源：Grok 调研任务】\n总管调研\n" + "结论。" * 1500
         at = NOW.isoformat()
         with open(self.root / "inbox" / f"{NOW.date().isoformat()}.jsonl", "a", encoding="utf-8") as f:
@@ -222,7 +222,7 @@ class AskTest(BrainTest):
 
 class GrokSplitTest(BrainTest):
     def test_grok_from_her_saves_counts_as_saved(self):
-        """2026-10-29 她定：Grok 从收藏夹整理的算“你的收藏”，交代给它的调研才是“Grok 情报”。"""
+        """Grok 从收藏夹整理的算“你的收藏”，交代给它的调研才是“Grok 情报”。"""
         inbox = self.root / "inbox" / f"{NOW.date().isoformat()}.jsonl"
         with inbox.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"at": NOW.isoformat(), "path": "/grok/result", "text": "你这周小红书收藏里有 3 家咖啡馆"}, ensure_ascii=False) + "\n")

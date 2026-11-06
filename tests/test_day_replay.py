@@ -1,4 +1,4 @@
-"""整天回放（docs/design/system-rules.md 第 7 节，她 2026-11-02 认可）：把一天从早到晚跑一遍，每一步后跑“永远要成立”的检查。"""
+"""整天回放（docs/design/system-rules.md 第 7 节）：把一天从早到晚跑一遍，每一步后跑“永远要成立”的检查。"""
 
 import tempfile
 import unittest

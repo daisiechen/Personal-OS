@@ -57,7 +57,7 @@ class FinanceTest(unittest.TestCase):
         self.assertIn("起生效", wb.act("money.budget", {"amount": "8000"})["msg"])
         plan = territory.budget_plan(self.db, datetime.now().date())
         self.assertEqual((plan["now"], plan["next"]), (40.0, 8000.0))
-        # 2026-11-01 她定：改的时候选立即生效，这个月就按新的算，下个月那条也跟着改
+        # 改的时候选立即生效，这个月就按新的算，下个月那条也跟着改
         self.assertIn("这个月开始", wb.act("money.budget", {"amount": "9000", "when": "now"})["msg"])
         plan = territory.budget_plan(self.db, datetime.now().date())
         self.assertEqual((plan["now"], plan["next"]), (9000.0, None))
@@ -112,12 +112,12 @@ class FinanceTest(unittest.TestCase):
         self.assertIn("¥57", row["actual"])  # 但花销照算
 
     def test_only_unparsed_does_not_count_as_connected(self):
-        finance.record_cmb(self.db, "快捷指令输入", NOW)  # 2026-10-29 她的快捷指令把变量打成了字
+        finance.record_cmb(self.db, "快捷指令输入", NOW)  # 的快捷指令把变量打成了字
         self.assertFalse(finance.has_source(self.db, "sms"))
         self.assertEqual(finance.last_unparsed(self.db)["raw"], "快捷指令输入")
 
     def test_real_cmb_debit_email(self):
-        # 她 2026-10-29 发来的招行一卡通邮件（卡号后四位已换）
+        # 发来的招行一卡通邮件（卡号后四位已换）
         body = f"您账户0000于{MONDAY.month}月{MONDAY.day}日10:08在支付宝-某网络科技有限公司快捷支付123.45元"
         got = finance.record_cmb(self.db, body, NOW, "95555@message.cmbchina.com")
         self.assertEqual((got["bank"], got["amount"], got["merchant"]), ("cmb", -123.45, "支付宝-某网络科技有限公司"))
@@ -126,7 +126,7 @@ class FinanceTest(unittest.TestCase):
         self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 123.45})  # 还信用卡不算花销
 
     def test_cmb_daily_digest_email_split_into_rows(self):
-        """2026-11-01：招行信用卡“每日信用管家”一封列前一天好几笔，原来只认一封一笔，11 笔一笔没记上。外币照原币记。"""
+        """招行信用卡“每日信用管家”一封列前一天好几笔，原来只认一封一笔，11 笔一笔没记上。外币照原币记。"""
         body = ("尊敬的客户，截至昨日最后一笔交易，您的额度和积分信息如下：可用额度&nbsp;￥51,694.10 积分余额 3,608 "
                 "2026/10/30&nbsp;您的消费明细如下： 01:13:25 GBP 51.98 尾号**67 消费 Dishoom Carnaby Lon-Apple Pay:6790 "
                 "03:16:41 EUR 72.00 尾号**67 消费 Europ Assistance PARIS FR 11:12:33 GBP 6.00 尾号**67 消费 TfL Travel Charge TFL-Apple Pay:6790")

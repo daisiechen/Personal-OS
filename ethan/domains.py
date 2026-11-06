@@ -14,13 +14,13 @@ COLD_START = [  # 2026-10-28 按 territories.md 清理：Apple Pay 不单独接�
     ("财务", "一起定应急金目标（几个月生活费）和每月预算（人民币，定了这个月就锁住，在工作台财务页填）；"
              "问清她现在每月大概花多少、有哪些固定订阅。账单不用她导：Monzo 和招行邮件已自动收。"),
     ("社交", "先口述最想保持联系的 10 个人：怎么认识的、多久联系一次合适、生日；每说一个记一张人物卡 [人物 名字 …]。"),
-    # 11-04 她定：英语不排时间（有空就去找 Grok），知识点按“用得上”讲；体验从收藏里识别、每周五推荐，运动先选舞蹈
+    # 英语不排时间（有空就去找 Grok），知识点按“用得上”讲；体验从收藏里识别、每周五推荐，运动先选舞蹈
     ("学习", "赛季 1 只练英语：她有空就去找 Grok 练，不排固定时间、不用问她什么时候练（每周练几次只做统计）；"
              "认知拓展每天一个“用得上”的知识点（投资用的看懂市场，聊天用的当下谈资），不用问她想听什么。"),
     ("休闲", "不用列清单：她想去的店、展、演出都在发给 Grok 的收藏和链接里，系统自己识别；每周五 小伴 推荐这周末去哪"
              "（先挑收藏里还没去的，再让 Grok 补本周新的）；想试的运动先是舞蹈（K-pop、古典舞），推荐里单列一条。"),
 ]
-# 七块领地（2026-10-27 晚她定，见 docs/design/territories.md）；专注不再是领地，只当复盘指标
+# 七块领地（见 docs/design/territories.md）；专注不再是领地，只当复盘指标
 DOMAINS = ["身体", "事业", "财务", "社交", "学习", "学术", "生活体验"]
 # 领地对应的冷启动模块（module_status 里的名字）
 MODULE_OF = {"财务": "财务", "社交": "社交", "学习": "学习", "生活体验": "休闲"}
@@ -42,8 +42,8 @@ def todays_cold_start(db, today: date, start: date):
     """今天该做哪个模块的冷启动：(模块, 怎么做)；还没开始或都做完返回 None。"""
     if start is None or today < start:
         return None
-    # 冷启动挪进了个人管理系统 M2 当阶段任务（2026-11-01）：有了就按那边排，这里不再每天另塞一件、也不让 小伴 来约
-    # （她 2026-11-02：小伴 为什么来找我做财务冷启动，这个不在今天的待办里）
+    # 冷启动挪进了个人管理系统 M2 当阶段任务：有了就按那边排，这里不再每天另塞一件、也不让 小伴 来约
+    # （小伴 为什么来找我做财务冷启动，这个不在今天的待办里）
     has = db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'tasks'").fetchone() and \
         "milestone_id" in {r[1] for r in db.conn.execute("PRAGMA table_info(tasks)")} and \
         db.conn.execute("SELECT 1 FROM tasks WHERE milestone_id IS NOT NULL AND title LIKE '%冷启动%'").fetchone()
@@ -81,6 +81,6 @@ def domain_lines(db, today: date, start: date = None) -> list:
                 parts.append(rows[module]["note"])
             else:
                 parts.append("已建档")
-        shown = {"身体": "健康"}.get(domain, domain)  # 库里还记“身体”，给她看的叫“健康”（2026-10-29）
+        shown = {"身体": "健康"}.get(domain, domain)  # 库里还记“身体”，给她看的叫“健康”
         lines.append(f"{shown}：" + "；".join(parts) if parts else f"{shown}：还没有数据")
     return lines

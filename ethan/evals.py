@@ -1,4 +1,4 @@
-"""题集评测（docs/design/digital-life-spec.md 第 6 节，2026-10-30 她认可）：每个模型任务一份黄金题集，
+"""题集评测（docs/design/digital-life-spec.md 第 6 节）：每个模型任务一份黄金题集，
 改提示词、换模型以后跑一遍，不及格不上线；每周也跑一遍，看线上有没有变差。
 
 题集放在 tests/evals/<任务>.jsonl，每行 {"id", "input": {...}, "expect": {...}, "note": "出处或说明"}。
@@ -173,6 +173,11 @@ def _score_fact_ops(out, expect):
             problems.append(f"{e['from']} 改的是 {o.get('fact_id')}，应为 {e['fact_id']}")
         elif "dimension" in e and o["op"] in ("ADD", "UPDATE") and o.get("dimension") not in e["dimension"].split("|"):
             problems.append(f"{e['from']} 维度 {o.get('dimension')}，应为 {e['dimension']}")
+        elif "until" in e and o["op"] in ("ADD", "UPDATE"):  # 临时状态预计到哪天（借鉴 6）：set 要有、none 不能有、写日期的要对上
+            got = (o.get("until") or "")[:10]
+            want = e["until"]
+            if (want == "set" and not got) or (want == "none" and got) or (want not in ("set", "none") and got != want):
+                problems.append(f"{e['from']} until 是 {got or '空'}，应为 {want}")
     problems += [f"{k} 不该有操作（{v['op']}）" for k, v in ops.items() if v["op"] != "NOOP"]
     return not problems, "；".join(problems)
 
@@ -229,7 +234,7 @@ def _file_facts(router, db, case):
 
 
 def _score_file_facts(out, expect):
-    """她 11-04 纠正过的两类：简历上的头衔要写成“简历上写的”（自述），没过完的起止年份要写“预计”。"""
+    """的两类：简历上的头衔要写成“简历上写的”（自述），没过完的起止年份要写“预计”。"""
     facts = out.get("facts") or []
     text = "；".join(f.get("statement", "") for f in facts)
     problems = [f"应该提到“{w}”" for w in expect.get("has", []) if w not in text]

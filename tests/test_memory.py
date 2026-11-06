@@ -63,13 +63,15 @@ class LearningTest(MemoryTestCase):
 
 
 class PeopleTest(MemoryTestCase):
-    def test_contact_reminders(self):
+    def test_contact_reminders(self):  # 11-06 决定 5：“该联系谁”只用人物卡那套（relations.due），老的 people_to_contact 下线
+        from ethan import relations
         db = self.store.db
-        db.upsert_person("小雨", circle="挚友", birthday="10-25",
-                         contact_every_days=14, last_contact="2026-10-01")
+        relations.ensure(db)
+        db.upsert_person("小雨", circle="挚友", birthday="10-25", contact_every_days=14, last_contact="2026-10-01")
         db.upsert_person("同学A", contact_every_days=30, last_contact="2026-10-20")
-        due = db.people_to_contact(date(2026, 10, 22))
-        self.assertEqual(due, [{"name": "小雨", "reasons": ["long_no_contact", "birthday_soon"]}])
+        due = relations.due(db, date(2026, 10, 22), user="me_page")
+        self.assertEqual([x["name"] for x in due["contact"]], ["小雨"])
+        self.assertEqual([(x["name"], x["what"]) for x in due["days"]], [("小雨", "生日")])
 
     def test_upsert_updates_and_delete(self):
         db = self.store.db
@@ -80,9 +82,11 @@ class PeopleTest(MemoryTestCase):
         self.assertEqual(db.conn.execute("SELECT COUNT(*) FROM people").fetchone()[0], 0)
 
     def test_birthday_across_new_year(self):
+        from ethan import relations
         db = self.store.db
+        relations.ensure(db)
         db.upsert_person("新年宝宝", birthday="01-02")
-        self.assertEqual(db.people_to_contact(date(2026, 12, 30))[0]["reasons"], ["birthday_soon"])
+        self.assertEqual(relations.due(db, date(2026, 12, 30), user="me_page")["days"][0]["date"], "2027-01-02")
 
 
 class WishTest(MemoryTestCase):
@@ -144,7 +148,7 @@ if __name__ == "__main__":
 
 
 class TaskIdsNotReusedTest(unittest.TestCase):
-    """她 2026-11-02 点头修：删掉的待办编号会被新待办拿去（#208 从“测体脂”变成“完成工作台改版”），翻旧记录对不上。"""
+    """修：删掉的待办编号会被新待办拿去（#208 从“测体脂”变成“完成工作台改版”），翻旧记录对不上。"""
 
     def test_old_db_rebuilt_and_ids_keep_growing(self):
         import sqlite3

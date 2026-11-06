@@ -9,7 +9,7 @@ from ethan.memory import MemoryStore
 
 class SysMetricsTest(unittest.TestCase):
     def test_counts_this_week_vs_last(self):
-        """2026-10-29 她说偏系统的量化指标是开发会话的活：从聊天和后台记录自动算，本周和上周比。"""
+        """偏系统的量化指标是开发会话的活：从聊天和后台记录自动算，本周和上周比。"""
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             today = datetime.now(timezone.utc).date()

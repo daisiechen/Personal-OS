@@ -1,11 +1,11 @@
-"""第二大脑：她的资料汇总在一处（设计见 docs/design/workbench.md“第二大脑”，2026-10-28 她同意）。
+"""第二大脑：她的资料汇总在一处（设计见 docs/design/workbench.md“第二大脑”）。
 
 来源（每次打开大脑页或 小伴 回话前增量同步，按 ref 去重，她改过的归属、标签、状态不会被覆盖）：
   link     她发给 小伴 的链接：从聊天原文日志 raw/*.jsonl 里找（以前发过的也补回来）
   saved    收藏日报：Grok 每天 4 点整理她的点赞和收藏（docs/design/saved-feed.md），收件箱 inbox/*.jsonl 里【收藏日报】那几条
   grok     Grok 的其他回报（情报、调研）
   learned  学过的内容（learning_items 复习卡）
-  person   人物卡（people），人物卡先做成大脑里的一个标签，不单开页面（她定）
+  person   人物卡（people），人物卡先做成大脑里的一个标签，不单开页面
   wish     她惦记的事（wishes）
   wiki     小伴 维护的 Wiki 主题页（她在 Obsidian 里改过的也会同步回来）；Grok 回报汇总页不收，那些已经是 grok
 状态：ask 要你看（小伴 拿不准、要她定，带红点）/ new 整理中 / kept 在用（小伴 会主动用）/ archived 备查 / trash 回收站（永久删除要她再点一次确认）。
@@ -43,10 +43,10 @@ CREATE TABLE IF NOT EXISTS brain_items (
 CREATE INDEX IF NOT EXISTS brain_items_status ON brain_items (status, happened_at);
 CREATE TABLE IF NOT EXISTS brain_sync (source TEXT PRIMARY KEY, cursor TEXT);
 """
-# 分类按 MECE 排（2026-10-29 她要每张卡都有处可去、分类有逻辑）：
+# 分类按 MECE 排（每张卡都有处可去、分类有逻辑）：
 # 类型按“从哪来”分三组，每条只属于一种；状态每条只有一个；区域七块加“还没归类”。
 KINDS = {"link": "你发的链接", "file": "你发的文件", "saved": "你的收藏", "grok": "Grok 情报",     # 外面来的资料
-# 2026-10-29 她定：Grok 从她收藏夹、点赞里整理的算“你的收藏”；只有交代给它的调研回来的才叫“Grok 情报”
+# Grok 从她收藏夹、点赞里整理的算“你的收藏”；只有交代给它的调研回来的才叫“Grok 情报”
          "person": "人物卡", "wish": "心愿", "learned": "学过的",               # 关于你的
          "knowledge": "知识卡", "wiki": "记忆和 Wiki"}                          # 小伴 整理出来的
 KIND_GROUPS = [("外面来的", ["link", "file", "saved", "grok"]), ("关于你的", ["person", "wish", "learned"]),
@@ -56,7 +56,7 @@ STATUSES = ("ask", "new", "kept", "archived", "trash")
 STATUS_LABELS = {"ask": "要你看", "new": "整理中", "kept": "在用", "archived": "备查", "trash": "回收站"}
 FROM_SAVED = re.compile(r"收藏|点赞|收藏夹|喜欢的笔记|赞过")
 SOURCE_LINE = re.compile(r"^\s*【来源[:：]\s*([^】]+)】\s*")  # Grok 回报第一行自报来源（grok.REPORT_TO）
-LIFE_PREFIX = "ethan-life/"  # 小伴 自己的一天是他的剧本，不是她的资料，不进大脑（2026-10-29），工作台单独一个入口
+LIFE_PREFIX = "ethan-life/"  # 小伴 自己的一天是他的剧本，不是她的资料，不进大脑，工作台单独一个入口
 SAVED_MARK = "【收藏日报】"
 CLOUD_MARK = "【Claude 会话】"
 WIKI_SKIP = {"from-grok"}  # Grok 回报汇总页：内容已按条收成 grok
@@ -72,7 +72,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-SUMMARY_MAX = 20000  # Grok 回报原文整段留着（她 11-04：“调研内容被截断了”）；给 小伴 提示词用时另外截短
+SUMMARY_MAX = 20000  # Grok 回报原文整段留着；给 小伴 提示词用时另外截短
 
 
 def _put(db, kind, ref, title, *, url=None, source=None, summary=None, note=None, tags=(), terr=None,
@@ -219,7 +219,7 @@ def sync(store) -> int:
     for r in db.conn.execute("SELECT * FROM wishes WHERE status = 'open'"):
         added += _put(db, "wish", f"wish:{r['id']}", r["quote"][:80], source="她惦记的事", summary=r["context"] or "",
                       status="kept", happened_at=r["created_at"])
-    # 心愿做完或不要了、人物卡和复习卡删了：大脑里那条挪去备查，小伴 不再拿它说事（2026-10-29 自查）
+    # 心愿做完或不要了、人物卡和复习卡删了：大脑里那条挪去备查，小伴 不再拿它说事（自查）
     for kind, ref_sql in (("wish", "SELECT 'wish:' || id FROM wishes WHERE status = 'open'"),
                           ("person", "SELECT 'person:' || id FROM people"),
                           ("learned", "SELECT 'learn:' || id FROM learning_items")):
@@ -396,7 +396,7 @@ def fresh_saved(db, days: int = 2, limit: int = 6) -> list:
     return [_row(r) for r in rows]
 
 
-# ---------- 回忆：她说一句话，从大脑里找最相关的几条给 小伴（2026-10-28 她同意） ----------
+# ---------- 回忆：她说一句话，从大脑里找最相关的几条给 小伴 ----------
 # 资料是几百到几千条的量，不上向量检索：按中文双字片段算重合度，罕见片段权重高（类似 IDF），标题、标签、专题加权。
 # 等资料多到这样找不准了，再换成按意思找的检索。
 STOP = set("我们你们他们这个那个什么怎么一下一个今天明天就是还是可以不是没有现在然后因为所以但是如果已经")

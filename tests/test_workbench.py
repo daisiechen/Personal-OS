@@ -112,7 +112,7 @@ class WorkbenchTest(unittest.TestCase):
         return self.wb.act(action, p, now=NOON)
 
     def test_week_plan_and_weekly_jobs_off_prep(self):
-        """2026-10-31：下周餐单、采购清单、训练每周自动出；小伴 不再记成答应；#172 #173 撤下。"""
+        """下周餐单、采购清单、训练每周自动出；小伴 不再记成答应；#172 #173 撤下。"""
         from datetime import date
         from ethan import weekly
         from ethan.core.agent import SYSTEM_JOBS
@@ -135,7 +135,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertFalse(db.conn.execute("SELECT 1 FROM tasks WHERE id IN (?, ?)", (a, b)).fetchone())
 
     def test_redeem_remind_not_auto_and_mark_delivered(self):
-        """2026-11-01：积分够了只提醒、不替她换；兑换记录她能自己点“兑现了”。"""
+        """积分够了只提醒、不替她换；兑换记录她能自己点“兑现了”。"""
         from datetime import datetime
         from ethan import nudges, quests
         db = self.store.db
@@ -170,7 +170,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertIn("没有要退的", m.run(self.store))
 
     def test_me_pending_buttons_reach_resolve(self):
-        """2026-10-31 她在待你定点“对”提示“不认识的操作”：定法放 how，不能放 action。"""
+        """在待你定点“对”提示“不认识的操作”：定法放 how，不能放 action。"""
         from ethan import lifebase, mepage
         lifebase.ensure(self.store.db)
         ev = lifebase.add_evidence(self.store.db, "chat", "raw:x", "2026-10-30", "她说的")
@@ -190,7 +190,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([t["id"] for t in self.wb.state(NOON)["today"]][:2], mine)  # 拖过的在前，没拖的跟在后面
 
     def test_weigh_habit_only_on_training_days_and_workaholic_band(self):
-        """2026-11-01：称体重只在训练日出现；工作狂指数看健康区间，不是越低越好。"""
+        """称体重只在训练日出现；工作狂指数看健康区间，不是越低越好。"""
         import importlib
         from ethan import quests, workaholic
         quests.seed(self.store.db)
@@ -204,7 +204,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([workaholic.band(i)["label"] for i in (10, 30, 55, 80)], ["偏松", "健康", "偏高", "过度"])
 
     def test_paused_goal_items_not_listed_as_skipped(self):
-        """2026-11-01：修好之前排的计划里还有暂停副本的事，“今天没排进”显示时也要滤掉。"""
+        """修好之前排的计划里还有暂停副本的事，“今天没排进”显示时也要滤掉。"""
         db = self.store.db
         gid = db.add_goal("拿下第一个订单", "year", status="paused")
         db.add_task("列出 20 个潜在客户", goal_id=gid)
@@ -215,7 +215,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([x["title"] for x in self.wb.plan_panel(NOON.date(), plan)["skipped"]], ["买菜"])
 
     def test_apple_busy_serves_stale_cache_while_refreshing(self):
-        """她 2026-11-02：切页面要好久。读 iCloud 要 7–10 秒，缓存过期也先用旧的、后台去刷，不让她等。"""
+        """切页面要好久。读 iCloud 要 7–10 秒，缓存过期也先用旧的、后台去刷，不让她等。"""
         import threading
         from datetime import datetime, timedelta
         calls, gate = [], threading.Event()
@@ -239,7 +239,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(wb._apple_busy(day)[0][2], "约2")  # 后台刷好了
 
     def test_plan_shows_apple_calendar_and_mail_bookings(self):
-        """她 2026-11-02：两家饭店的约在“日历 · 改计划”里看不到，也删不掉；要和苹果日历对得上。"""
+        """两家饭店的约在“日历 · 改计划”里看不到，也删不掉；要和苹果日历对得上。"""
         from ethan import events
         day = NOON.date().isoformat()
         fid = events.add(self.store.db, day, "15:00", "17:00", "The Devonshire 午餐", "Denman St", note="来自邮件")
@@ -271,14 +271,14 @@ class WorkbenchTest(unittest.TestCase):
         self.assertTrue(got["ok"])
         self.assertEqual(deleted, [("DELETE", "https://cal/ethan/ethan-event-1.ics")])
         self.assertEqual(events.for_day(self.store.db, NOON.date()), [])
-        # 她自己日历上的也能删（她 2026-11-02：我在工作台确认删除了，那肯定就是我要删的）；重复的不在这里删
+        # 她自己日历上的也能删（我在工作台确认删除了，那肯定就是我要删的）；重复的不在这里删
         self.assertTrue(self.wb.act("calendar.delete", {"href": "https://cal/home/roast.ics"}, NOON)["ok"])
         self.assertIn(("DELETE-OWN", "https://cal/home/roast.ics"), deleted)
         self.assertFalse(self.wb.act("calendar.delete", {"href": "https://cal/home/weekly.ics"}, NOON)["ok"])
         self.assertFalse(self.wb.act("calendar.delete", {"href": "https://evil/x.ics"}, NOON)["ok"])
 
     def test_home_timeline_follows_deleted_booking(self):
-        """她 2026-11-02：日历里删了一家饭店，回到首页时间线没变，还得点“让 AI 重排”。"""
+        """日历里删了一家饭店，回到首页时间线没变，还得点“让 AI 重排”。"""
         from ethan import events
         db, day = self.store.db, NOON.date()
         fid = events.add(db, day.isoformat(), "15:00", "17:00", "The Devonshire 午餐", note="来自邮件")
@@ -292,7 +292,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertIn("Sunday Roast", text())  # 读不到她的日历时，她自己的照早上的算
 
     def test_moved_training_keeps_trip_and_survives_replan(self):
-        """她 2026-11-02：训练从 4 点改到 5 点，首页那条点不开了，也不知道重排会不会改回去。"""
+        """训练从 4 点改到 5 点，首页那条点不开了，也不知道重排会不会改回去。"""
         from ethan import planner
         db, day = self.store.db, NOON.date()
         db.save_plan(day.isoformat(), "model", "{}", "{}", "fp",
@@ -308,8 +308,8 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual((items[0]["start"], items[0]["leave"], items[0]["back"]), ("17:00", "16:15", "18:40"))
 
     def test_today_and_edit_page_list_the_same_tasks(self):
-        """她 2026-11-02：首页今日任务三条，编辑页两条（截止在以后的主线步骤被编辑页漏掉）；快到期的、邮件来的也进今天。
-        11-04 她定：快到期只提前 2 天（5 天时 11-08、11-09 的事都排进了今天）。"""
+        """首页今日任务三条，编辑页两条（截止在以后的主线步骤被编辑页漏掉）；快到期的、邮件来的也进今天。
+        快到期只提前 2 天（5 天时 11-08、11-09 的事都排进了今天）。"""
         db = self.store.db
         gid = db.add_goal("年底前去 3 个新国家", "year", status="active")
         tid = db.add_task("11/12 前没出签就催问", due=(NOON.date() + timedelta(days=10)).isoformat(), goal_id=gid)
@@ -326,7 +326,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertIn(tid, edit)
 
     def test_habit_linked_main_step_hidden_from_plan(self):
-        """2026-11-01：“连续一周训练前称体重”改成引用日常，计划和今天的任务里不再单独出现，副本详情里还在。"""
+        """“连续一周训练前称体重”改成引用日常，计划和今天的任务里不再单独出现，副本详情里还在。"""
         from ethan import quests, stages
         db = self.store.db
         stages.ensure(db)
@@ -343,7 +343,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertIn(tid, [t["id"] for t in quests.main_quests(db, with_agent_goals=True).get(gid, [])])
 
     def test_explore_editor_hides_achievements_sheet_and_edits_visa(self):
-        """2026-11-01：成就表不进编辑器；国内表没有签证困难；签证内容能改。"""
+        """成就表不进编辑器；国内表没有签证困难；签证内容能改。"""
         (self.root / "explore-map.json").write_text(json.dumps({"sheets": {
             "中国": [{"省份": "安徽省", "城市": "安庆市"}], "欧洲": [{"国家": "芬兰", "签证": "申根", "区域": "北欧"}],
             "成就": [{"成就": "走遍中国", "状态": "进行中"}]}}, ensure_ascii=False))
@@ -356,7 +356,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual(self.wb.explore_page()["sheets"]["欧洲"][0]["签证"], "申根 90 天")
 
     def test_reline_rewrites_only_the_line(self):
-        """2026-11-01：卡上 小伴 的话规则改了“现在就该”生效：只重写那句话，不重画图。"""
+        """卡上 小伴 的话规则改了“现在就该”生效：只重写那句话，不重画图。"""
         from ethan import cards
         (self.root / "cards").mkdir(exist_ok=True)
         path = self.root / "cards" / "2026-11-01.json"
@@ -381,7 +381,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertFalse(quests.checked(self.store.db, h["id"], NOON.date()))
 
     def test_social_log_from_workbench_counts(self):
-        """2026-11-01 她问社交的“零次”怎么来的、没有地方填：领域页里自己记一笔。"""
+        """社交的“零次”怎么来的、没有地方填：领域页里自己记一笔。"""
         from ethan import lifelog
         got = self.wb.act("life.log", {"kind": "meet", "who": "小林、阿May", "day": "2026-11-01"}, NOON)
         self.assertTrue(got["ok"])
@@ -390,7 +390,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertFalse(self.wb.act("life.log", {"kind": "bad", "who": "x"}, NOON)["ok"])
 
     def test_goal_task_added_with_node_and_dragged_into_order(self):
-        """2026-11-01：副本里加的是任务（只写内容、选节点），拖动排序。"""
+        """副本里加的是任务（只写内容、选节点），拖动排序。"""
         db = self.store.db
         gid = db.conn.execute("INSERT INTO goals (title, level, status, updated_at) VALUES ('拖动副本', 'year', 'active', 'x')").lastrowid
         a = self.wb.act("step.add", {"goal_id": gid, "title": "甲"}, NOON)["id"]
@@ -402,7 +402,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([(s["title"], s["milestone"]) for s in ch["steps"]], [("丙", False), ("甲", False), ("乙", True)])
 
     def test_main_steps_reorder_and_mark_node(self):
-        """2026-11-01 她要在主副本里加节点、调顺序。"""
+        """在主副本里加节点、调顺序。"""
         db = self.store.db
         gid = db.conn.execute("INSERT INTO goals (title, level, status, updated_at) VALUES ('排序副本', 'year', 'active', '2026-11-01')").lastrowid
         a = self.wb.act("task.add", {"title": "第一步", "goal_id": gid, "when": "later"}, NOON)["id"]
@@ -415,7 +415,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([(s["title"], s["milestone"]) for s in ch["steps"]], [("第二步", False), ("第一步", True)])
 
     def test_goal_without_steps_can_take_a_first_step(self):
-        """2026-11-01 她在 DemoApp 副本里点“加一步”，下拉里没有 DemoApp：还没拆主线的进行中副本也要能挂待办。"""
+        """在 DemoApp 副本里点“加一步”，下拉里没有 DemoApp：还没拆主线的进行中副本也要能挂待办。"""
         db = self.store.db
         gid = db.conn.execute("INSERT INTO goals (title, level, status, updated_at) VALUES ('新副本：试试', 'year', 'active', '2026-11-01')").lastrowid
         db.conn.commit()
@@ -484,6 +484,61 @@ class WorkbenchTest(unittest.TestCase):
         self.act(**d["undo"])
         self.assertIsNotNone(self.store.db.conn.execute("SELECT 1 FROM tasks WHERE id = ?", (r["id"],)).fetchone())
 
+    def test_postpone_keeps_later_due_and_hides_waiting_and_dropped(self):
+        """11/8、11/9 的推到明天后还在今天；“等结果”的不用进待办；聊天里说了算了的还挂着。"""
+        db = self.store.db
+        later = db.add_task("递交法签材料", due=(MONDAY + timedelta(days=2)).isoformat())
+        self.assertIn(later, [t["id"] for t in self.wb.state(NOON)["today"]])  # 两天内到期，进今天
+        self.act("task.postpone", id=later)
+        self.assertEqual(db.conn.execute("SELECT due FROM tasks WHERE id = ?", (later,)).fetchone()[0],
+                         (MONDAY + timedelta(days=2)).isoformat())  # 截止日不被往前拉成明天
+        self.assertNotIn(later, [t["id"] for t in self.wb.state(NOON)["today"]])
+        wait = db.add_task("拿到芬兰签证（等结果）", due=MONDAY.isoformat())
+        drop = db.add_task("核实能否用学校身份办 NI 号", due=MONDAY.isoformat())
+        db.conn.execute("UPDATE tasks SET status = 'drop_asked' WHERE id = ?", (drop,))
+        db.conn.commit()
+        ids = [t["id"] for t in self.wb.state(NOON)["today"]]
+        self.assertNotIn(wait, ids)
+        self.assertNotIn(drop, ids)
+        self.assertNotIn(drop, [t["id"] for t in self.wb.state(NOON)["planner"]["todos"]])  # “其他”里也不列（11-06）
+        self.assertNotIn(drop, [t["id"] for t in quests.side_quests(db)])
+        self.act("task.star", id=wait, on=True)
+        self.assertIn(wait, [t["id"] for t in self.wb.state(NOON)["today"]])  # 她自己点了 ★ 的照样进
+
+    def test_unified_rules_1106(self):
+        """的 9 条（ethan/taskrules.py）：说算了的只在“其他”底下、能恢复；推到明天的“其他”里也不列；
+        在等的只在副本详情；暂停副本下的非主线小事进“以后再做”；交给 Codex 的不进她的列表。"""
+        db = self.store.db
+        drop = db.add_task("核实能否用学校身份办 NI 号", due=MONDAY.isoformat())
+        db.conn.execute("UPDATE tasks SET status = 'drop_asked' WHERE id = ?", (drop,))
+        wait = db.add_task("拿到芬兰签证（等结果）", due=(MONDAY + timedelta(days=10)).isoformat())
+        codex = db.add_task("改落地页文案")
+        db.conn.execute("UPDATE tasks SET owner = 'codex' WHERE id = ?", (codex,))
+        gid = db.add_goal("学法语", "year", status="paused")
+        small = db.add_task("问问法语课价格", goal_id=gid)
+        db.conn.commit()
+        q = self.wb.quests_page(NOON)
+        self.assertEqual([x["id"] for x in q["dropped"]], [drop])
+        self.assertIn(small, [x["id"] for x in q["later"]])
+        side = [x["id"] for x in q["side"]]
+        for tid in (drop, wait, codex, small):
+            self.assertNotIn(tid, side)
+        st = self.wb.state(NOON)
+        listed = [t["id"] for t in st["today"]] + [t["id"] for t in st["planner"]["todos"]]
+        for tid in (drop, wait, codex, small):
+            self.assertNotIn(tid, listed)
+        r = self.act("task.undrop", id=drop)
+        self.assertTrue(r["ok"])
+        self.assertIn(drop, [t["id"] for t in self.wb.state(NOON)["today"]])
+        self.act(**{k: v for k, v in r["undo"].items()})
+        self.assertEqual(self.wb.quests_page(NOON)["dropped"][0]["id"], drop)
+        later = db.add_task("约牙医", due=(MONDAY + timedelta(days=10)).isoformat())
+        self.assertIn(later, [x["id"] for x in self.wb.quests_page(NOON)["side"]])
+        self.act("task.postpone", id=later)
+        self.assertNotIn(later, [x["id"] for x in self.wb.quests_page(NOON)["side"]])  # 推到明天的“其他”里也不列（第 3 条）
+        tomorrow = datetime.combine(MONDAY + timedelta(days=1), NOON.time())
+        self.assertIn(later, [x["id"] for x in self.wb.quests_page(tomorrow)["side"]])
+
     def test_star_has_no_limit_and_goal_quest(self):
         side = [self.act("task.add", title=f"支线{n}", when="later")["id"] for n in range(8)]
         self.assertTrue(all(self.act("task.star", id=i, on=True)["ok"] for i in side))
@@ -494,7 +549,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual((row["quest"], row["goal_id"]), ("main", gid))
 
     def test_star_carries_over_until_done_or_unstarred(self):
-        """她 2026-11-02：点了 ★ 的事没做完，自动留到第二天、星星也留着，直到做完或取消星星。"""
+        """点了 ★ 的事没做完，自动留到第二天、星星也留着，直到做完或取消星星。"""
         from datetime import timedelta
         a = self.act("task.add", title="回复导师邮件", when="later")["id"]
         b = self.act("task.add", title="整理照片", when="later")["id"]
@@ -661,7 +716,7 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.call("GET", "/static/app.js?v=old", {})[1]["Cache-Control"], "no-store")
 
     def test_map_labels_dont_reuse_task_tag_class(self):
-        # 2026-10-28：地图标签用了 .tag，把今日任务的小标签也变成了绝对定位，排版全乱
+        # 地图标签用了 .tag，把今日任务的小标签也变成了绝对定位，排版全乱
         import re
         from ethan.workbench.server import STATIC
         css = (STATIC / "app.css").read_text(encoding="utf-8")
@@ -748,7 +803,7 @@ class CardTest(unittest.TestCase):
         self.assertEqual(wb.state(NOON)["card"]["image"], "/img/card/2026-11-02")
 
     def test_director_uses_her_day_and_wish(self):
-        """2026-10-30 她说卡册的动作和视角太固定：按当天的事编镜头；她能点单（含 cosplay），一天用一条。"""
+        """卡册的动作和视角太固定：按当天的事编镜头；她能点单（含 cosplay），一天用一条。"""
         import json as _json
         from types import SimpleNamespace
 
@@ -762,6 +817,8 @@ class CardTest(unittest.TestCase):
                     "action": "leaping with a wand", "outfit": "sailor senshi costume", "camera": "fisheye lens close-up",
                     "light": "golden hour", "twist": "anime poster"}))
         cards.add_wish(self.store.db, "cos 水手服战士在大本钟顶上")
+        from ethan import diary
+        diary.save(self.store.db, (MONDAY + timedelta(days=1)).isoformat(), "今天去训练了。", source="ethan")  # 11-06 起有昨天的日记才出卡
         maker, d = FakeMaker(), Director()
         card = cards.make_card(self.root, self.store.db, MONDAY + timedelta(days=2), self.plan, maker=maker,
                                fetch=lambda url, timeout: self.fetch(), router=d)
@@ -778,7 +835,7 @@ class CardTest(unittest.TestCase):
         self.assertTrue(any(c["kind"] == "点单" for c in wb.cards_page()["cards"]))
 
     def test_redraw_now_merges_wishes_even_on_node_cards_and_restarts(self):
-        """2026-11-01：她提了两条“现在重画今天”一直显示排队中——节点卡不用点单。现在“现在重画”的几条合在一起画，节点卡也照画；
+        """她提了两条“现在重画今天”一直显示排队中——节点卡不用点单。现在“现在重画”的几条合在一起画，节点卡也照画；
         上一张还在画时来的新要求，画完会接着再画。"""
         import json as _json
         from types import SimpleNamespace
@@ -790,6 +847,8 @@ class CardTest(unittest.TestCase):
                 return SimpleNamespace(text=_json.dumps({"title": "雨夜", "line": "给你", "scene": "s", "action": "a", "outfit": "o",
                                                          "camera": "c", "light": "l", "twist": ""}))
         db = self.store.db
+        from ethan import diary
+        diary.save(db, (MONDAY + timedelta(days=2)).isoformat(), "今天在家写代码。", source="ethan")  # 11-06 起有昨天的日记才出卡
         cards.add_wish(db, "背影，雨夜伦敦眼", now=True)
         cards.add_wish(db, "穿红色风衣", now=True)
         cards.add_wish(db, "明天要海边", now=False)
@@ -833,7 +892,7 @@ class CardTest(unittest.TestCase):
         self.assertFalse((folder / "2026-10-27.json").exists())
         self.assertTrue((folder / "old" / "2026-10-27-before-start.jpg").exists())
         self.assertTrue((folder / "2026-10-28.json").exists())
-        # 她 11-01 又说先别删：放回来
+        # 又说先别删：放回来
         spec = importlib.util.spec_from_file_location("r", Path(__file__).resolve().parent.parent / "migrations" / "20261101_card_restore_before_start.py")
         r = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(r)
@@ -854,9 +913,9 @@ class CardTest(unittest.TestCase):
         self.assertTrue(_c.redo_waiting(self.store.db))
 
     def test_past_card_shows_her_own_diary_not_ethans_memory(self):
-        """2026-11-01 她说日记要用她的口吻写她的一天，不是 小伴 的聊天记忆；能自己改，改过的不再被自动覆盖。"""
+        """日记要用她的口吻写她的一天，不是 小伴 的聊天记忆；能自己改，改过的不再被自动覆盖。"""
         from ethan import diary
-        # 卡是早上照前一天画的：周二画的那张，日记本里算周一的（她 2026-11-01）
+        # 卡是早上照前一天画的：周二画的那张，日记本里算周一的
         cards.make_card(self.root, self.store.db, MONDAY + timedelta(days=1), self.plan, maker=FakeMaker(), fetch=lambda url, timeout: self.fetch())
         self.store.wiki.write(f"journal/{MONDAY}", "记忆", f"# {MONDAY} 的记忆\n\n她去攀岩了，很开心。")
         wb = Workbench(self.store, Settings(self.root / "settings.json"))
@@ -871,7 +930,7 @@ class CardTest(unittest.TestCase):
         c = next(x for x in wb.cards_page()["cards"] if x["day"] == MONDAY.isoformat())
         self.assertEqual((c["diary"], c["diary_mine"]), ("今天我去攀岩了。", True))
         self.assertEqual(diary.write(self.store, None, MONDAY, force=True), "她自己改过，不动")
-        # 存空的 = 不要这篇，删掉让系统重写（她 2026-11-02：11-01 误存了一条空的，那天就一直空着）
+        # 存空的 = 不要这篇，删掉让系统重写（11-01 误存了一条空的，那天就一直空着）
         self.assertTrue(wb.act("diary.save", {"day": MONDAY.isoformat(), "text": "  "})["ok"])
         self.assertIsNone(diary.get(self.store.db, MONDAY.isoformat()))
         self.assertIn(MONDAY, diary.missing(self.store, MONDAY + timedelta(days=3)))
@@ -912,10 +971,10 @@ class CardTest(unittest.TestCase):
         self.assertEqual(diary.get(self.store.db, day.isoformat())["source"], "ethan")
         self.assertEqual(diary.write(self.store, r, day), "已经有了")
         got = diary.weave(self.store, r, day.isoformat(), "下午还喝了杯咖啡")
-        self.assertEqual((got["source"], got["draft_text"]), ("ethan", got["body"]))  # 融好的是模型写的，不算她的原话（2026-11-05）
+        self.assertEqual((got["source"], got["draft_text"]), ("ethan", got["body"]))  # 融好的是模型写的，不算她的原话
 
     def test_diary_materials_include_itinerary_people_and_lesson(self):
-        """她 2026-11-02：日记像流水账，缺行程、思考、学到的、感受。素材补上日程、见了谁、小伴 教的知识点；提示词要求拆出内容、不写对话过程。"""
+        """日记像流水账，缺行程、思考、学到的、感受。素材补上日程、见了谁、小伴 教的知识点；提示词要求拆出内容、不写对话过程。"""
         from ethan import diary, events, lessons, lifelog
         day = MONDAY
         events.add(self.store.db, day.isoformat(), "15:00", "17:00", "Sunday Roast", "Soho")
@@ -937,7 +996,7 @@ class CardTest(unittest.TestCase):
         self.assertEqual((card["code"], card["generated"]), ("W6", False))
         self.assertIn("boom", card["error"])
         self.assertTrue((self.root / "cards" / f"{tue}.jpg").is_file())  # 图库那张顶上
-        self.assertEqual(card["error"].count("boom"), 3)  # 少带参考图又试了两次（2026-10-31）
+        self.assertEqual(card["error"].count("boom"), 3)  # 少带参考图又试了两次
         card2 = cards.make_card(self.root, self.store.db, tue + timedelta(days=1), None, maker=FakeMaker(fail=True),
                                 fetch=lambda url, timeout: self.fetch(61))
         self.assertNotEqual(card2["fallback"], card["fallback"])  # 最近用过的备用图不再用，免得两天一模一样
@@ -954,7 +1013,7 @@ class CardTest(unittest.TestCase):
         self.assertTrue(card["generated"])
         self.assertEqual(m.calls[-1], 2)
 
-    def test_rarity_rules(self):  # 2026-10-31 她认可：升级是稀有，每满 5 级才超稀有，超稀有 7 天内最多一次
+    def test_rarity_rules(self):  # 升级是稀有，每满 5 级才超稀有，超稀有 7 天内最多一次
         quests.award(self.store.db, 500, "测试", MONDAY - timedelta(days=1))
         card = cards.choose(self.store.db, MONDAY, None, {})
         self.assertEqual((card["code"], card["rarity"]), ("E1", "稀有"))
@@ -977,7 +1036,7 @@ if __name__ == "__main__":
 
 class TaskProgressTest(unittest.TestCase):
     def test_streak_task_shows_count(self):
-        """“连续一周训练前称体重”后面显示几分之几，打一次加一次（2026-10-29）。"""
+        """“连续一周训练前称体重”后面显示几分之几，打一次加一次。"""
         from ethan import quests
         with tempfile.TemporaryDirectory() as d:
             store = make_demo(Path(d))
@@ -995,7 +1054,7 @@ class TaskProgressTest(unittest.TestCase):
 
 
 class DiaryMarkTest(unittest.TestCase):
-    """她 2026-11-02：日记里写得好的句子想用记号笔标出来。"""
+    """日记里写得好的句子想用记号笔标出来。"""
 
     def test_mark_and_unmark(self):
         from ethan import diary
@@ -1013,7 +1072,7 @@ class DiaryMarkTest(unittest.TestCase):
 
 
 class DiaryNoteTest(unittest.TestCase):
-    """她 2026-11-02：10-26 日记里“中间还跟人聊起店员为什么要问名字，被说观察得挺细”其实是 小伴 在跟别人聊。
+    """10-26 日记里“中间还跟人聊起店员为什么要问名字，被说观察得挺细”其实是 小伴 在跟别人聊。
     划出这句写批注，小伴 只重写这一句，同时进纠错本。"""
 
     def test_note_rewrites_only_that_sentence(self):
@@ -1043,7 +1102,7 @@ class DiaryNoteTest(unittest.TestCase):
             n = diary.notes(store.db, day)[0]
             self.assertEqual(n["status"], "done")
             self.assertEqual(store.db.conn.execute("SELECT COUNT(*) FROM corrections WHERE entry = 'diary'").fetchone()[0], 1)
-            # 她只是觉得写得不好要删：删掉这句，不开纠错单（她 2026-11-02）
+            # 她只是觉得写得不好要删：删掉这句，不开纠错单
             self.assertTrue(wb.act("diary.note", {"day": day, "text": "晚上早早睡了。", "note": "这句没意思，删掉吧"})["ok"])
             self.assertNotIn("早早睡了", diary.get(store.db, day)["body"])
             self.assertEqual(store.db.conn.execute("SELECT COUNT(*) FROM corrections WHERE entry = 'diary'").fetchone()[0], 1)

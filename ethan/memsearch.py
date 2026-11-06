@@ -1,4 +1,4 @@
-"""查记忆 v2（docs/design/digital-life-spec.md 第 5 节，2026-10-30 她认可）。
+"""查记忆 v2（docs/design/digital-life-spec.md 第 5 节）。
 
 以前 小伴 每轮只拿她这句话去第二大脑里按两字片段打分，关于她的事实、经历、文件全文、流水、以前的聊天都查不到。
 现在所有记忆进一个索引（mem_docs + FTS5 全文索引），按场景查：
@@ -48,7 +48,7 @@ SYNONYMS = {"花了": ["消费", "支出"], "钱": ["消费", "支出", "预算"
             "运动": ["健身", "跑步", "训练"], "医生": ["看病", "医院"], "过敏": ["忌口"], "妈": ["妈妈", "母亲"],
             "爸": ["爸爸", "父亲"], "旅行": ["旅游", "出行"], "去过": ["旅行", "去了"],
             "编程": ["python", "代码"], "技能": ["会用", "能力"],
-            # 11-04 她问“读过哪些学校”查不到简历里的“大学、本科、进修”：先补同义说法，语义检索上了再去掉这类手工表
+            # “读过哪些学校”查不到简历里的“大学、本科、进修”：先补同义说法，语义检索上了再去掉这类手工表
             "学校": ["大学", "学院", "本科", "硕士", "博士", "进修"], "读过": ["本科", "毕业", "就读"], "读书": ["大学", "本科", "就读"],
             "工作": ["任职", "公司", "产品经理"], "上班": ["任职", "公司"], "做过": ["任职", "负责", "项目"]}
 SCENES = {"chat": ("private", 10), "os": ("internal", 15), "public": ("public", 5), "work": ("work", 10)}
@@ -139,7 +139,7 @@ def _put(db, key, kind, label, title, body, at, visibility="private", importance
     return True
 
 
-# ---------- 语义（向量）检索：按意思找（她 11-04：“向量语义库真的很需要！！！”，提前做，选 A：服务器上跑小模型） ----------
+# ---------- 语义（向量）检索：按意思找（提前做，选 A：服务器上跑小模型） ----------
 # 私密内容不出服务器（ontology.md 10.3 节）；模型 BAAI/bge-small-zh-v1.5（中文为主，512 维），用 fastembed（onnx，不要 torch）。
 # 默认关着：服务器上装好、实测内存和速度以后，用 python3 -m ethan.memsearch --data … --semantic on 打开（会把已有记忆都算一遍）。
 # 向量和原文同等对待：权限照旧在 search 里按 mem_docs 把关；删除时一起删（lifebase.forget）。
@@ -321,6 +321,51 @@ def similar_keys(db, query: str, top: int = SEM_TOP, min_sim: float = SEM_MIN, p
     return ranked[:top]
 
 
+SIMILAR_MIN = 0.6  # “意思相近的”比检索严一点：只列真的像的（首版暂定，服务器上看她的反馈再调）
+
+
+def similar_to(db, keys, user: str, top: int = 3, min_sim: float = SIMILAR_MIN, prefix: str = "fact:") -> dict:
+    """每条记忆意思最接近的几条（借鉴 8）：{key: [(别的 key, 相似度)]}。用索引里已经算好的向量互相比，
+    不另调模型、不用等模型加载；还没算向量的那条就没有。只给登记过的使用者，权限照 search 按 mem_docs 把关。"""
+    from . import memusers
+    who = memusers.need(user, "search")
+    if lifebase.on_hold(db) and not who.get("all"):
+        return {}
+    keys = [k for k in dict.fromkeys(keys or []) if k]
+    if not keys:
+        return {}
+    ensure(db)
+    try:
+        rows = db.conn.execute("SELECT v.key, v.vec, d.visibility, d.know, d.read_by, d.dim FROM mem_vec v JOIN mem_docs d ON d.key = v.key "
+                               "WHERE v.key LIKE ?", (prefix + "%",)).fetchall()
+    except Exception:
+        return {}
+    allowed = lifebase.LEVELS[lifebase.LEVELS.index(who["level"]):]
+    pool = [r for r in rows if who.get("all") or (r["visibility"] in allowed and memusers.may_read(user, r["know"], r["read_by"], r["dim"]))]
+    vecs = {r["key"]: _unpack(r["vec"]) for r in pool}
+    want = [k for k in keys if k in vecs]
+    out = {}
+    if want and len(pool) > 1:
+        try:
+            import numpy as np
+            mat = np.asarray([vecs[r["key"]] for r in pool], dtype=np.float32)
+            sims = mat[[next(i for i, r in enumerate(pool) if r["key"] == k) for k in want]] @ mat.T
+            sims = sims.tolist()
+        except Exception:
+            sims = [[sum(a * b for a, b in zip(vecs[k], vecs[r["key"]])) for r in pool] for k in want]
+        for k, row in zip(want, sims):
+            ranked = sorted(((pool[j]["key"], s) for j, s in enumerate(row) if pool[j]["key"] != k and s >= min_sim), key=lambda x: -x[1])
+            if ranked:
+                out[k] = [(x, round(float(s), 3)) for x, s in ranked[:top]]
+    try:
+        db.conn.execute("INSERT INTO retrieval_log (at, scene, round, queries, keys, latency_ms, user, via) VALUES (?, 'similar', 0, ?, ?, 0, ?, 'similar')",
+                        (_now(), json.dumps(want[:50]), json.dumps(sorted({x for v in out.values() for x, _ in v})), user))
+        db.conn.commit()
+    except Exception:
+        pass
+    return out
+
+
 def set_semantic(db, on: bool) -> dict:
     """打开 / 关掉语义检索。打开时把已有记忆的向量一次算完。"""
     ensure(db)
@@ -353,9 +398,12 @@ def refresh(db, root=None) -> int:
     for r in db.conn.execute("SELECT * FROM facts"):
         if r["status"] == "deleted":  # 她要求删掉的：不进索引（lifebase.forget 已经删了索引里的副本）
             continue
-        valid = r["valid_to"] is None and r["status"] not in ("invalid", "suspended")  # 停用的（删除后剩下的依据待核）不给
+        state = lifebase.fact_state(r)  # “算不算数”只在 lifebase 判（MEM_VIEWS["recall"]）：停用的、过时的、作废的不给
+        valid = state in lifebase.MEM_VIEWS["recall"]["states"]
+        # 临时状态过了预计到的那天（决定 10）：还能查到，但写明是以前的状态，小伴 不会当成现在
+        gone = f"〔到期了：原定到 {r['until'][:10]}，现在不一定还这样〕" if state == "expired" else ""
         n += _put(db, f"fact:{r['id']}", "fact", "关于她：" + lifebase.DIM_NAMES.get(r["dimension"], r["dimension"]),
-                  None, r["statement"] + (f"（{r['detail']}）" if r["detail"] else ""), r["valid_from"] or r["recorded_at"],
+                  None, r["statement"] + (f"（{r['detail']}）" if r["detail"] else "") + gone, r["valid_from"] or r["recorded_at"],
                   r["visibility"], r["importance"], decay=False, valid=valid,
                   know=r["kind"] if "kind" in r.keys() else None, read_by=r["read_by"] if "read_by" in r.keys() else None, dim=r["dimension"])
     for r in db.conn.execute("SELECT * FROM events"):
@@ -436,7 +484,7 @@ def search(db, queries, scene: str = "chat", limit: int = None, max_level: str =
     from . import memusers
     who = memusers.need(user, "search")  # 只登记了读某几项的（日记只读写作规范）不能检索
     if lifebase.on_hold(db) and not who.get("all"):
-        return []  # 记忆暂停中（恢复后核不清删除记录，她 11-03 选先不用）
+        return []  # 记忆暂停中（恢复后核不清删除记录，先不用）
     started = time.time()
     ensure(db)
     level, default_limit = SCENES[scene]

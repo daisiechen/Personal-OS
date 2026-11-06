@@ -1,4 +1,4 @@
-"""关系（ethan/relations.py，docs/design/relations.md，她 2026-11-04 认可）：Mac 端统计（谁先开口、跳过规则）、上报接口鉴权、
+"""关系（ethan/relations.py，docs/design/relations.md）：Mac 端统计（谁先开口、跳过规则）、上报接口鉴权、
 people 扩展和她改过的锁、删卡不再建回来、每晚整理（假模型）、三张清单、周报和聊天提示、工作台“关系”页的接口。"""
 
 import json
@@ -77,7 +77,7 @@ class StatsTest(unittest.TestCase):
         p = out[0]
         self.assertEqual(p["key"], relations.wx_key("wxid_lin"))
         self.assertNotIn("wxid_lin", json.dumps(out))
-        self.assertEqual((p["rounds"], p["her_starts"]), (3, round(2 / 3, 3)))  # 2025 那轮她先、11-01 她先、11-02 对方先
+        self.assertEqual((p["rounds"], p["her_starts"]), (3, round(2 / 3, 3)))  # 2025 那轮她先、先、11-02 对方先
         self.assertEqual((p["n90"], p["n365"], p["total"]), (5, 5, 6))
         self.assertEqual(p["her_share"], 0.5)
         self.assertEqual(p["last"], "2026-11-02")
@@ -191,7 +191,7 @@ class ServerTest(unittest.TestCase):
         relations.organize(self.db, FakeRouter(good), TODAY)
         self.assertEqual(relations.due(self.db, TODAY)["reply"], [])
 
-    def test_organize_reads_transcript_format(self):  # 微信交整段对话（她 11-04）：人物卡照样读、提示词写清谁说的
+    def test_organize_reads_transcript_format(self):  # 微信交整段对话：人物卡照样读、提示词写清谁说的
         from ethan import interviews, llm
         self.post([item()])
         body = "〔2026-11-03〕\n【小林】我下周三答辩，好紧张\n【小林】你圣诞回不回国？\n【她】答辩加油！"
@@ -374,8 +374,8 @@ class ReviewP2Test(unittest.TestCase):
     def test_nightly_calls_reapply_first(self):
         from ethan import nightly
         src = Path(nightly.__file__).read_text(encoding="utf-8")
-        self.assertTrue("reapply_deletions(store.db, args.data, may_hold=False)" in src)
-        self.assertLess(src.index("reapply_deletions("), src.index("run(store, build_router"))
+        self.assertTrue("reapply_deletions(store.db, data, may_hold=False)" in src)
+        self.assertLess(src.index('step(failed, "删除重做"'), src.index("lambda: run(store, router_for(), day)"))  # 2026-11-06 各步分开拦错误后
 
     def test_name_with_like_wildcards(self):
         relations.ingest_stats(self.db, {"people": [item(), item("b2" * 8, "小%"), item("c3" * 8, "小_")]})

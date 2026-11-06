@@ -1,4 +1,4 @@
-"""权限接进统一入口（docs/design/ontology.md 6.1 节，2026-11-03）：读取与推理按使用者把关；她逐条批准的对外表达。"""
+"""权限接进统一入口（docs/design/ontology.md 6.1 节）：读取与推理按使用者把关；她逐条批准的对外表达。"""
 
 import json
 import tempfile

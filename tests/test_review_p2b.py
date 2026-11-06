@@ -120,7 +120,7 @@ class Channel:
 
 
 def london(h, m=0):
-    return datetime(2026, 10, 23, h - 1, m, tzinfo=timezone.utc)  # 伦敦夏令时
+    return datetime(2026, 10, 23, h - 1, m, tzinfo=timezone.utc)  # 夏令时
 
 
 class SendingMarkTest(unittest.TestCase):

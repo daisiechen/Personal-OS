@@ -49,7 +49,7 @@ const OVERLAYS = ['[data-act="prep"]', '[data-act="desk"]'];
       await btn.click();
       await visit(`${pg}-${tab}`);
     }
-    await p.click('#nav [data-page="settings"]');  // 设置页的“系统体检”一屏（2026-11-04）
+    await p.click('#nav [data-page="settings"]');  // 设置页的“系统体检”一屏
     await p.waitForTimeout(600);
     const sysTab = await p.$('[data-act="settab"][data-v="sys"]');
     if (!sysTab) problems.push(`[${name}] 设置页没有“系统体检”`);
@@ -91,7 +91,7 @@ const OVERLAYS = ['[data-act="prep"]', '[data-act="desk"]'];
     }
     await p.click('#nav [data-page="main"]');
     await p.waitForTimeout(800);
-    // “先放着”的红点有去处（她 11-05）：首页按钮上有，点进去“先放着”那栏上也有同样的数；点开看过就消失
+    // “先放着”的红点有去处：首页按钮上有，点进去“先放着”那栏上也有同样的数；点开看过就消失
     const homeDot = await p.$('[data-act="prep"] .parkdot');
     if (homeDot) {
       const n = (await homeDot.innerText()).replace(/\D/g, "");

@@ -29,8 +29,8 @@ class GapTest(unittest.TestCase):
 
     def test_thin_dimensions_all_asked_once_a_day(self):
         got = mepage.pick_gaps(self.db, DAY)
-        self.assertGreaterEqual(len(got["asked"]), 10)  # 她 11-04 不设上限：空着的方面都挑
-        self.assertTrue(any("最不能让步" in q for q in got["asked"]))  # 价值观带一串接着问的（她 11-04：“让他来引导我聊吧”）
+        self.assertGreaterEqual(len(got["asked"]), 10)  # 不设上限：空着的方面都挑
+        self.assertTrue(any("最不能让步" in q for q in got["asked"]))  # 价值观带一串接着问的
         self.assertEqual(mepage.pick_gaps(self.db, DAY)["skipped"], "今天挑过了")
         self.assertEqual(len(mepage.pick_gaps(self.db, DAY + timedelta(days=1))["asked"]), 0)  # 一周内挑过的不再挑
         self.assertEqual(len(mepage.pick_gaps(self.db, DAY + timedelta(days=2), n=2)["asked"]), 0)
@@ -75,7 +75,7 @@ if __name__ == "__main__":
 
 
 class PendingCleanTest(unittest.TestCase):
-    """她 11-04：“几点起床为什么要我确认两遍？”“是给我的问答题么？”"""
+    """"""
 
     def test_one_off_and_duplicates_not_asked_and_gaps_not_counted(self):
         with tempfile.TemporaryDirectory() as tmp:

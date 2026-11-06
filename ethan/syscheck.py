@@ -1,12 +1,13 @@
-"""系统体检一屏看全（她 11-04：“系统页是不是也得对应着升级一下？做一次完整的系统检查？”）。
+"""系统体检一屏看全。
 
 设置页“系统体检”和每 3 小时的巡检（ethan/checkup.py）看同一份：
 - 定时任务：每个任务的中文名、上次、结果、下次、超时没跑（ethan/jobs.py 的 JOBS，和 deploy/systemd 的定时器一一对应）；
 - 自动上线：最近一次部署（提交号、结果、时间、挂掉的测试名）和每 2 分钟的检查心跳（ethan/autodeploy.py）；
 - 后台大批整理：微信对话、人物卡整理到哪了，从数据库现算；有活却 2 小时没进展算卡住；
 - 主动消息里的几样（聊聊、周五周末推荐、派 Grok 查本周新闻 / 周末去哪）和她 Mac 上的导出（服务器只看最近一次收到）；
+- 订阅额度：最近 5 小时用了多少、门槛多少、后台整理是不是在让路（ethan/bgwork.py budget）；
 - 来源健康（lifebase.source_health）、服务器可用内存（/proc/meminfo）、红点自检（ethan/invariants.py）。
-只读：不改她的数据。时间按伦敦时间写给她看。
+只读：不改她的数据。时间按本地时间写给她看。
 """
 
 import json
@@ -132,6 +133,26 @@ def backlog(db, now: datetime = None) -> dict:
             "people": {"done": p_done, "total": p_total, "left": p_todo}, "last_people": _fmt(last_people), "people_stuck": people_stuck}
 
 
+# ---------- 订阅额度（5 小时窗口） ----------
+def quota(root, now: datetime = None) -> dict:
+    """订阅最近 5 小时的用量和后台是否在让路（和 bgwork.PatientRouter 用同一条规则）。没有账本就当 0。"""
+    from . import bgwork
+    from .core.ledger import Ledger
+    from .core.router import Settings
+    root = Path(root)
+    settings = Settings(root / "settings.json")
+    if not (root / "ledger").is_dir():
+        from .core import quota as q
+        block = bgwork.paid_block(root, now)
+        return {"calls": 0, "used_usd": 0.0, "rate_per_hour": 0.0, "projected_usd": 0.0, "tokens": {}, "tokens_known": 0,
+                "by_purpose": {}, "hours": 5, "limit_usd": bgwork.budget_limit(settings), "util": q.windows(root, now),
+                "util_max": bgwork.UTIL_MAX, "paid_block": block, "yielding": bool(block)}
+    out = bgwork.budget(Ledger(root / "ledger"), settings, now)
+    if out.get("paid_block"):  # 体检显示本地时间
+        out["paid_block"] = {**out["paid_block"], "until_local": _fmt(out["paid_block"].get("until"))}
+    return out
+
+
 # ---------- 主动消息里的几样、派活、Mac 上的导出 ----------
 def feeds(db, now: datetime = None) -> list:
     """{name, last, detail, ok}：这些不是单独的定时任务（在主动消息里，或在她 Mac 上），单列出来才看得到有没有在动。"""
@@ -204,7 +225,7 @@ def overview(root, db, now: datetime = None, wb=None, meminfo: Path = Path("/pro
     from .clock import her_today
     now = now or datetime.now(timezone.utc)
     out = {"jobs": jobs.overview(root, now), "deploy": deploy_info(root, now), "memory": memory_info(meminfo)}
-    for key, fn in (("backlog", lambda: backlog(db, now)), ("feeds", lambda: feeds(db, now)), ("sources", lambda: lifebase.source_health(db, now))):
+    for key, fn in (("backlog", lambda: backlog(db, now)), ("quota", lambda: quota(root, now)), ("feeds", lambda: feeds(db, now)), ("sources", lambda: lifebase.source_health(db, now))):
         try:
             out[key] = fn()
         except Exception as e:

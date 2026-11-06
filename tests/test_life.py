@@ -76,7 +76,7 @@ class Case(unittest.TestCase):
 
 class ClockTest(unittest.TestCase):
     def test_time_brief_shows_both_cities_weekday_and_gap(self):
-        now = utc(2026, 10, 23, 18, 40)  # 伦敦夏令时 19:40，深圳 02:40
+        now = utc(2026, 10, 23, 18, 40)  # 夏令时 19:40，深圳 02:40
         records = [{"role": "mia", "at": "2026-10-23T13:40:00+00:00", "text": "嗯"}]
         brief = time_brief(records, now=now)
         self.assertIn("伦敦）现在：2026-10-23 周五 19:40", brief)
@@ -130,7 +130,7 @@ class LifeTest(Case):
 
 
 class PastDaysTest(Case):
-    def test_he_remembers_the_last_few_days(self):  # 2026-10-31：忘了几天前的咖啡实验
+    def test_he_remembers_the_last_few_days(self):  # 忘了几天前的咖啡实验
         self.wiki.write("ethan-life/day-2026-10-27", "一天", "上午去三家店做咖啡实验，买了四杯。\n\n## 今天临时变化\n- 晚上和她说了实验结果")
         self.wiki.write("ethan-life/day-2026-10-30", "一天", "加班。")
         got = life.past_days(self.wiki, date(2026, 10, 31))
@@ -155,7 +155,7 @@ class AgentTimeTest(Case):
         self.assertRegex(messages[-1]["content"], r"^【\d{2}-\d{2} \d{2}:\d{2}】在干嘛$")
 
     def test_today_follows_london_not_server(self):
-        ctx = self.ethan.context(now=utc(2026, 10, 23, 22, 30))  # 伦敦 23:30，旧服务器已是 24 号
+        ctx = self.ethan.context(now=utc(2026, 10, 23, 22, 30))  # 本地 23:30，旧服务器已是 24 号
         self.assertEqual(ctx["today"], "2026-10-23")
 
     def test_to_messages_without_tz_unchanged(self):
@@ -180,7 +180,7 @@ class ScriptDrivenProactiveTest(Case):
         return tick(self.ethan, self.channel, now=now)
 
     def test_moment_sent_once_with_its_reason(self):
-        at = utc(2026, 10, 23, 8, 25)  # 深圳 16:25，伦敦 09:25
+        at = utc(2026, 10, 23, 8, 25)  # 深圳 16:25，本地 09:25
         self.assertEqual(self.run_at(at), "m-16:20：已发送")
         self.assertIn("分享早上被大爷超车的事", self.backend.seen[-1][0])
         self.assertEqual(self.channel.sent, [(42, ["在呢"], [])])
@@ -188,7 +188,7 @@ class ScriptDrivenProactiveTest(Case):
         self.assertEqual(len(self.channel.sent), 1)
 
     def test_early_morning_moment_is_her_bedtime_and_quiet_hours_win(self):
-        # 深圳 10-23 05:40 = 伦敦 10-22 22:40，正好是她睡前
+        # 深圳 10-23 05:40 = 本地 10-22 22:40，正好是她睡前
         self.assertEqual(self.run_at(utc(2026, 10, 22, 21, 45)), "m-05:40：已发送")
         self.assertIn("拉伸", self.backend.seen[-1][0])
         self.settings.set("quiet_hours", "08:00-10:00")

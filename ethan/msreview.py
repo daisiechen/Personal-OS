@@ -1,4 +1,4 @@
-"""里程碑复盘由 小伴 先起草（她 2026-11-02 点头：“1-5 先做吧”，第 4 件）。
+"""里程碑复盘由 小伴 先起草（第 4 件）。
 
 以前里程碑最后的“复盘”只是一件要勾的任务。现在复盘排进待办那天（阶段最后两天，或这阶段一次性任务都做完时），
 早上排计划时 小伴 先写一份草稿：这一阶段做成了什么、差了什么（数字由代码算）、给下个阶段的 1–3 条调整建议。
@@ -77,7 +77,7 @@ def write(db, router, m: dict, day: date) -> dict:
                   '"suggest": ["给下个阶段的调整建议，最多 3 条，每条一句、具体到能改的（频次、截止日、加减哪件事）"]}'
                   "\n\n### 事实\n" + json.dumps(f, ensure_ascii=False, indent=1))
         try:
-            reply = router.complete(system, [{"role": "user", "content": "（起草这一阶段的复盘）"}])
+            reply = router.complete(system, [{"role": "user", "content": "（起草这一阶段的复盘）"}], purpose="ms-review")
             text = reply.text.strip()
             data = json.loads(text[text.find("{"): text.rfind("}") + 1])
             if str(data.get("summary") or "").strip():

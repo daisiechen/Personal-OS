@@ -26,7 +26,7 @@ def tiny_xlsx(sheets: dict) -> bytes:
 
 
 class ExploreTest(unittest.TestCase):
-    """2026-11-01 她更新了探索地图：设置页上传 xlsx，旧的先备份；新的“成就”表代替“Goal”表。"""
+    """更新了探索地图：设置页上传 xlsx，旧的先备份；新的“成就”表代替“Goal”表。"""
 
     def test_upload_replaces_map_and_reads_new_achievements_sheet(self):
         with tempfile.TemporaryDirectory() as d:
@@ -44,10 +44,10 @@ class ExploreTest(unittest.TestCase):
             self.assertEqual((st["countries"], st["goals_done"], st["goals_total"]), (1, 1, 2))
             with self.assertRaises(ValueError):
                 explore.save(root, b"not a zip")
-            # 工作台里直接改状态（她 2026-11-01：去过、跳过随时会调）
+            # 工作台里直接改状态（去过、跳过随时会调）
             explore.set_status(root, "欧洲", 1, "已结束")
             self.assertEqual(territory.explore_stats(root)["countries"], 2)
-            with self.assertRaises(ValueError):  # 没有“没标”这个状态（她 2026-11-01），没标的就是未开始
+            with self.assertRaises(ValueError):  # 没有“没标”这个状态，没标的就是未开始
                 explore.set_status(root, "欧洲", 1, "")
             # 签证内容能改；国内的表没有签证，也没有“签证困难”
             explore.set_field(root, "欧洲", 1, "签证", "申根 90 天")
@@ -57,7 +57,7 @@ class ExploreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 explore.set_field(root, "欧洲", 1, "状态", "x")
             self.assertNotIn("签证困难", explore.statuses("中国"))
-            # 工作台是唯一数据源（她 2026-11-02）：能加、能删
+            # 工作台是唯一数据源：能加、能删
             explore.add_row(root, "欧洲", "葡萄牙", "里斯本", visa="申根")
             self.assertEqual(explore.load(root)["sheets"]["欧洲"][-1], {"国家": "葡萄牙", "状态": "未开始", "省份/区域": "里斯本", "签证": "申根"})
             explore.add_row(root, "中国", "大理", "云南省")

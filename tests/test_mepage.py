@@ -101,7 +101,7 @@ class MePageTest(unittest.TestCase):
         got = mepage.ask(self.db, Router(["一周 5 次", "我不知道"]), "我每周练几次")
         self.assertEqual([a["user"] for a in got["answers"]], ["ethan", "twin"])
         self.assertIn(f"fact:{fid}", got["answers"][0]["keys"])
-        self.assertEqual(got["answers"][1]["keys"], [])  # Dais只能看公开的，私密的查不到
+        self.assertEqual(got["answers"][1]["keys"], [])  # 主页助手只能看公开的，私密的查不到
         out = mepage.verdict(self.db, got["id"], {"ethan": "ok", "twin": "bad"})
         self.assertEqual(len(out["tickets"]), 1)  # 说错的那个开一张纠错单
         t = self.db.conn.execute("SELECT user, entry, right FROM corrections").fetchone()
@@ -114,16 +114,16 @@ class MePageTest(unittest.TestCase):
 
     def test_undo_ticket_restores(self):
         old = lifebase.add_fact(self.db, "preferences", "她住在 Camden 公寓", [self.ev])
-        t = memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Camden")
+        t = memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden")
         self.assertTrue(mepage.undo_ticket(self.db, t["id"])["ok"])
         self.assertEqual(self.db.conn.execute("SELECT status, valid_to FROM facts WHERE id = ?", (old,)).fetchone()[0], "active")
         self.assertEqual(self.db.conn.execute("SELECT status FROM facts WHERE id = ?", (t["fact_id"],)).fetchone()[0], "invalid")
         self.assertEqual(mepage.page(self.db)["tickets"], [])
 
     def test_undo_ticket_when_clock_ticks_between_fact_and_ticket(self):
-        """服务器慢时新说法和纠错单不在同一秒（2026-11-04 上线测试没过）：照样作废新记的那条。"""
+        """服务器慢时新说法和纠错单不在同一秒（上线测试没过）：照样作废新记的那条。"""
         lifebase.add_fact(self.db, "preferences", "她住在 Camden 公寓", [self.ev])
-        t = memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Camden")
+        t = memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Camden")
         self.db.conn.execute("UPDATE facts SET recorded_at = '2026-11-04T10:00:00+00:00' WHERE id = ?", (t["fact_id"],))
         self.db.conn.execute("UPDATE corrections SET at = '2026-11-04T10:00:01+00:00' WHERE id = ?", (t["id"],))
         self.assertTrue(mepage.undo_ticket(self.db, t["id"])["ok"])
@@ -132,7 +132,7 @@ class MePageTest(unittest.TestCase):
     def test_page_orders_users_and_counts_only_real_errors(self):
         memusers.open_ticket(self.db, "现在吃香菜", "不吃香菜", kind="changed")  # 变了：不算错
         p = mepage.page(self.db)
-        self.assertEqual([u["user"] for u in p["users"]], ["ethan", "twin", "site", "os"])  # 按实体（她 10-31：不要把每个任务都放上来；11-01：Dais 是聊天沟通的，和做文案的个人主页分开）
+        self.assertEqual([u["user"] for u in p["users"]], ["ethan", "twin", "site", "os"])  # 按实体（不要把每个任务都放上来；11-01：主页助手 是聊天沟通的，和做文案的个人主页分开）
         self.assertIn("计划器", p["users"][3]["parts"])
         self.assertEqual(p["wrong"], 0)
         self.assertEqual(p["tickets"][0]["kind"], "changed")
@@ -150,7 +150,7 @@ class MePageTest(unittest.TestCase):
         self.assertEqual(mepage.pending_count(self.db), 0)
 
     def test_all_memory_tabs(self):
-        """2026-10-31：全部记忆四个标签——关于你、发生过的事、人（收藏和资料是原来的大脑页）；不再只给 300 条。"""
+        """全部记忆四个标签——关于你、发生过的事、人（收藏和资料是原来的大脑页）；不再只给 300 条。"""
         for i in range(120):
             lifebase.add_fact(self.db, "preferences", f"喜欢第 {i} 种东西", [self.ev])
         got = mepage.all_memory(self.db, limit=100)
@@ -166,7 +166,7 @@ class MePageTest(unittest.TestCase):
         self.assertEqual(mepage.people(self.db, "某商学院")["items"][0]["name"], "Amy")
 
     def test_yes_with_new_dates(self):
-        """2026-10-31：她在待你定里改了时间，点“对”要一起存。"""
+        """她在待你定里改了时间，点“对”要一起存。"""
         fid = lifebase.add_fact(self.db, "resources", "家里没有秤", [self.ev])
         pid = mepage.add_question(self.db, "家里还是没有秤吗？", fid)
         self.assertTrue(mepage.resolve(self.db, pid, "yes", since="2026-10-20", until="2026-11-15")["ok"])
@@ -186,7 +186,7 @@ class MePageTest(unittest.TestCase):
 
 
 class AllMemorySearchTest(unittest.TestCase):
-    """11-04 她在“全部记忆”里搜“Lbs”“读过的学校”都是“没有”。"""
+    """在“全部记忆”里搜“某商学院”“读过的学校”都是“没有”。"""
 
     def test_case_insensitive_synonyms_and_source_label(self):
         import tempfile
@@ -198,14 +198,14 @@ class AllMemorySearchTest(unittest.TestCase):
             db = store.db
             lifebase.ensure(db)
             ev = lifebase.add_evidence(db, "file", "file:x", "2026-11-03", "简历", path="handoff/简历.pdf")
-            lifebase.add_fact(db, "abilities", "在某大学读软件工程本科（2012-2016）", [ev], context="在她发来的文件《简历》里写的")
+            lifebase.add_fact(db, "abilities", "在某大学读统计学本科（2014-2018）", [ev], context="在她发来的文件《简历》里写的")
             lifebase.add_fact(db, "resources", "在 某商学院 交换", [ev])
             db.conn.commit()
             texts = lambda q: [x["text"] for x in mepage.all_memory(db, q)["items"]]
-            self.assertEqual(texts("Lbs"), ["在 某商学院 交换"])
-            got = mepage.all_memory(db, "Lbs")
+            self.assertEqual(texts("某商学院"), ["在 某商学院 交换"])
+            got = mepage.all_memory(db, "某商学院")
             self.assertEqual((got["total"], [(x["key"], x["n"]) for x in got["dims"]]), (1, [("resources", 1)]))  # 标签数跟着搜索结果
-            self.assertIn("在某大学读软件工程本科（2012-2016）", texts("读过的学校"))
+            self.assertIn("在某大学读统计学本科（2014-2018）", texts("读过的学校"))
             item = mepage.all_memory(db, "本科")["items"][0]
             self.assertEqual(item["said"], "你给的资料")
             self.assertIn("简历", item["context"])

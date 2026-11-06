@@ -1,7 +1,9 @@
 # 导出她的微信聊天（全部历史），交给 小伴（ontology 1.9）
 
-为什么做：她 11-04 问“那我要导出所有历史会话怎么办？”——要**全部历史**，不止开源工具 `read` 的每会话 200 条。
-交给 小伴 的是**整段对话**（她 11-04：“难道别人跟我的对话不是我的记忆么！！！”）：她说的算原话，别人说的关于她的记成“别人说的”（写明是谁说的），只关于别人的事交给人物卡（design/ontology-plan.md 1.9，数据源 S19）。
+[English](../en/operations/wechat-export.md) | 简体中文
+
+为什么做：“那我要导出所有历史会话怎么办？”——要**全部历史**，不止开源工具 `read` 的每会话 200 条。
+交给 小伴 的是**整段对话**：她说的算原话，别人说的关于她的记成“别人说的”（写明是谁说的），只关于别人的事交给人物卡（design/ontology-plan.md 1.9，数据源 S19）。
 
 怎么做的：钥匙用开源工具 [DaneelOlivaw1/macos-wechat-export](https://github.com/DaneelOlivaw1/macos-wechat-export)
 取（只给微信的**临时副本**重签名、用 LLDB 启动副本取钥，原版微信和 SIP 都不动）；读聊天用本仓库的 `ethan/wechatexport.py`，
@@ -145,18 +147,18 @@ source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -na
 
 - 每个会话写到 `~/wechat-export/<会话名>.jsonl`（目录只有她能读）。
 - 一次最多交 30 批（每批约 1.2 万字），免得服务器一晚整理不完；结果里有“剩下的下次接着交”就是还没交完，**隔天**再跑一次同一条命令，
-  直到没有这句话（每周日的自动任务也会接着交）。
+  直到没有这句话（每天的自动任务也会接着交）。
 - 只想交某几个会话：末尾加 `--chats "小王,读书会"`；群默认只交她说过话的，全都要加 `--all`；也想导文件传输助手加 `--filehelper`。
 - 只导出不交：把 `--send` 换成 `--export`。
-- `--send` 时顺带把私聊统计交给服务器建人物卡（工作台“关系”页，design/relations.md）；某些人不想建卡：末尾加 `--people-skip "张三,某某"`（名字里含就跳过），装每周自动跑时也带上。
+- `--send` 时顺带把私聊统计交给服务器建人物卡（工作台“关系”页，design/relations.md）；某些人不想建卡：末尾加 `--people-skip "张三,某某"`（名字里含就跳过），装每天自动跑时也带上。
 
-### 9. 装每周日自动跑
+### 9. 装每天自动跑（11-06 起每天，原来每周日）
 
 ```sh
 source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -name Personal-OS 2>/dev/null | head -1)" && python3.14 -m ethan.wechatexport --db-root "$WX_DB" --keys "$WX_KEYS" --self-id "$WX_SELF" --install-launchd
 ```
 
-每周日 20:43 增量导出 + 交，日志 `~/.config/ethan/wechatexport.log`。马上试跑一次、看日志：
+每天 22:43 增量导出 + 交（Mac 那会儿睡着，醒来后补跑），日志 `~/.config/ethan/wechatexport.log`。马上试跑一次、看日志：
 
 ```sh
 launchctl start com.ethan.wechatexport; sleep 60; tail -30 ~/.config/ethan/wechatexport.log

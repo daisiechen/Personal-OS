@@ -1,4 +1,4 @@
-"""生活记录：小伴 在聊天里顺手记下的几类事，给一直是灰的健康线和拿不到的成就当数据（2026-10-28 全面检查后补）。
+"""生活记录：小伴 在聊天里顺手记下的几类事，给一直是灰的健康线和拿不到的成就当数据（全面检查后补）。
 
 标记（小伴 写在回复末尾，不会发给她）：
   [人物 名字 见面|联系|新认识 一句话]  社交领地：和朋友见面、认识新朋友、联系重要的人；顺手更新人物卡和最近联系
@@ -53,7 +53,8 @@ def note(db, text: str, day: date) -> int:
         if what == "新认识" and not db.conn.execute("SELECT 1 FROM people WHERE name = ?", (name,)).fetchone():
             fields["circle"], fields["how_met"] = "新朋友", line.strip()[:100] or None
             fields["last_contact"] = day.isoformat()
-        db.upsert_person(name, **fields)
+        from . import relations
+        relations.upsert(db, name, source="ethan", **fields)  # 她删过的人不建回来（life_log 照记）
         add(db, KIND[what], day, name, line.strip())
         got += 1
     for line in TOPIC.findall(text):

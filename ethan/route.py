@@ -1,4 +1,4 @@
-"""今天的路线：把她一天要去的地方串成一条路（她 2026-11-02）。
+"""今天的路线：把她一天要去的地方串成一条路。
 
 她的原话：“你在排日程的时候，应该自己先串联一下我的行为路径……我今天的路线是什么样子的？时间线上有没有冲突？
 我是应该吃完 Sunday roast 直接回家，再出发去训练，还是直接去健身房锻炼？”
@@ -99,7 +99,7 @@ def plan(stops_: list, minutes) -> dict:
                         "trip_min": direct, "route": f"从「{here_title}」直接过去"}
                 if leave < free_at and _m(s["start"]) >= free_at:
                     late = free_at + direct - _m(s["start"])
-                    if late > 0:  # 赶不上：想清楚是前面早点走，还是后面往后挪（她 2026-11-02）
+                    if late > 0:  # 赶不上：想清楚是前面早点走，还是后面往后挪
                         tip = fix_tip(prev, s, direct, free_at)
                         conflicts.append(f"「{here_title}」{_hm(free_at)} 结束，直接去「{s['title']}」也要晚到 {late} 分钟。{tip['text']}")
                         rows.append((tip["leave"], "⚠️", tip["text"], {**info, "leave": tip["leave"]}))

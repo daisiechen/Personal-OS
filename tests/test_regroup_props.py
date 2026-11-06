@@ -123,7 +123,7 @@ class RegroupTest(unittest.TestCase):
         """服务器第二次只读试跑里又归错的几类（示意句，金额改写过）。"""
         keep = [
             ("resources", "在 Monzo 银行开了账户", "account_status"),
-            ("resources", "Monzo 出具证明信确认她名下有账户", "account_status"),
+            ("resources", "银行出具证明信确认她名下有账户", "account_status"),
             ("resources", "持有某银行双币信用卡", "account_status"),
             ("resources", "双币卡额度若干元", "account_status"),
             ("resources", "个人总授信额度若干元", "account_status"),
@@ -240,7 +240,7 @@ class RegroupTest(unittest.TestCase):
         self.assertEqual(onto_query.SENSITIVE["application_status"], "resources")
 
     def test_migration_approved_and_pending(self):
-        """她 11-04 “同意归类”：草稿改名成正式迁移，开头写了她的原话，会被执行。"""
+        """“同意归类”：草稿改名成正式迁移，开头写了她的原话，会被执行。"""
         names = [p.name for p in migrate.pending(ROOT, self.root)]
         self.assertIn("20261104_regroup_props.py", names)
         self.assertIn("同意归类", (ROOT / "migrations" / "20261104_regroup_props.py").read_text(encoding="utf-8"))

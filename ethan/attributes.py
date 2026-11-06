@@ -1,4 +1,4 @@
-"""七项属性：她这个角色在各领域的健康度（docs/design/attributes.md，2026-10-30 她认可算法）。
+"""七项属性：她这个角色在各领域的健康度（docs/design/attributes.md，算法）。
 
 每项属性由几个小项组成，每个小项按“达到她自己的标准”算 0–100，按权重加起来。
 - 看最近 30 天的真实记录；没有数据来源的小项不算（剩下的按比例重新分权重），全都没有就是“未解锁”（None）。
@@ -6,7 +6,7 @@
 - 涨跌：和 30 天前同样算法的分数比，30 天前那一整段都有记录才给。
 - 系统开始记录不满 30 天时，按已有的天数折算标准（比如才记了 9 天，训练标准就是 17×9/30 天）。
 - 每晚存一份当天的快照（attribute_daily），以后“我”页的回看条按天取。
-页面怎么展示她还在想（2026-10-30“卡册和第二大脑的前端先不动”），这里只管算。
+页面怎么展示她还在想（“卡册和第二大脑的前端先不动”），这里只管算。
 运行：python3 -m ethan.attributes --data <数据目录> [--day 2026-10-30]
 """
 
@@ -15,6 +15,7 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
+from . import standards
 from . import lifelog, places_log, territory, worktime
 from .clock import her_today
 
@@ -62,12 +63,13 @@ def _ontime(db, key, start, day):
 # ---------- 各项 ----------
 def body(db, start, day):
     out = []
+    # 满分 = 领域标准表的目标（ethan/standards.py，她的决定 8：领地灯和属性分按同一张表）
     n = _habit(db, "训练", start, day)
-    out.append(_item("训练", 30, None if n is None else _ratio(n, 17 * _k(start, day)), f"{n} 天" if n is not None else "没有记录", "30 天 17 天（每周 4 次）"))
+    out.append(_item("训练", 30, None if n is None else _ratio(n, standards.full("training", start, day)), f"{n} 天" if n is not None else "没有记录", standards.window_label("training")))
     n = _habit(db, "0 点前睡", start, day)
-    out.append(_item("睡眠", 25, None if n is None else _ratio(n, WINDOW * _k(start, day)), f"{n} 天零点前睡" if n is not None else "没有记录", "30 天都零点前睡"))
+    out.append(_item("睡眠", 25, None if n is None else _ratio(n, standards.full("sleep", start, day)), f"{n} 天零点前睡" if n is not None else "没有记录", standards.window_label("sleep")))
     n = _habit(db, "吃够蛋白质", start, day)
-    out.append(_item("饮食", 20, None if n is None else _ratio(n, WINDOW * _k(start, day)), f"{n} 天吃够蛋白质" if n is not None else "没有记录", "30 天都吃够蛋白质"))
+    out.append(_item("饮食", 20, None if n is None else _ratio(n, standards.full("protein", start, day)), f"{n} 天吃够蛋白质" if n is not None else "没有记录", standards.window_label("protein")))
     w = territory._weights(db, day, WINDOW)
     if len(w) >= 2 and date.fromisoformat(w[0]["day"]) <= day - timedelta(days=14):
         change = round(w[-1]["avg"] - w[0]["avg"], 2)
@@ -89,28 +91,28 @@ def body(db, start, day):
 
 def study(db, start, day):
     n = _habit(db, "英语陪练（Grok）", start, day)
-    out = [_item("英语陪练", 50, None if n is None else _ratio(n, 20 * _k(start, day)), f"{n} 次" if n is not None else "没有开", "30 天 20 次（每周 5 次）")]
+    out = [_item("英语陪练", 50, None if n is None else _ratio(n, standards.full("english", start, day)), f"{n} 次" if n is not None else "没有开", standards.window_label("english"))]
     n = territory.cognitive_days(db, start, day)
     if n is not None:
-        out.append(_item("认知拓展", 30, _ratio(n, 20 * _k(start, day)), f"{n} 天聊到新话题或学了知识点", "30 天 20 天"))
+        out.append(_item("认知拓展", 30, _ratio(n, standards.full("cognitive", start, day)), f"{n} 天聊到新话题或学了知识点", standards.window_label("cognitive")))
     else:
-        out.append(_item("认知拓展", 30, None, "还没有记录", "30 天 20 天"))
+        out.append(_item("认知拓展", 30, None, "还没有记录", standards.window_label("cognitive")))
     if lifelog.has(db, "course"):
         n = lifelog.count(db, "course", start, day)
-        out.append(_item("课程和读书", 20, _ratio(n, 8 * _k(start, day)), f"{n} 次", "30 天 8 次"))
+        out.append(_item("课程和读书", 20, _ratio(n, standards.full("course", start, day)), f"{n} 次", standards.window_label("course")))
     else:
-        out.append(_item("课程和读书", 20, None, "还没有记录来源", "30 天 8 次"))
+        out.append(_item("课程和读书", 20, None, "还没有记录来源", standards.window_label("course")))
     return out
 
 
 def life(db, start, day):
     n = _habit(db, "每周 1 次新体验", start, day)
-    out = [_item("新体验", 50, None if n is None else _ratio(n, 4 * _k(start, day)), f"{n} 次" if n is not None else "没有记录", "30 天 4 次")]
+    out = [_item("新体验", 50, None if n is None else _ratio(n, standards.full("new_exp", start, day)), f"{n} 次" if n is not None else "没有记录", standards.window_label("new_exp"))]
     if places_log.has_data(db):
         n = places_log.non_work_outings(db, start, day, territory._training_leaves(db, start, day))
-        out.append(_item("出门做工作以外的事", 25, _ratio(n, 4 * _k(start, day)), f"{n} 次", "30 天 4 次（按手机定位）"))
+        out.append(_item("出门做工作以外的事", 25, _ratio(n, standards.full("outing", start, day)), f"{n} 次", standards.window_label("outing") + "，按手机定位"))
     else:
-        out.append(_item("出门做工作以外的事", 25, None, "等手机定位", "30 天 4 次"))
+        out.append(_item("出门做工作以外的事", 25, None, "等手机定位", standards.window_label("outing")))
     if db.conn.execute("SELECT 1 FROM wishes LIMIT 1").fetchone():
         n = db.conn.execute("SELECT COUNT(*) FROM wishes WHERE status = 'done' AND done_at >= ?",
                             ((day - timedelta(days=90)).isoformat(),)).fetchone()[0]
@@ -166,7 +168,7 @@ def career(db, start, day):
     else:
         out.append(_item("工作时长健康", 30, None, "等 Mac 上的记录脚本", "每天不超过 8 小时"))
     works = lifelog.count(db, "book", start, day) + lifelog.count(db, "song", start, day) if (lifelog.has(db, "book") or lifelog.has(db, "song")) else None
-    out.append(_item("作品和发帖", 20, None if works is None else _ratio(works, 2 * _k(start, day)), f"{works} 次进展" if works is not None else "账号还没接", "30 天 2 次进展"))
+    out.append(_item("作品和发帖", 20, None if works is None else _ratio(works, standards.full("works", start, day)), f"{works} 次进展" if works is not None else "账号还没接", standards.window_label("works") + "进展"))
     return out
 
 
@@ -191,24 +193,25 @@ def money(db, start, day):
 
 def social(db, start, day):
     if not (lifelog.has(db, "meet") or lifelog.has(db, "new_friend") or lifelog.has(db, "contact")):
-        return [_item("和朋友见面", 40, None, "还没有记录", "30 天 4 次"), _item("联系重要的人", 35, None, "还没有记录", "按各自频率"),
-                _item("认识新朋友", 25, None, "还没有记录", "30 天 3 个")]
+        return [_item("和朋友见面", 40, None, "还没有记录", standards.window_label("meet")), _item("联系重要的人", 35, None, "还没有记录", "按各自频率"),
+                _item("认识新朋友", 25, None, "还没有记录", standards.window_label("new_friend"))]
     met = lifelog.count(db, "meet", start, day)
     new = lifelog.count(db, "new_friend", start, day)
-    people = db.conn.execute("SELECT COUNT(*) FROM people WHERE contact_every_days IS NOT NULL").fetchone()[0]
-    due = [p for p in db.people_to_contact(day) if "long_no_contact" in p["reasons"]]
-    return [_item("和朋友见面", 40, _ratio(met, 4 * _k(start, day)), f"{met} 次", "30 天 4 次"),
+    from . import relations  # “该联系谁”只用人物卡那套（5）
+    cs = relations.contact_status(db, day, "me_page")
+    people, due = cs["tracked"], cs["contact"]
+    return [_item("和朋友见面", 40, _ratio(met, standards.full("meet", start, day)), f"{met} 次", standards.window_label("meet")),
             _item("联系重要的人", 35, _ratio(people - len(due), people) if people else None,
                   f"{people - len(due)}/{people} 人按时联系" if people else "人物卡里还没设联系频率", "按各自频率"),
-            _item("认识新朋友", 25, _ratio(new, 3 * _k(start, day)), f"{new} 个", "30 天 3 个")]
+            _item("认识新朋友", 25, _ratio(new, standards.full("new_friend", start, day)), f"{new} 个", standards.window_label("new_friend"))]
 
 
 def academic(db, start, day):
     if lifelog.has(db, "research"):
         mins = lifelog.total(db, "research", start, day)
-        out = [_item("研究时间", 60, _ratio(mins, 480 * _k(start, day)), f"{mins / 60:.1f} 小时", "30 天 8 小时（每周 2 小时）")]
+        out = [_item("研究时间", 60, _ratio(mins, standards.full("research", start, day)), f"{mins / 60:.1f} 小时", standards.window_label("research"))]
     else:
-        out = [_item("研究时间", 60, None, "还没有记录", "30 天 8 小时")]
+        out = [_item("研究时间", 60, None, "还没有记录", standards.window_label("research"))]
     s, text = _ontime(db, "academic", start, day)
     out.append(_item("学术事项推进", 40, s, text, "截止日前做完"))
     return out

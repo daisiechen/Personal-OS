@@ -1,4 +1,4 @@
-"""从一份目标表格冷启动（2026-10-29 开源准备：用户有一张目标表，AI agent 按 SETUP-FOR-AGENTS.md 的规则整理成 JSON，
+"""从一份目标表格冷启动（开源准备：用户有一张目标表，AI agent 按 SETUP-FOR-AGENTS.md 的规则整理成 JSON，
 这里写进系统）。可重复运行：标题一样的不重复建，只更新。
 
   python3 -m ethan.goals_import --data <数据目录> goals.json

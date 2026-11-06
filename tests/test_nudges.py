@@ -39,9 +39,10 @@ class NudgeTest(unittest.TestCase):
         now = at(14, 32)
         slots = [worktime.slot_of(now - timedelta(minutes=5 * k)) for k in range(1, 20)]
         worktime.record(self.db, slots, "mac")
-        self.assertEqual(nudges._sitting(self.db, now, {})[0], "sit")
-        self.assertIsNone(nudges._sitting(self.db, now, {"sit_at": (now - timedelta(minutes=30)).isoformat(), "water-am": 1}))
-        self.assertEqual(nudges._sitting(self.db, at(15, 5), {"sit_at": now.isoformat()})[0], "water-pm")
+        self.assertEqual(nudges._sitting(self.db, now, {})[0], "sit")  # 两次隔 2 小时由 proactive.gate 管（tests/test_nudge_gate.py）
+        self.assertIsNone(nudges._water(self.db, now, {"water-am": 1}))
+        self.assertEqual(nudges._water(self.db, at(15, 5), {})[0], "water-pm")
+        self.assertIsNone(nudges._water(self.db, at(15, 5), {"water-pm": "已发送"}))
         self.assertIsNone(nudges._outing(self.db, at(17, 45), {}))  # 没接定位就不催
         places_log.record(self.db, "arrive", now=at(9))  # 接上了定位，今天没出门
         key, why = nudges._outing(self.db, at(17, 45), {})
@@ -61,7 +62,7 @@ if __name__ == "__main__":
 
 class DepartNudgeTest(NudgeTest):
     def test_calendar_trip_reminds_once_with_route(self):
-        """2026-10-29：她日历里的递签证没有出发提醒；现在提前 1 小时说清去哪、路上多久、几点出门。"""
+        """她日历里的递签证没有出发提醒；现在提前 1 小时说清去哪、路上多久、几点出门。"""
         import json
         plan = self.db.latest_plan(MONDAY.isoformat())
         brief = json.loads(plan["brief"])
@@ -79,7 +80,7 @@ class DepartNudgeTest(NudgeTest):
 
 class SurpriseOnceTest(NudgeTest):
     def test_reveal_only_once_across_days(self):
-        """拆了惊喜，小伴 主动揭晓一次；第二天不会再“刚拆开”一遍（2026-10-29 自查）。"""
+        """拆了惊喜，小伴 主动揭晓一次；第二天不会再“刚拆开”一遍（自查）。"""
         from ethan import quests
         quests.seed(self.db)
         quests.award(self.db, 2500, "测试", MONDAY)
@@ -94,7 +95,7 @@ class SurpriseOnceTest(NudgeTest):
 
 class SurpriseInChatTest(NudgeTest):
     def test_ethan_checks_back_and_confirms_surprise(self):
-        """2026-11-01 她说别让她点“兑现了”：揭晓两天后 小伴 问一句玩了没有，由他记兑现。"""
+        """别让她点“兑现了”：揭晓两天后 小伴 问一句玩了没有，由他记兑现。"""
         from datetime import datetime
         from ethan import quests
         quests.seed(self.db)
@@ -114,7 +115,7 @@ class SurpriseInChatTest(NudgeTest):
         self.assertIsNone(nudges._surprise_check(self.db, datetime(2026, 11, 9, 12, 0), {}))
 
     def test_asks_about_every_prep_item_spaced_out(self):
-        """2026-11-01：小伴 记下要替她查体态评估，没来问她。她说“所有都问，但别同一时间问”：一次一件，隔 2 小时。"""
+        """小伴 记下要替她查体态评估，没来问她。她说“所有都问，但别同一时间问”：一次一件，隔 2 小时。"""
         from datetime import datetime
         t1 = self.db.add_task("查伦敦能做 physio 体态评估的诊所", promised_by_ethan=True)
         t2 = self.db.add_task("比较芬兰租车", promised_by_ethan=True)
@@ -123,16 +124,13 @@ class SurpriseInChatTest(NudgeTest):
         key, why = nudges._prep_ask(self.db, noon, {})
         self.assertIn(key, (f"prep-ask:{t1}", f"prep-ask:{t2}"))
         self.assertIn("准备 #", why)
-        self.assertIsNone(nudges._prep_ask(self.db, noon, {key: "已发送"}))  # 同一轮只问一件
         nudges.mark_told(self.db, [key])
-        self.assertIsNone(nudges._prep_ask(self.db, noon, {}))  # 刚问过，隔 2 小时才问下一件
-        self.db.conn.execute("UPDATE nudge_once SET at = datetime('now', '-3 hours') WHERE key = ?", (key,))
-        key2, _ = nudges._prep_ask(self.db, noon, {})
+        key2, _ = nudges._prep_ask(self.db, noon, {})  # 问过的不再问，轮到下一件；隔 2 小时由 proactive.gate 管（tests/test_nudge_gate.py）
         self.assertNotEqual(key2, key)
         self.assertIsNone(nudges._prep_ask(self.db, datetime(2026, 11, 2, 22, 0), {}))  # 晚上不问
 
     def test_evening_asks_what_is_left_to_check_in(self):
-        """2026-11-01：她常忘了打卡。9 点后 小伴 问一句还有哪几项，问过之后她回“做了”就能替她打卡。"""
+        """她常忘了打卡。9 点后 小伴 问一句还有哪几项，问过之后她回“做了”就能替她打卡。"""
         from datetime import datetime
         from ethan import quests
         quests.seed(self.db)
@@ -146,7 +144,7 @@ class SurpriseInChatTest(NudgeTest):
         self.assertIsNone(nudges._checkin(self.db, evening, {}))  # 一晚只问一次
 
     def test_chatting_ethan_brings_up_untold_surprise(self):
-        """她正聊着天时主动消息会被“刚聊过”挡住，所以聊天里 小伴 要主动提没说过的惊喜（2026-10-29 线上）。"""
+        """她正聊着天时主动消息会被“刚聊过”挡住，所以聊天里 小伴 要主动提没说过的惊喜（线上）。"""
         from ethan import quests
         from ethan.core.agent import build_system_prompt
         quests.seed(self.db)

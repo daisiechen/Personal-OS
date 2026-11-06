@@ -1,6 +1,6 @@
 """ontology 新骨架：迁移第 1 步，只建表、登记元数据（docs/design/ontology-structure.md 9.1 节、第 10 节）。
 
-她 2026-11-03 定“10 类全做，分四步迁”；Codex 第二轮评审的条件是第 1 步“仅建新表和登记元数据，不改旧记录、不接现有读写”。
+“10 类全做，分四步迁”；Codex 第二轮评审的条件是第 1 步“仅建新表和登记元数据，不改旧记录、不接现有读写”。
 所以这里只有：建表、登记 10 类对象类型和首版属性、建“她”这个对象。**不读也不写旧的 facts**，现有行为不变。
 规则以 docs/design/ontology-contracts.md 为准。
 """
@@ -51,9 +51,10 @@ CREATE TABLE IF NOT EXISTS fact_map (fact_id INTEGER NOT NULL, statement_id INTE
 """
 
 # 第 4 步：说法也带权限（从旧 facts 同步）：可见级别、读取名单、她锁定的
-STATEMENT_COLUMNS = (("visibility", "TEXT"), ("read_by", "TEXT"), ("locked", "INTEGER NOT NULL DEFAULT 0"))
+STATEMENT_COLUMNS = (("visibility", "TEXT"), ("read_by", "TEXT"), ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                     ("until", "TEXT"))  # 临时状态预计到哪天（借鉴 6）：过了这天读取时不当“现在”，不删
 
-# 10 类对象（ontology-structure.md 2.1 节，她 11-03 定全做）
+# 10 类对象（ontology-structure.md 2.1 节，全做）
 OBJECT_TYPES = {"self": "她", "person": "人", "place": "地点", "org": "组织", "event": "事件", "situation": "情境",
                 "goal": "目标链", "habit": "习惯", "decision": "决定", "topic": "话题"}
 
@@ -91,11 +92,11 @@ PROPERTIES = (
     ("application_status", "申请和办理进度", "text", "many", None, ["self"], "resources", "on_use"),
     ("account_status", "账户和服务开通", "text", "many", None, ["self"], "resources", "on_use"),
     ("appointment", "预约和订单", "text", "many", None, ["self"], None, "on_use"),
-    # 写作规范（ontology.md 3.2，她 11-05“提前做”，ethan/style.py）：一条一句规则；没确认的是假设（候选），她确认的是偏好、锁住
+    # 写作规范（ontology.md 3.2，“提前做”，ethan/style.py）：一条一句规则；没确认的是假设（候选），她确认的是偏好、锁住
     ("writing_style", "写作规范", "text", "many", None, ["self"], None, "quarter"),
 )
 BACKGROUND = ("studied_at", "worked_at", "project", "skill")
-# 迁移第 2 步（她 11-03 同意）：旧记忆只分了 10 个方面，没有细属性，先给每个方面配一个“总的”属性（多值），
+# 迁移第 2 步：旧记忆只分了 10 个方面，没有细属性，先给每个方面配一个“总的”属性（多值），
 # 同一类攒多了、要细分时再拆出具体属性。敏感标签沿用 NEVER_PUBLIC 那几个方面。
 DIM_PROPERTY = "dim:{}"
 

@@ -1,4 +1,4 @@
-"""记忆的使用者登记表和纠错单（docs/design/memory-alignment.md，她 2026-10-31 认可“先做吧”）。
+"""记忆的使用者登记表和纠错单（docs/design/memory-alignment.md，“先做吧”）。
 
 1. 登记表 USERS：谁在用这份记忆、能看到哪一级、在哪里用。所有读记忆的地方（memsearch.search、portrait.chat_text）
    都必须报上自己是谁，没登记的直接报错；tests/test_memusers.py 扫代码把关，绕开入口或用了没登记的名字，测试不过、上线自动退回。
@@ -17,15 +17,15 @@ from datetime import datetime, timedelta, timezone
 
 from . import lifebase, tx
 
-# 新使用者在这里登记一行（她 2026-10-31：“未来如果有新进入者，应该是要到这里登记一下”）
-# tier（ontology-plan 3.3，她 2026-11-04 定按三档设一次）：internal 自己人（照内部规则看）/ partner 合作方（她信任的外部 agent）/
-# public 公开（Dais、主页访客、不认识的 agent）。对外两档按“我”页的对外开关（lifebase.disclose）把关，新登记的只写 tier 就自动按那一档；
+# 新使用者在这里登记一行
+# tier（ontology-plan 3.3，按三档设一次）：internal 自己人（照内部规则看）/ partner 合作方（她信任的外部 agent）/
+# public 公开（主页助手、主页访客、不认识的 agent）。对外两档按“我”页的对外开关（lifebase.disclose）把关，新登记的只写 tier 就自动按那一档；
 # 对外两档的 level 写 "public"（不读内部的画像、检索场景）。
 USERS = {
     "ethan": {"tier": "internal", "name": "小伴", "level": "private", "uses": "她的一切、你们之间的过往、他自己的生活",
               "where": "聊天、主动消息、提醒和跟进", "since": "2026-10-31", "hypothesis": True,
               "questions": [1, 2, 3, 4, 5, 11, 13, 18, 22, 23, 26, 27, 28]},
-    "twin": {"tier": "public", "name": "Dais", "level": "public", "uses": "公开级那部分", "where": "主页接待访客、起草留言回复", "since": "2026-10-31",
+    "twin": {"tier": "public", "name": "主页助手", "level": "public", "uses": "公开级那部分", "where": "主页接待访客、起草留言回复", "since": "2026-10-31",
              "questions": [14, 15, 16]},
     "planner": {"tier": "internal", "name": "计划器", "level": "private", "uses": "目标、作息、偏好、她删掉过的事", "where": "每日计划、周报",
                 "since": "2026-10-31", "questions": [1, 4, 6, 8, 9, 13, 22, 27]},
@@ -38,6 +38,10 @@ USERS = {
     # 日记照旧不读记忆（只读当天原始记录），2026-11-05 只多读一项：她确认过的写作规范（onto_query.writing_style），别的记忆一律不给（memory_only 把关）
     "diary": {"tier": "internal", "name": "我的日记", "level": "private", "uses": "那天她自己在聊天里说的话、完成的事、出门、工作时长；她确认过的写作规范",
               "where": "日记本（用她的口吻写她的一天）", "since": "2026-11-01", "questions": [], "memory_only": ["writing_style"]},
+    # 今日卡：
+    # 卡上关于昨天的只从昨天的日记取（diary 表那一篇，她改过的为准），不走检索和画像（memory_only 为空：一项记忆都不读）
+    "cards": {"tier": "internal", "name": "昨日卡", "level": "private", "uses": "昨天的日记（她改过的为准，没有就系统稿；都没有先补写）、今天的安排、伦敦天气、她的心愿和对卡的意见",
+              "where": "昨日卡的卡名和 小伴 那句话（ethan/cards.py）", "since": "2026-11-05", "questions": [], "memory_only": []},
     "me_page": {"tier": "internal", "name": "属性分数", "level": "private", "uses": "全部", "where": "7 项属性、画像展示", "since": "2026-10-31", "all": True,
                 "questions": [7, 11, 17, 18, 19, 23]},
     "gaps": {"tier": "internal", "name": "补缺口提问", "level": "private", "uses": "每个方面有几条说法、她的聊天和文件里有没有提过某个话题（只判断有没有，不读出内容）",
@@ -52,17 +56,26 @@ USERS = {
     "patrol": {"tier": "internal", "name": "巡检和维修工", "level": "private", "uses": "改动记录、她否掉的事、生效的决定、纠错单、说过要做的事",
                "where": "系统巡检（ethan/checkup.py）、开发会话修问题", "since": "2026-11-04", "internal": True,
                "questions": [23, 24, 25, 28]},
-    # 写作规范（docs/design/style-and-skills.md，她 11-05：“提前做”）：只读她自己写的（发出的邮件、她写的日记、她改草稿的改前→改后、
+    # 写作规范（docs/design/style-and-skills.md）：只读她自己写的（发出的邮件、她写的日记、她改草稿的改前→改后、
     # 荧光笔和“写得不好”的批注、聊天里她的原话抽样），经 onto_query.style_materials；归纳出的规范她逐条确认才生效
     "style": {"tier": "internal", "name": "写作规范", "level": "private", "internal": True,
               "uses": "她自己写的文字：发出的邮件、她写的日记、改系统草稿时改动的句子、荧光笔和批注、聊天里她的原话（抽样）",
               "where": "归纳“你的写作规范”草稿（ethan/style.py），每周日夜里增量更新", "since": "2026-11-05", "questions": [2]},
+    # 借鉴清单（docs/research/borrow-2026-11.md）
+    # 第 8 条：“我”页全部记忆里每条下面列意思相近的几条（memsearch.similar_to，用已算好的向量，不另调模型），只给她本人看
+    "me_similar": {"tier": "internal", "name": "“我”页相近的说法", "level": "private", "internal": True, "all": True,
+                   "uses": "关于她的全部说法（只拿来比意思像不像，给她本人看）", "where": "“我”页 → 全部记忆，每条下面“意思相近的”",
+                   "since": "2026-11-05", "questions": []},
+    # 第 10 条：见面前提醒，只读日历上那个人的人物卡（onto_query.person），对外的一律拿不到
+    "heads_up": {"tier": "internal", "name": "见面前提醒", "level": "private",
+                 "uses": "日历上要见的那个人的人物卡：是谁、最近怎样、上次往来、在聊的话题、没了结的事、快到的日子",
+                 "where": "小伴 前一晚或见面前的一句提醒（ethan/meetprep.py）", "since": "2026-11-05", "questions": [3]},
     "system": {"tier": "internal", "name": "系统维护", "level": "private", "uses": "全部", "where": "每晚整理、每周复盘、题集、命令行", "since": "2026-10-31",
                "internal": True, "all": True, "questions": []},
 }
-# “我”页上按实体看（她 2026-10-31：“你放的应该是在我们这个体系里面的实体”）：计划器、准备、邮件起草、属性分数都是 OS 在做的事；
-# Dais和主页文案都是个人主页。登记表照旧按用途细分（进出闸门、统计口径不变），页面上合并。新登记的用途要归到一个实体里。
-ENTITIES = {"ethan": ("小伴", ["ethan", "gaps"]), "twin": ("Dais", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "relations", "style"])}
+# “我”页上按实体看：计划器、准备、邮件起草、属性分数都是 OS 在做的事；
+# 主页助手和主页文案都是个人主页。登记表照旧按用途细分（进出闸门、统计口径不变），页面上合并。新登记的用途要归到一个实体里。
+ENTITIES = {"ethan": ("小伴", ["ethan", "gaps", "heads_up"]), "twin": ("主页助手", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "cards", "relations", "style"])}
 
 
 def entity_of(user: str) -> str:
@@ -117,7 +130,7 @@ def external(user: str) -> bool:
 
 def may_read(user: str, know: str = None, read_by: str = None, dimension: str = None) -> bool:
     """读取与推理（ontology.md 6.1 节，2026-11-03 接进检索）：
-    - 系统的假设：只有 小伴 能读（只能拿来和她本人讨论），计划器、准备、邮件、日记、Dais、主页都不读；
+    - 系统的假设：只有 小伴 能读（只能拿来和她本人讨论），计划器、准备、邮件、日记、主页助手、主页都不读；
     - 条目写了读取名单的，只有名单里的能读；没写的按原来的级别规则；
     - “我”页和系统维护看全部（她本人要能看到系统对她的所有猜测）。
     对外两档（合作方、公开）这里只挡猜测、预测和读取名单；**哪一类能说**要用 lifebase.disclose（按对外开关和逐条例外），
@@ -218,7 +231,7 @@ def _recurrence(db, about: str, wrong: str, right: str):
 def open_ticket(db, right: str, wrong: str = "", about: str = "her", user: str = "ethan", entry: str = "chat", quote: str = "",
                 dimension: str = None, wiki=None, kind: str = "wrong", since: str = None, until: str = None, until_cond: str = None) -> dict:
     """开一张纠错单并照办。about：her（她的事）或 ethan_self（小伴 记错他自己的事）。
-    kind：wrong 错了——旧说法作废，算一次错；changed 变了——旧说法到 since 为止、留作历史，不算错（2026-10-31 她定）。
+    kind：wrong 错了——旧说法作废，算一次错；changed 变了——旧说法到 since 为止、留作历史，不算错。
     since / until / until_cond：对的说法从哪天起、到哪天、在什么条件下成立（比如这个赛季、在伦敦期间）。"""
     if kind not in ("wrong", "changed"):
         raise ValueError("kind 只能是 wrong 或 changed")
@@ -258,7 +271,7 @@ def open_ticket(db, right: str, wrong: str = "", about: str = "her", user: str =
         if wrong_fact:
             lifebase.supersede(db, wrong_fact["id"], fid, when=since, force=True)
             if kind == "wrong":  # 从来就不对：作废；变了的只是到期，留作历史
-                db.conn.execute("UPDATE facts SET status = 'invalid' WHERE id = ?", (wrong_fact["id"],))
+                lifebase.invalidate(db, wrong_fact["id"], since, force=True)  # 作废只走 lifebase 一个入口（她本人纠正，不查锁）
         if kind == "changed":
             layer = "changed"
         cur = db.conn.execute("INSERT INTO corrections (at, user, about, entry, quote, wrong, right, dimension, wrong_fact_id, fact_id, layer, "

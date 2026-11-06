@@ -9,14 +9,14 @@ from tests.test_workbench import make_demo
 
 
 class CardVarietyTest(unittest.TestCase):
-    """2026-10-28 她说昨天和今天的卡长得太像：地点、穿搭、镜头一周内不重样，同类天气也换场景。"""
+    """昨天和今天的卡长得太像：地点、穿搭、镜头一周内不重样，同类天气也换场景。"""
 
     def test_week_without_repeats_and_prompt_avoids_yesterday(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "cards").mkdir()
             day = date(2026, 11, 2)
-            seen = {"place": [], "outfit": [], "camera": [], "pose": []}  # 脸的角度也一周不重样（2026-10-29）
+            seen = {"place": [], "outfit": [], "camera": [], "pose": []}  # 脸的角度也一周不重样
             for i in range(7):
                 v = cards.variety(root, day + timedelta(days=i))
                 for k in seen:
@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
 class CardFeedbackTest(unittest.TestCase):
     def test_her_card_feedback_goes_into_prompt(self):
-        """2026-10-29 她问提的意见有没有被参考：聊天里记下的反馈，画卡时带上（只挑说卡的）。"""
+        """提的意见有没有被参考：聊天里记下的反馈，画卡时带上（只挑说卡的）。"""
         with tempfile.TemporaryDirectory() as d:
             store = make_demo(Path(d))
             store.db.add_feedback("她说这两天的今日卡长得一样，不喜欢")

@@ -1,10 +1,10 @@
-"""每周复盘（她 2026-11-02 定）。
+"""每周复盘。
 
 她的原话：“复盘每周一天，每周日晚上的九点钟，伊森主动来找我做……就是每周日晚上九点有一个固定的日程，大概一个小时，
 约在我的日历上，是我跟伊森做每周的复盘……他可以给我一个列表……然后每周最后一个周日晚上是，除了当日的复盘，还要做当月的复盘，
 每季度的最后一个晚上还要加上这个季度的复盘。不过这个月度和季度的复盘不用单独约日程，就复用这个日程就好了。”
 之前定的：“复盘只在聊天里聊吧，工作台上只看结果，就是汇总和草稿。”“季度”= 赛季，最后一个周日（她确认）；
-原来周日 20:00 的周报并进来，周常“财务复盘”“周日复盘”复盘做完自动打卡（她：“可以”）。
+原来周日 20:00 的周报并进来，周常“财务复盘”“周日复盘”复盘做完自动打卡。
 
 怎么运作：
 - 苹果日历“小伴 计划”里一个每周日 21:00–22:00 的重复日程「和 小伴 周复盘」（ensure_event，只写一次）。
@@ -56,7 +56,7 @@ def layers(day: date, season_end: date) -> list:
 
 
 def event_ics(first: date) -> str:
-    """每周日 21:00–22:00（伦敦时间，夏令时自动跟着走）的重复日程，开始前 10 分钟提醒。"""
+    """每周日 21:00–22:00（本地时间，夏令时自动跟着走）的重复日程，开始前 10 分钟提醒。"""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     d = first.strftime("%Y%m%d")
     end = (datetime.combine(first, START) + timedelta(minutes=MINUTES)).strftime("%H%M%S")
@@ -148,7 +148,7 @@ def current(db, now: datetime = None):
 
 
 def _split(part: str) -> list:
-    return [x.strip() for x in re.split(r"[；;]", part or "") if x.strip() and x.strip() not in ("无", "没有")]
+    return [x.strip() for x in re.split(r"[；]", part or "") if x.strip() and x.strip() not in ("无", "没有")]
 
 
 def note(db, text: str, today: date) -> list:
@@ -318,7 +318,7 @@ def opener(ethan, day: date, lays: list) -> str:
     """写开场并记进原始对话（kind=review），返回要发的文字。"""
     from .report import MAX_TELEGRAM
     system = opener_prompt(ethan.persona, ethan.store, ethan.router.settings, day, lays)
-    reply = ethan.router.complete(system, [{"role": "user", "content": "（到点了，现在开始这周的复盘）"}])
+    reply = ethan.router.complete(system, [{"role": "user", "content": "（到点了，现在开始这周的复盘）"}], purpose="week-review")
     text = strip(reply.text.strip())[:MAX_TELEGRAM]
     ethan.store.raw.append("telegram", "ethan", text, backend=reply.backend, model=reply.model, kind="review")
     open_review(ethan.store.db, day, lays)

@@ -81,10 +81,10 @@ class RecallTest(Base):
     def test_person(self):
         pid = self.db.upsert_person("Leo", circle="朋友", how_met="伦敦交换")
         lifelog.add(self.db, "meet", DAY, "Leo", "喝咖啡")
-        old = lifebase.add_fact(self.db, "relationships", "Leo 是她在伦敦的同学", [self.ev], subject=f"person:{pid}", prop="relation_to_her")
+        old = lifebase.add_fact(self.db, "relationships", "Leo 是她在曼彻斯特的同学", [self.ev], subject=f"person:{pid}", prop="relation_to_her")
         got = onto_query.person(self.db, "prep", "Leo")
         self.assertEqual(got["status"], "answer")
-        self.assertEqual(got["items"][0]["relation"][0]["value"], "Leo 是她在伦敦的同学")
+        self.assertEqual(got["items"][0]["relation"][0]["value"], "Leo 是她在曼彻斯特的同学")
         self.assertEqual(got["items"][0]["latest"]["kind"], "meet")
         new = lifebase.add_fact(self.db, "relationships", "Leo 是她的合伙人", [self.ev], subject=f"person:{pid}", prop="relation_to_her")
         lifebase.supersede(self.db, old, new, when="2026-11-01")  # 变化
@@ -307,9 +307,9 @@ class PublicTest(Base):
         self.assertEqual((none["status"], none["items"][0]["reply"]), ("unknown", onto_query.REFUSE))
         ask = onto_query.public_say(self.db, "twin", "在做什么")  # “最近在忙什么”公开档默认“问我”（3.3）
         self.assertEqual((ask["status"], ask["items"][0]["reply"], ask["items"][0]["category"]), ("ask", onto_query.ASK_REPLY, "recent"))
-        d = lifebase.approve_disclosure(self.db, "她在伦敦读交换，在做 AI 产品", "可以这么说")
+        d = lifebase.approve_disclosure(self.db, "她在曼彻斯特工作，在做 AI 产品", "可以这么说")
         got = onto_query.public_say(self.db, "twin")
-        self.assertEqual((got["status"], got["items"][0]["value"]), ("answer", "她在伦敦读交换，在做 AI 产品"))
+        self.assertEqual((got["status"], got["items"][0]["value"]), ("answer", "她在曼彻斯特工作，在做 AI 产品"))
         lifebase.approve_disclosure(self.db, "她在做一个 AI 产品，还没发布", "这句也行")
         self.assertEqual(onto_query.public_say(self.db, "twin", "AI 产品")["status"], "disputed")  # 冲突：两句都能说，只照原文挑一句
         lifebase.revoke_disclosure(self.db, d)  # 变化：撤回立刻不说

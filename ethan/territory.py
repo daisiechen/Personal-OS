@@ -1,4 +1,4 @@
-"""领地地图和领地页的数据（2026-10-28 她确认设计稿，规则见 docs/design/territories.md）。
+"""领地地图和领地页的数据（设计稿，规则见 docs/design/territories.md）。
 
 七块领地 + 荒原（没归类的待办）。每块领地的健康线逐项自动算，不用她打卡：
   绿 ok：达到副本标准（没有副本的领地按健康线）；黄 warn：副本落后但在保底线以上；红 bad：跌破保底线；
@@ -11,11 +11,12 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from . import standards
 from . import lifelog, places_log, worktime
 from .clock import her_today
 
 ORDER = {"bad": 0, "warn": 1, "ok": 2, "none": 3}
-TERRITORIES = [  # (key, 名字, 数据库里的领地名)；身体区域 2026-10-29 她改叫“健康”，库里还记“身体”
+TERRITORIES = [  # (key, 名字, 数据库里的领地名)；身体区域 改叫“健康”，库里还记“身体”
     ("body", "健康", "身体"), ("career", "事业", "事业"), ("money", "财务", "财务"), ("social", "社交", "社交"),
     ("study", "学习", "学习"), ("academic", "学术", "学术"), ("life", "生活体验", "生活体验")]
 NAME = {k: n for k, n, _ in TERRITORIES}
@@ -71,7 +72,7 @@ def _paced(actual, quest_target, floor_target, elapsed: int, has_quest: bool) ->
     if actual is None:
         return "none"
     elapsed -= 1
-    if elapsed <= 0 and not actual:  # 周一：还没到该做的时候，不算达标也不算落后（她 2026-11-02：本周 0 次怎么是达标）
+    if elapsed <= 0 and not actual:  # 周一：还没到该做的时候，不算达标也不算落后（本周 0 次怎么是达标）
         return "none"
     if has_quest and quest_target is not None:
         if actual >= quest_target * elapsed / 7 - 1e-9:
@@ -97,7 +98,7 @@ def cognitive_days(db, start: date, day: date):
 
 
 def _row(name, quest, floor, actual_text, light, note="", edit=None, log=None):
-    """edit：保底旁边放 ✎（budget = 改每月预算）；log：这一项旁边放“＋ 记一笔”（社交的见面、新朋友、联系，她 2026-11-01）。"""
+    """edit：保底旁边放 ✎（budget = 改每月预算）；log：这一项旁边放“＋ 记一笔”（社交的见面、新朋友、联系）。"""
     out = {"name": name, "quest": quest, "floor": floor, "actual": actual_text, "light": light, "note": note}
     if edit:
         out["edit"] = edit
@@ -140,11 +141,12 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
     rows = []
     if key == "body":
         q = quests_active
-        for title, name, quest, floor in (("训练", "训练", 5, 4), ("吃够蛋白质", "吃够蛋白质", 7, 5),
-                                           ("0 点前睡", "0 点前睡", 6, 5), ("每天出门", "每天出门", 7, 6)):
+        for k in ("training", "protein", "sleep", "outside"):  # 目标 / 保底只从领域标准表来（ethan/standards.py，她的决定 8）
+            sd = standards.get(k)
+            title, name = sd.habit, sd.name
             n = _habit_days(db, title, start, day)
-            light = _paced(n, quest, floor, elapsed, q)
-            rows.append(_row(name, f"每周 {quest} 天" if quest < 7 else "每天", f"每周 {floor} 天",
+            light = _paced(n, sd.target, sd.floor, elapsed, q)
+            rows.append(_row(name, standards.week_label(k, "target"), standards.week_label(k, "floor"),
                              f"{n} / {elapsed} 天" if n is not None else "—", light,
                              "" if n is not None else "等手机定位" if title == "每天出门" else "还没有记录"))
         w = _weights(db, day, 14)
@@ -158,37 +160,45 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
         else:
             rows.append(_row("体重（7 天平均）", "每周降 0.3–0.7 kg", "—", "—", "none", "记满一周才算趋势"))
     elif key == "study":
-        n = _habit_days(db, "英语陪练（Grok）", start, day)
-        rows.append(_row("英语陪练（Grok）", "—", "每周 5 次", f"{n} 次" if n is not None else "—",
-                         _paced(n, None, 5, elapsed, False), "" if n is not None else "还没开"))
+        en, cg = standards.get("english"), standards.get("cognitive")
+        n = _habit_days(db, en.habit, start, day)
+        rows.append(_row(en.habit, standards.week_label("english", "target"), standards.week_label("english", "floor"),
+                         f"{n} 次" if n is not None else "—",
+                         _paced(n, en.target, en.floor, elapsed, quests_active), "" if n is not None else "还没开"))
         n = cognitive_days(db, start, day)
+        quest_c, floor_c = standards.week_label("cognitive", "target"), standards.week_label("cognitive", "floor")
         if n is not None:
-            rows.append(_row("认知拓展", "—", "每天 1 个话题", f"{n} 天", _paced(n, None, 7, elapsed, False)))
+            rows.append(_row(cg.name, quest_c, floor_c, f"{n} 天", _paced(n, cg.target, cg.floor, elapsed, quests_active),
+                             "聊到新话题或学了知识点的天数"))
         else:
-            rows.append(_row("认知拓展", "—", "每天 1 个话题", "—", "none", "小伴 聊到新话题会记下来"))
+            rows.append(_row(cg.name, quest_c, floor_c, "—", "none", "小伴 聊到新话题会记下来"))
     elif key == "life":
-        n = _habit_days(db, "每周 1 次新体验", start, day)
-        light = "none" if n is None else "ok" if n >= 1 else ("warn" if elapsed >= 5 else "ok")
-        rows.append(_row("每周新体验", "每周 1 次", "每周 1 次", f"{n} 次" if n is not None else "—", light,
-                         "" if n is None or n >= 1 else "这周还没去" if elapsed >= 5 else "这周还有时间"))
+        ne, ou = standards.get("new_exp"), standards.get("outing")  # 每周 1 次的：周五前没做黄，不按天折算
+        n = _habit_days(db, ne.habit, start, day)
+        light = "none" if n is None else "ok" if n >= ne.floor else ("warn" if elapsed >= 5 else "ok")
+        rows.append(_row("每周新体验", standards.week_label("new_exp", "target"), standards.week_label("new_exp", "floor"),
+                         f"{n} 次" if n is not None else "—", light,
+                         "" if n is None or n >= ne.floor else "这周还没去" if elapsed >= 5 else "这周还有时间"))
         if places_log.has_data(db):
             n = places_log.non_work_outings(db, start, day, _training_leaves(db, start, day))
-            light = "ok" if n >= 1 else ("warn" if elapsed >= 5 else "ok")
-            rows.append(_row("出门做非工作的事", "—", "每周 1 次", f"{n} 次", light,
+            light = "ok" if n >= ou.floor else ("warn" if elapsed >= 5 else "ok")
+            rows.append(_row("出门做非工作的事", standards.week_label("outing", "target"), standards.week_label("outing", "floor"),
+                             f"{n} 次", light,
                              "按手机定位：出去满 1 小时、不是去训练" if n else "这周还没有" if elapsed >= 5 else "这周还有时间"))
         else:
-            rows.append(_row("出门做非工作的事", "—", "每周 1 次", "—", "none", "等手机定位"))
+            rows.append(_row("出门做非工作的事", standards.week_label("outing", "target"), standards.week_label("outing", "floor"),
+                             "—", "none", "等手机定位"))
     elif key == "career":
         if worktime.has_data(db):
             w = worktime.week_row(db, day)
             rows.append(_row("本人工作时长", "—", "每天不超过 8 小时", f"今天 {w['today']:g} 小时 · 本周最长 {w['max']:g} · 日均 {w['avg']:g}",
                              w["light"], "超过 8 小时黄、超过 10 小时红；目标一周比一周少"))
-            try:  # 工作狂指数和效率（ethan/workaholic.py，她 2026-10-31 要）：这周到今天 vs 上周同样几天
+            try:  # 工作狂指数和效率（ethan/workaholic.py）：这周到今天 vs 上周同样几天
                 from . import workaholic
                 c = workaholic.compare(db, day)
                 t, l = c["this"], c["last"]
                 arrow = lambda a, b, lower=False: "" if b in (None, 0) or a is None else ("↓" if a < b else "↑" if a > b else "持平")
-                b = workaholic.band(t["index"])  # 健康区间 20–49（她 2026-11-01）
+                b = workaholic.band(t["index"])  # 健康区间 20–49
                 rows.append(_row("工作狂指数", "—", f"健康区间 {workaholic.HEALTHY[0]}–{workaholic.HEALTHY[1]}", f"本周 {t['index']}（{b['label']}，上周同期 {l['index']}）{arrow(t['index'], l['index'])}",
                                  b["light"],
                                  f"晚上 9 点后 {t['late']:g} 小时 · 周末 {t['weekend']:g} 小时"))
@@ -202,7 +212,7 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
         rows += [
                  _row("小红书 + Instagram 发帖", "每周各 2 条", "—", "—", "none", "等接账号")]
     elif key == "money":
-        # 健康线按周看，花销也按本周算（她 2026-11-01：本周回顾里写“每月花销”口径对不上）；保底是月预算按天数折成一周
+        # 健康线按周看，花销也按本周算（本周回顾里写“每月花销”口径对不上）；保底是月预算按天数折成一周
         from . import finance
         import calendar
         if finance.has_source(db, "monzo") or finance.has_source(db, "sms") or finance.has_source(db, "chat"):
@@ -227,36 +237,41 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
             rows.append(_row("本周花销", "—", "按每月预算折算", "—", "none", "等接 Monzo 和招行（docs/operations/finance.md）", edit="budget"))
     elif key == "social":
         if lifelog.has(db, "meet") or lifelog.has(db, "new_friend") or lifelog.has(db, "contact"):
+            mt, nf = standards.get("meet"), standards.get("new_friend")  # 领域标准表（决定 8）
             met = lifelog.count(db, "meet", start, day)
-            rows.append(_row("和朋友见面", "—", "每周 1 次", f"{met} 次", "ok" if met >= 1 else ("warn" if elapsed >= 5 else "ok"),
-                             "" if met else "这周还没见" if elapsed >= 5 else "这周还有时间", log="meet"))
+            rows.append(_row("和朋友见面", standards.week_label("meet", "target"), standards.week_label("meet", "floor"), f"{met} 次",
+                             "ok" if met >= mt.floor else ("warn" if elapsed >= 5 else "ok"),
+                             "" if met >= mt.floor else "这周还没见" if elapsed >= 5 else "这周还有时间", log="meet"))
             month = day.replace(day=1)
             new = lifelog.count(db, "new_friend", month, day)
-            rows.append(_row("认识新朋友", "—", "每月 3–4 个", f"本月 {new} 个",
-                             "ok" if new >= 3 or day.day < 20 else ("warn" if new >= 1 else "bad"), log="new_friend"))
-            set_up = db.conn.execute("SELECT COUNT(*) FROM people WHERE contact_every_days IS NOT NULL").fetchone()[0]
-            due = [p for p in db.people_to_contact(day) if "long_no_contact" in p["reasons"]]
-            if not set_up:  # 还没定要联系谁、多久一次，不能说“都联系过”（她 2026-11-02）
-                rows.append(_row("联系重要的人", "—", "按各自频率", "—", "none", "还没定要联系谁：跟 小伴 说谁、多久联系一次", log="contact"))
+            rows.append(_row("认识新朋友", standards.week_label("new_friend", "target"), standards.week_label("new_friend", "floor"), f"本月 {new} 个",
+                             "ok" if new >= nf.floor or day.day < 20 else ("warn" if new >= 1 else "bad"), log="new_friend"))
+            from . import relations  # “该联系谁”只用人物卡那套（5）
+            cs = relations.contact_status(db, day, "me_page")
+            set_up, due = cs["tracked"], cs["contact"]
+            if not set_up:  # 还没有人物卡（或卡上没有最近联系），不能说“都联系过”
+                rows.append(_row("联系重要的人", "—", "按各自频率", "—", "none", "还没有人物卡：等微信统计交过来，或在“关系”页设好多久联系一次", log="contact"))
             else:
                 rows.append(_row("联系重要的人", "—", "按各自频率", f"{len(due)} 个该联系了" if due else "都联系过",
                                  "ok" if not due else "warn" if len(due) <= 2 else "bad", "、".join(p["name"] for p in due[:4]), log="contact"))
         else:
-            rows += [_row("和朋友见面", "—", "每周 1 次", "—", "none", "点＋记一笔，或者跟 小伴 说", log="meet"),
-                     _row("认识新朋友", "—", "每月 3–4 个", "—", "none", "点＋记一笔，或者跟 小伴 说", log="new_friend"),
+            rows += [_row("和朋友见面", standards.week_label("meet", "target"), standards.week_label("meet", "floor"), "—", "none", "点＋记一笔，或者跟 小伴 说", log="meet"),
+                     _row("认识新朋友", standards.week_label("new_friend", "target"), standards.week_label("new_friend", "floor"), "—", "none", "点＋记一笔，或者跟 小伴 说", log="new_friend"),
                      _row("联系重要的人", "—", "按各自频率", "—", "none", "点＋记一笔；人物卡里设好多久联系一次", log="contact")]
     elif key == "academic":
+        rs = standards.get("research")
+        label = standards.week_label("research", "floor")
         if lifelog.has(db, "research"):
             mins = lifelog.total(db, "research", start, day)
-            rows.append(_row("研究时间", "—", "每周 1 次（约 2 小时）", f"{mins / 60:.1f} 小时",
-                             "ok" if mins >= 120 else ("warn" if mins > 0 or elapsed < 6 else "bad")))
+            rows.append(_row("研究时间", "—", label, f"{mins / 60:.1f} 小时",
+                             "ok" if mins >= rs.floor else ("warn" if mins > 0 or elapsed < 6 else "bad")))
         else:
-            rows.append(_row("研究时间", "—", "每周 1 次（约 2 小时）", "—", "none", "做了研究告诉 小伴，他会记下来"))
+            rows.append(_row("研究时间", "—", label, "—", "none", "做了研究告诉 小伴，他会记下来"))
     return rows
 
 
 def spend_curve(db, day: date) -> dict:
-    """财务页的曲线（她 2026-11-02）：本周和上周每天累计花了多少、本月累计；按预算的币种（没有预算按英镑）折算。"""
+    """财务页的曲线：本周和上周每天累计花了多少、本月累计；按预算的币种（没有预算按英镑）折算。"""
     from . import finance
     import calendar
     budget = settings_budget(db, day)
@@ -282,7 +297,7 @@ BUDGET_SQL = "CREATE TABLE IF NOT EXISTS budget_plan (month TEXT PRIMARY KEY, am
 
 
 def budget_plan(db, day: date = None) -> dict:
-    """每月预算（2026-10-29 她定）：只按人民币算，定了就要遵守——这个月的锁定，改的只从下个月起生效。
+    """每月预算：只按人民币算，定了就要遵守——这个月的锁定，改的只从下个月起生效。
     返回 {"now": 本月预算或 None, "next": 下个月起的新预算或 None}。"""
     day = day or her_today()
     db.conn.execute(BUDGET_SQL)
@@ -300,7 +315,7 @@ def budget_plan(db, day: date = None) -> dict:
 
 
 def set_budget(db, amount: float, day: date = None, when: str = None) -> str:
-    """when = "now" 本月就生效，"next" 下个月起；不传时按老规矩：还没定过就本月，定过就下个月（2026-11-01 她说改的时候让她选）。返回生效的月份。"""
+    """when = "now" 本月就生效，"next" 下个月起；不传时按老规矩：还没定过就本月，定过就下个月（改的时候让她选）。返回生效的月份。"""
     day = day or her_today()
     plan = budget_plan(db, day)
     if when not in ("now", "next"):
@@ -330,7 +345,7 @@ def explore_stats(root: Path) -> dict:
         for r in sheets.get(name, []):
             if r.get("状态") == "已结束" and r.get("国家"):
                 countries.add(r["国家"])
-    # 2026-11-01 她更新了探索地图：原来的“Goal”表改成“成就”表（成就 / 状态 / 成就内容），人生体验是其中“成就 = 人生体验”的几行
+    # 更新了探索地图：原来的“Goal”表改成“成就”表（成就 / 状态 / 成就内容），人生体验是其中“成就 = 人生体验”的几行
     goals = sheets.get("Goal") or [{"Goal": r.get("成就内容"), "状态": r.get("状态")} for r in sheets.get("成就", []) if r.get("成就") == "人生体验"]
     china = sum(1 for r in sheets.get("中国", []) if r.get("状态") == "已结束")
     return {"countries": len(countries), "china": china,
@@ -343,11 +358,3 @@ def task_territory(t: dict):
     if t.get("domain"):
         return t["domain"] if t["domain"] in NAME else None
     return KEY_OF.get(t.get("goal_domain") or "")
-
-
-def open_tasks(db) -> list:
-    return [dict(r) for r in db.conn.execute(
-        "SELECT t.id, t.title, t.due, t.quest, t.goal_id, t.domain, g.domain AS goal_domain FROM tasks t "
-        # 暂停副本下的事照样是待办（2026-10-29 她定：副本只影响优先级，不影响要不要做），排在后面
-        "LEFT JOIN goals g ON g.id = t.goal_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
-        "AND COALESCE(g.status, 'active') != 'dropped' ORDER BY COALESCE(g.status, 'active') = 'paused', t.due IS NULL, t.due, t.id")]

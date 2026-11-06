@@ -1,6 +1,6 @@
-"""她的微信聊天，全部历史导出 + 每周增量交给 小伴（ontology-plan 1.9，数据源 S19；说明 docs/operations/wechat-export.md）。
+"""她的微信聊天，全部历史导出 + 每天增量交给 小伴（ontology-plan 1.9，数据源 S19；说明 docs/operations/wechat-export.md）。
 
-她 11-04：“那我要导出所有历史会话怎么办？”——开源工具 DaneelOlivaw1/macos-wechat-export 的 `read` 每会话最多 200 条，
+开源工具 DaneelOlivaw1/macos-wechat-export 的 `read` 每会话最多 200 条，
 这里照它的读法（wechat_db.py / sqlcipher_probe.py）自己读全部历史。在她 Mac 上跑：
 
 1. 只读：微信 4.x 的库是 SQLCipher 4（raw key，cipher_compatibility=4）。每个库先连同 -wal/-shm 复制到临时目录（复制前后
@@ -17,14 +17,14 @@
    群成员名）、is_her、text，另带 db、local_id 方便对账。
 5. 增量：每个会话、每个库记最后的 local_id（和库的盐值、最后的 create_time；库被重建了就按时间接着导），
    记在 ~/.config/ethan/wechatexport-state.json。再跑只导新的。
-6. 交给 小伴（--send）：交整段对话（她 11-04：“难道别人跟我的对话不是我的记忆么！！！”“我们现在做的是初始化！！！”）：
+6. 交给 小伴（--send）：交整段对话：
    两边都交，一天一段、开头〔日期〕，每行标说话人【她】/【备注名或群成员名】，不截短（单条超长 2000 字截断），图片语音这类占位不交；
    去掉电话邮箱住址（docquotes.redact）。服务器整理时她说的算原话，别人说的关于她的记成“别人说的”（ethan/interviews.py）。
    私聊都交；群只交她说过话的群、她说过话的那几天（--all 不筛：所有群、所有天）；--chats 只交点名的。每会话一个访谈会话名
    “微信 · <会话名>”，场合“她的微信聊天（导出）”，经 cloud.CloudClient.interview 交，一次一批（一批交成功才前进游标），
    一次运行最多 --max-batches 批（默认 30，免得服务器一晚整理不完；剩下的下次接着交）。没钥匙只生成交接文件。
 
-7. 人物卡（她 11-04 认可，docs/design/relations.md）：--send 时顺带按私聊联系人算统计（最近联系、90 / 365 天条数、她说的占比、
+7. 人物卡（docs/design/relations.md）：--send 时顺带按私聊联系人算统计（最近联系、90 / 365 天条数、她说的占比、
    谁先开口〔隔 6 小时算新一轮〕、共同群），经 /cloud/people_stats 交给服务器；username 只交哈希。客服、中介、商家、酒店管家
    这类按名字跳过，--people-skip 补排除。
 
@@ -32,7 +32,7 @@
   python3.14 -m ethan.wechatexport --db-root <db_storage> --keys <keys.json> --self-id <她的 sender id> --dry-run
   ... --export          只导出到 ~/wechat-export，不交
   ... --send            导出 + 交给 小伴
-  ... --install-launchd 装每周日 20:43 自动 --send（Mac）
+  ... --install-launchd 装每天 22:43 自动 --send（Mac）
 """
 
 import argparse
@@ -517,7 +517,7 @@ def should_send(chat: str, c: dict, chats_filter: set, send_all: bool) -> bool:
     return send_all or not is_group(chat) or int(c.get("her", 0)) > 0
 
 
-# ---------- 私聊统计（交给服务器建人物卡，ethan/relations.py，她 11-04 认可） ----------
+# ---------- 私聊统计（交给服务器建人物卡，ethan/relations.py） ----------
 ROUND_GAP = 6 * 3600  # 隔 6 小时以上算新的一轮，看谁先开口
 STATS_BATCH = 150  # 一次交多少人（服务器一次最多收 64KB）
 
@@ -661,7 +661,7 @@ def run(db_root: Path, keys_path: Path, self_id: str, mode: str = "dry-run", out
     return report
 
 
-# ---------- 每周自动跑 ----------
+# ---------- 每天自动跑（原来每周日） ----------
 def plist_text(python: str, repo: Path, args: list, log: Path = LOG_FILE) -> str:
     prog = "".join(f"<string>{escape(str(a))}</string>" for a in [python, "-m", "ethan.wechatexport"] + args)
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -671,7 +671,7 @@ def plist_text(python: str, repo: Path, args: list, log: Path = LOG_FILE) -> str
   <key>ProgramArguments</key><array>{prog}</array>
   <key>WorkingDirectory</key><string>{escape(str(repo))}</string>
   <key>EnvironmentVariables</key><dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
-  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>43</integer></dict>
+  <key>StartCalendarInterval</key><dict><key>Hour</key><integer>22</integer><key>Minute</key><integer>43</integer></dict>
   <key>StandardOutPath</key><string>{escape(str(log))}</string>
   <key>StandardErrorPath</key><string>{escape(str(log))}</string>
 </dict></plist>
@@ -688,7 +688,7 @@ def install_launchd(args: list, plist: Path = PLIST, run_cmd=subprocess.run, pla
         return f"{text}\n写好了 {plist}；这台不是 Mac，没有 launchctl load。"
     run_cmd(["launchctl", "unload", str(plist)], capture_output=True)
     run_cmd(["launchctl", "load", str(plist)], check=True)
-    return (f"{text}\n装好了：{plist}，每周日 20:43 增量导出微信并交给 小伴，日志在 {LOG_FILE}。"
+    return (f"{text}\n装好了：{plist}，每天 22:43 增量导出微信并交给 小伴（Mac 那会儿睡着就醒来后补跑），日志在 {LOG_FILE}。"
             f"\n不想要了：launchctl unload {plist}")
 
 
@@ -698,7 +698,7 @@ def main(argv=None, env=os.environ) -> int:
     g.add_argument("--dry-run", action="store_true", help="只数：会话数、每个会话新的条数、她说的条数；不写不交")
     g.add_argument("--export", action="store_true", help="只导出到 ~/wechat-export，不交")
     g.add_argument("--send", action="store_true", help="导出 + 交给 小伴（没钥匙只生成文件）")
-    g.add_argument("--install-launchd", action="store_true", help="装每周日 20:43 自动 --send（Mac）")
+    g.add_argument("--install-launchd", action="store_true", help="装每天 22:43 自动 --send（Mac）")
     p.add_argument("--db-root", type=Path, required=True, help="她账号的 db_storage 目录")
     p.add_argument("--keys", type=Path, required=True, help="bootstrap_keys.py 生成的 keys.json")
     p.add_argument("--self-id", required=True, help="她自己的 sender id（文件传输助手里找到的那串）")

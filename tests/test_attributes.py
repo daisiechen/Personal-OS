@@ -35,10 +35,10 @@ class AttributesTest(unittest.TestCase):
         rows = self.by_key(attributes.compute(self.db, DAY))
         body = rows["body"]
         items = {i["name"]: i for i in body["items"]}
-        self.assertAlmostEqual(items["训练"]["score"], 88.2, places=1)  # 15/17
+        self.assertAlmostEqual(items["训练"]["score"], 70.0, places=1)  # 15 / (目标每周 5 天 × 30/7)；决定 8 前按 17 天算是 88.2
         self.assertEqual(items["睡眠"]["score"], 100.0)
         self.assertIsNone(items["饮食"]["score"])  # 没有这个坚持，不算
-        self.assertAlmostEqual(body["score"], round((88.2 * 30 + 100 * 25) / 55, 1), places=0)
+        self.assertAlmostEqual(body["score"], round((70.0 * 30 + 100 * 25) / 55, 1), places=0)
         self.assertEqual(body["label"], "良好")
         self.assertEqual(rows["academic"]["label"], "未解锁")
         self.assertEqual(body["delta"], 0.0)  # 前一个 30 天也是这样
@@ -46,7 +46,7 @@ class AttributesTest(unittest.TestCase):
     def test_short_history_scales_standard(self):
         self.habit("训练", [DAY - timedelta(days=i) for i in range(0, 10, 2)])  # 系统才记了 9 天，练了 5 天
         items = {i["name"]: i for i in self.by_key(attributes.compute(self.db, DAY))["body"]["items"]}
-        self.assertEqual(items["训练"]["score"], 98.0)  # 标准折成 17×9/30≈5.1 天
+        self.assertEqual(items["训练"]["score"], 77.8)  # 标准折成 目标 5×9/7≈6.4 天（决定 8 前按 17×9/30 是 98.0）
         self.assertIsNone(self.by_key(attributes.compute(self.db, DAY))["body"]["delta"])  # 不满 60 天不给涨跌
 
     def test_social_and_snapshot(self):
@@ -55,7 +55,7 @@ class AttributesTest(unittest.TestCase):
             lifelog.add(self.db, "meet", DAY - timedelta(days=i * 5), who=f"朋友{i}")
         self.db.conn.commit()
         rows = self.by_key(attributes.compute(self.db, DAY))
-        self.assertEqual({i["name"]: i["score"] for i in rows["social"]["items"]}["和朋友见面"], 75.0)
+        self.assertEqual({i["name"]: i["score"] for i in rows["social"]["items"]}["和朋友见面"], 70.0)  # 3 / (每周 1 次 × 30/7)；决定 8 前按 30 天 4 次是 75
         self.assertEqual(attributes.snapshot(self.db, DAY), 7)
         attributes.snapshot(self.db, DAY)  # 重跑覆盖
         hist = attributes.history(self.db, "social")

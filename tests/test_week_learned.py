@@ -61,7 +61,7 @@ class WeekLearnedTest(unittest.TestCase):
 
     def test_corrections_week(self):
         self.add("resources", "住在 Camden")
-        memusers.open_ticket(self.db, "住在 Islington", "住在 Camden", quote="不对，我住 Islington")
+        memusers.open_ticket(self.db, "住在 Greenwich", "住在 Camden", quote="不对，我住 Greenwich")
         memusers.open_ticket(self.db, "现在在伦敦读书", "在上海工作", kind="changed")
         self.db.conn.execute("UPDATE corrections SET at = '2026-11-07T10:00:00+00:00'")
         self.db.conn.commit()

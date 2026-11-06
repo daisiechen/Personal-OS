@@ -1,4 +1,4 @@
-"""七个领域页的分析（她 2026-11-02：“这些详情页里面应该做的都是我这七个领域的分析”）。
+"""七个领域页的分析。
 
 每个领域页上面一块“这个领域”：
 - 分数：七项属性（ethan/attributes.py）现在的分数、开季的分数、由哪几项组成（各自实际、标准、得分），以及每天的分数走势；
@@ -82,7 +82,7 @@ def _cognitive_weekly(db, day: date) -> list:
 
 
 def daily_spend(db, start: date, end: date) -> dict:
-    """财务：start–end 每天花了多少（按预算币种折算）、区间总额、保底平均线（月预算按天折）。她 2026-11-02 要的。"""
+    """财务：start–end 每天花了多少（按预算币种折算）、区间总额、保底平均线（月预算按天折）。的。"""
     from . import finance, territory
     import calendar
     if end < start:

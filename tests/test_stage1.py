@@ -12,11 +12,11 @@ from ethan.core.router import Router, Settings
 from ethan.memory import MemoryStore
 from ethan.planner import plan_day
 from ethan.vault import board_pages
-from ethan.proactive import BRIEF_SLOT, brief_occasion, due_brief, planned_time, tick
+from ethan.proactive import brief_time, brief_occasion, due_brief, planned_time, tick
 from tests.test_planner import FakeTravel, Router as ScriptedRouter, good_plan
 from tests.test_progress import seed_parents
 
-DAY = date(2026, 11, 2)  # 周一，伦敦冬令时，UTC = 伦敦
+DAY = date(2026, 11, 2)  # 周一，冬令时，UTC = 伦敦
 
 
 class Backend:
@@ -77,7 +77,7 @@ class Stage1Test(unittest.TestCase):
                 f"[漏斗 #{deal} 联系 Acme] [训练 臀推机 40x12/12/12 疼痛0] [建档 财务 完成 每月随意花 300 镑]")
         reply = self.ethan(text).reply("telegram", "都做完了", today=DAY)
         self.assertEqual(reply["bubbles"][0], "厉害！")
-        # 2026-10-29 她定：她的任务和日常都由她自己勾；训练和称体重只记数，不打卡、不加分（只有系统接入的数据才自动打卡）
+        # 她的任务和日常都由她自己勾；训练和称体重只记数，不打卡、不加分（只有系统接入的数据才自动打卡）
         self.assertEqual(reply["bubbles"][1:], [])
         self.assertFalse(quests.checked(self.db, quests.habit_by_title(self.db, "训练")["id"], DAY))
         items = {i["id"]: i for i in self.db.latest_plan(DAY.isoformat())["items"]}
@@ -88,6 +88,18 @@ class Stage1Test(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM workout_sets").fetchone()[0], 3)
         row = self.db.conn.execute("SELECT * FROM module_status WHERE module = '财务'").fetchone()
         self.assertEqual((row["cold_start"], row["note"]), ("已完成", "每月随意花 300 镑"))
+
+    def test_result_with_task_number_maps_to_todays_item(self):
+        """11-06：小伴 用待办编号写 [结果 #243]，被记到了 10-30 的旧计划条目上；现在先认这两天计划里的条目，认不到再按待办编号找。"""
+        item = self.item("列出 30 个潜在客户")
+        tid = 9000  # 线上待办编号（几百）和计划条目编号（几千）不重叠；测试里把待办编号挪开，免得碰巧也是条目编号
+        cols = [c[1] for c in self.db.conn.execute("PRAGMA table_info(tasks)") if c[1] != "id"]
+        self.db.conn.execute(f"INSERT INTO tasks (id, {','.join(cols)}) SELECT ?, {','.join(cols)} FROM tasks WHERE id = ?", (tid, item["task_id"]))
+        self.db.conn.execute("UPDATE plan_items SET task_id = ? WHERE id = ?", (tid, item["id"]))
+        self.db.conn.commit()
+        self.ethan(f"好\n[结果 #{tid} 没做 先不做了]").reply("telegram", "算了", today=DAY)
+        got = self.db.conn.execute("SELECT item_id FROM item_results ORDER BY id DESC LIMIT 1").fetchone()
+        self.assertEqual(got[0], item["id"])
 
     def test_bad_marks_are_not_guessed_and_she_is_told(self):
         deal, body = self.ids["创业拿到第一个订单"], self.ids["减脂塑形：年底体脂 27%–28%、体重约 56.5 kg"]
@@ -120,13 +132,15 @@ class Stage1Test(unittest.TestCase):
         self.assertIn("冷启动从 2026-11-02 开始", board_pages(self.store, DAY)["看板/各方面.md"])
 
     def test_brief_waits_for_its_time_then_sends_once(self):
-        at = planned_time(DAY, BRIEF_SLOT)
+        at = brief_time(DAY)
         before = datetime.combine(DAY, at, timezone.utc) - timedelta(minutes=1)
         self.assertIsNone(due_brief(before, {}, self.db))
         on_time = datetime.combine(DAY, at, timezone.utc)
         self.assertIsNotNone(due_brief(on_time, {}, self.db))
         self.assertIsNone(due_brief(on_time, {DAY.isoformat(): {"brief": "已发送"}}, self.db))
-        self.assertIsNone(due_brief(datetime(2026, 11, 2, 11, 5, tzinfo=timezone.utc), {}, self.db))
+        from ethan.proactive import gate  # 最晚补到 11:00：时段在登记表 RULES["brief"]，由关口判断
+        late = datetime(2026, 11, 2, 11, 5, tzinfo=timezone.utc)
+        self.assertEqual(gate("brief", late, Settings(Path(self.store.root) / "s-gate.json"), [], self.db, {}), "不在时段")
 
     def test_brief_occasion_sections_in_order(self):
         text = brief_occasion(self.plan)
@@ -152,7 +166,7 @@ class Stage1Test(unittest.TestCase):
 
         ethan = self.ethan("早呀\n今天三件事")
         channel = Channel()
-        now = datetime.combine(DAY, planned_time(DAY, BRIEF_SLOT), timezone.utc) + timedelta(minutes=1)
+        now = datetime.combine(DAY, brief_time(DAY), timezone.utc) + timedelta(minutes=1)
         self.assertIn("早报：已发送", tick(ethan, channel, now=now))
         self.assertIn("五、今天的任务", self.backend.systems[-1])
         state = json.loads((Path(self.store.root) / "proactive.json").read_text())
@@ -166,7 +180,7 @@ if __name__ == "__main__":
 
 class HerTicksOnlyTest(Stage1Test):
     def test_ethan_never_ticks_or_undoes_her_tasks(self):
-        """2026-10-29 她定：所有待办和任务都由她自己勾，小伴 不替她勾、不替她打卡、也不撤销她勾的。"""
+        """所有待办和任务都由她自己勾，小伴 不替她勾、不替她打卡、也不撤销她勾的。"""
         from ethan import quests
         a = self.db.conn.execute("SELECT id FROM tasks WHERE promised_by_ethan = 0 AND done = 0 LIMIT 1").fetchone()[0]
         quests.complete_task(self.db, a, DAY)
@@ -176,7 +190,7 @@ class HerTicksOnlyTest(Stage1Test):
         self.assertNotIn("她刚在系统里勾掉的", self.backend.systems[0])
 
     def test_ticks_only_when_she_explicitly_asks(self):
-        """她明确叫 小伴 帮她点的，他才可以点（2026-10-29）。"""
+        """她明确叫 小伴 帮她点的，他才可以点。"""
         h = quests.habit_by_title(self.db, "训练")["id"]
         self.ethan("太棒了 [打卡 训练]").reply("telegram", "今天练完了", today=DAY)
         self.assertFalse(quests.checked(self.db, h, DAY))  # 只说做完了，不算叫他点
@@ -186,12 +200,12 @@ class HerTicksOnlyTest(Stage1Test):
 
 class TodoDedupeTest(unittest.TestCase):
     def test_similar_todo_not_added_and_edit_marker(self):
-        """2026-10-29 她说 小伴 从聊天里记待办要先查重。"""
+        """小伴 从聊天里记待办要先查重。"""
         from ethan.core.agent import similar_task, parse_reply
         self.assertTrue(similar_task("回房东的邮件", ["回房东邮件"]))
         self.assertTrue(similar_task("买袜子和手套", ["买袜子"]))
         self.assertFalse(similar_task("交论文", ["改论文"]))
-        # 2026-10-30：换了语序的同一件事（线上三条“学生证明”待办）
+        # 换了语序的同一件事（线上三条“学生证明”待办）
         self.assertTrue(similar_task("发学生证明邮件", ["发邮件给学校申请新的学生证明"]))
         self.assertFalse(similar_task("找 某商学院 学生服务处开新的学生证明", ["发邮件给学校申请新的学生证明"]))
         self.assertFalse(similar_task("订去巴黎的车票", ["订巴黎的酒店"]))
@@ -203,7 +217,7 @@ class TodoDedupeTest(unittest.TestCase):
             rows = [dict(r) for r in store.db.conn.execute("SELECT title, due FROM tasks")]
             self.assertEqual(rows, [{"title": "回房东邮件说退租", "due": "2026-11-05"}])
             self.assertEqual(parse_reply(f"好 [待办改 #{tid} 回房东邮件说退租]")["bubbles"], ["好"])
-            # 带几点的“待办”其实是日程（她 2026-11-01：送别活动是日程，要什么待办）
+            # 带几点的“待办”其实是日程（送别活动是日程，要什么待办）
             ethan.note_records("[待办 11/12 11:00 某商学院 交换生送别活动（Garden Room） @2026-11-12]")
             from ethan import events
             self.assertEqual(events.for_day(store.db, date(2026, 11, 12))[0][:3], ("11:00", "13:00", "某商学院 交换生送别活动（Garden Room）"))
@@ -213,7 +227,7 @@ class TodoDedupeTest(unittest.TestCase):
 
 class ClaudeChatTest(Stage1Test):
     def test_claude_session_shares_memory_with_telegram(self):
-        """2026-10-29：固定的 Claude 会话和 Telegram、微信是同一个 小伴，聊过的互相都知道。"""
+        """固定的 Claude 会话和 Telegram、微信是同一个 小伴，聊过的互相都知道。"""
         from ethan import chat
         out = chat.talk(self.ethan("收到 [待办 周五交房租]"), "提醒我周五交房租")
         self.assertEqual(out, "收到")

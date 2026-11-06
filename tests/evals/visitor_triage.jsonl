@@ -1,8 +1,8 @@
-{"id": "collab", "input": {"name": "Lena", "intent": "合作", "message": "你好，我们是一个面向留学生的 AI 学习产品，想邀请你 11 月中旬做一次联名内容合作，预算可谈，方便的话回邮件聊聊。"}, "expect": {"tier": "reply"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "media", "input": {"name": "李记者", "intent": "媒体", "message": "我是某科技媒体记者，想就你做的个人 AI 系统做个 30 分钟采访，下周五前方便吗？"}, "expect": {"tier": "reply"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "friend", "input": {"name": "小林", "intent": "约聊", "message": "哈哈是我小林！看到你主页了，这周末约饭？"}, "expect": {"tier": "reply"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "praise", "input": {"name": "匿名", "intent": "其他", "message": "主页好好看！设计太棒了"}, "expect": {"tier": "fyi"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "vague", "input": {"name": "Tom", "intent": "约聊", "message": "Hi, would love to connect sometime."}, "expect": {"tier": "fyi"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "question", "input": {"name": "Amy", "intent": "其他", "message": "请问你用的是什么模型做的Dais？"}, "expect": {"tier": "fyi"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "spam", "input": {"name": "SEO Pro", "intent": "合作", "message": "We can boost your website to #1 on Google! Cheap price, click here"}, "expect": {"tier": "junk"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
-{"id": "gibberish", "input": {"name": "asdf", "intent": "其他", "message": "asdfasdf qwer 1234"}, "expect": {"tier": "junk"}, "note": "起步题：按主页可能收到的留言类型编写；以后用真实留言（脱敏）补充"}
+{"id": "collab", "input": {"name": "Lena", "intent": "合作", "message": "你好，我们是一个面向留学生的 AI 学习产品，想邀请你 11 月中旬做一次联名内容合作，预算可谈，方便的话回邮件聊聊。"}, "expect": {"tier": "reply"}, "note": "虚构示例"}
+{"id": "media", "input": {"name": "李记者", "intent": "媒体", "message": "我是某科技媒体记者，想就你做的个人 AI 系统做个 30 分钟采访，下周五前方便吗？"}, "expect": {"tier": "reply"}, "note": "虚构示例"}
+{"id": "friend", "input": {"name": "小林", "intent": "约聊", "message": "哈哈是我小林！看到你主页了，这周末约饭？"}, "expect": {"tier": "reply"}, "note": "虚构示例"}
+{"id": "praise", "input": {"name": "匿名", "intent": "其他", "message": "主页好好看！设计太棒了"}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
+{"id": "vague", "input": {"name": "Tom", "intent": "约聊", "message": "Hi, would love to connect sometime."}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
+{"id": "question", "input": {"name": "Amy", "intent": "其他", "message": "请问你用的是什么模型做的主页助手？"}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
+{"id": "spam", "input": {"name": "SEO Pro", "intent": "合作", "message": "We can boost your website to #1 on Google! Cheap price, click here"}, "expect": {"tier": "junk"}, "note": "虚构示例"}
+{"id": "gibberish", "input": {"name": "asdf", "intent": "其他", "message": "asdfasdf qwer 1234"}, "expect": {"tier": "junk"}, "note": "虚构示例"}

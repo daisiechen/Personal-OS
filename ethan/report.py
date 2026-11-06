@@ -1,10 +1,10 @@
 """总览和周报：她说“看看总览”时当场汇报，每周日晚上主动发一次周报。
 
-汇报按七块领地走（2026-10-28 接上领地和回顾，见 docs/design/territories.md）：每块的健康灯和各项数（和回顾同一套算法）、
+汇报按七块领地走（接上领地和回顾，见 docs/design/territories.md）：每块的健康灯和各项数（和回顾同一套算法）、
 副本进度、本周积分和满勤，再加这周新收藏串成的“这周你在关注什么”（docs/design/saved-feed.md）、答应她的事和心愿。
 事实从记忆库取，由 小伴 用自己的口吻写；还没有数据来源的领地如实说，不编数字。
 
-周报：python3 -m ethan.report --data <数据目录> --weekly（ethan2-weekly.timer 每周日 20:00 伦敦时间触发）
+周报：python3 -m ethan.report --data <数据目录> --weekly（ethan2-weekly.timer 每周日 20:00 本地时间触发）
 """
 
 import argparse
@@ -125,7 +125,7 @@ def _question_lines(db, today, since):
 
 
 def _relations_line(db, today):
-    """这周该联系谁、生日和重要日子、对方问了她还没回的（ethan/relations.py，她 11-04 认可）。"""
+    """这周该联系谁、生日和重要日子、对方问了她还没回的（ethan/relations.py）。"""
     try:
         from . import relations
         return relations.week_line(db, today)
@@ -176,10 +176,10 @@ def report_prompt(persona: str, store: MemoryStore, today: date, weekly: bool) -
         "（健康看训练、蛋白质、睡眠、体重趋势；学习看英语陪练）  3. 社交：这周该联系谁（带一句能聊的）、谁快过生日、谁问了她还没回  "
         "4. 这周你在关注什么：把“这周新收藏”串成一段，挑一两条建议下周用上（没有就跳过）  "
         "5. 你答应她还没做的事、心愿清单里待实现的"
-        + ("  6. 最后一行写记忆：这周对齐率、被她纠正几次（复发几次）、检验题通过率比上周升还是降，一句话，没有数就略过（2026-10-31 她定）" if weekly else ""),
+        + ("  6. 最后一行写记忆：这周对齐率、被她纠正几次（复发几次）、检验题通过率比上周升还是降，一句话，没有数就略过" if weekly else ""),
         "只用下面的事实，没有的不要编。“还没有数据来源的区域”合成一句带过。"
         + ("最后用一两句说说这周你看到的她，给下周一个小期待。然后提 3 件下周重点（从黄的红的区域、副本下一步和她最近着急的事里挑，"
-           "每件一句、具体到能排进日程），问她行不行，并在消息最末尾加 [下周重点 第一件 | 第二件 | 第三件]（2026-10-29 她定）。" if weekly else ""),
+           "每件一句、具体到能排进日程），问她行不行，并在消息最末尾加 [下周重点 第一件 | 第二件 | 第三件]。" if weekly else ""),
         "这次不用 [VOICE]、[REACT]、[不回]，也不受平时聊天条数的限制，不超过 20 行。",
         "### 事实",
         json.dumps(collect_facts(store, today), ensure_ascii=False, indent=1),
@@ -194,7 +194,7 @@ def write_report(ethan: Ethan, channel: str, today: date = None, weekly: bool = 
         ethan.store.raw.append(channel, "mia", asked)
     system = report_prompt(ethan.persona, ethan.store, today, weekly)
     ask = "（现在给她发本周周报）" if weekly else (asked or "看看总览")
-    reply = ethan.router.complete(system, [{"role": "user", "content": ask}])
+    reply = ethan.router.complete(system, [{"role": "user", "content": ask}], purpose="weekly-report" if weekly else "chat")  # 她问“总览”算聊天
     text = reply.text.strip()
     if weekly:
         focus.note(ethan.store.db, text, today)
@@ -220,7 +220,7 @@ def main():
         if chat_id is None:
             print("还没绑定 Telegram，跳过")
             return
-        if args.weekly:  # 赛季页顶上的一句结论、每块领域的原因、下季建议：每周日写一次（她 2026-11-02 选了赛季页样稿 B）
+        if args.weekly:  # 赛季页顶上的一句结论、每块领域的原因、下季建议：每周日写一次（赛季页样稿 B）
             try:
                 from . import season
                 from .clock import her_now
@@ -228,8 +228,15 @@ def main():
                 season.write_note(store.db, ethan.router, s, start, her_now(ethan.router.settings).date())
             except Exception as e:
                 print(f"赛季总结没写成：{type(e).__name__} {str(e)[:120]}")
-        if args.weekly:  # 周报并进周日 21:00 的复盘（ethan/weekreview.py，她 2026-11-02：“可以”），这里只写赛季页那句结论
+        if args.weekly:  # 周报并进周日 21:00 的复盘（ethan/weekreview.py），这里只写赛季页那句结论
             print("周报并进 21:00 的复盘，不单独发")
+            return
+        from .clock import her_now
+        from .proactive import gate
+        now = her_now(ethan.router.settings)
+        why = gate(f"overview:{now:%Y-%m-%dT%H:%M}", now, ethan.router.settings)  # 手动发的总览也过主动消息的关口（11-06）
+        if why:
+            print(f"没发：{why}")
             return
         text = write_report(ethan, "telegram", weekly=args.weekly)
         TelegramAPI(os.environ["TELEGRAM_BOT_TOKEN"]).call("sendMessage", chat_id=chat_id, text=text)

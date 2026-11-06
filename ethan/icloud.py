@@ -1,4 +1,4 @@
-"""iCloud 日历（设计第 9.6 节，2026-10-26 Mia 定用苹果日历，计划精确到小时）。
+"""iCloud 日历（设计第 9.6 节，用苹果日历，计划精确到小时）。
 
 通过 CalDAV 接入：只写一个单独的“小伴 计划”日历（没有就建），不改她其他日历；
 只读其他日历的忙闲，让计划器避开她已有的安排。事件时间一律用 UTC 写入，苹果日历按她手机的时区显示。
@@ -71,7 +71,7 @@ def event_ics(uid: str, start: datetime, end: datetime, title: str, description:
 
 
 def parse_ics_time(value: str, params: str) -> datetime:
-    """支持 ...Z（UTC）、TZID=...（带时区）、不带时区（按伦敦时间）；全天事件返回 None。"""
+    """支持 ...Z（UTC）、TZID=...（带时区）、不带时区（按本地时间）；全天事件返回 None。"""
     if "VALUE=DATE" in params and "T" not in value:
         return None
     naive = datetime.strptime(value.rstrip("Z"), "%Y%m%dT%H%M%S")
@@ -202,7 +202,7 @@ class ICloudCalendar:
 
     # 读忙闲
     def busy(self, day: date) -> list:
-        """她其他日历当天（伦敦时间）的安排：[(HH:MM, HH:MM, 标题, {"location", "geo", "travel_min"})]，
+        """她其他日历当天（本地时间）的安排：[(HH:MM, HH:MM, 标题, {"location", "geo", "travel_min"})]，
         跳过全天事件和 小伴 计划日历。"""
         return self._day_events(day, lambda name: name != CALENDAR_NAME)
 
@@ -244,7 +244,7 @@ class ICloudCalendar:
         return sorted(out)
 
     def delete_event(self, href: str) -> None:
-        """删她日历里的一个事件（她在工作台点了删，2026-11-02：“我都在工作台里面确认删除了，那肯定就是我要删的”）。
+        """删她日历里的一个事件（她在工作台点了删，“我都在工作台里面确认删除了，那肯定就是我要删的”）。
         只认她自己日历里的地址；重复的约不在这里删（会把整串都删掉）。"""
         if not any(href.startswith(u) for u in self.calendars().values()):
             raise CalendarError("不是你日历里的事件")
@@ -279,7 +279,7 @@ ENV_FILE = Path.home() / ".config" / "ethan" / "ethan.env"
 
 
 def _env_file(path=None) -> dict:
-    """服务器上的 ethan.env（密钥由她用 setup_secrets 录入）由代码自己读，不经过会话（她 11-04：会话里要先读密钥文件，
+    """服务器上的 ethan.env（密钥由她用 setup_secrets 录入）由代码自己读，不经过会话（会话里要先读密钥文件，
     每次都被权限检查拦下）。只取需要的那几项，不打印。"""
     out = {}
     try:

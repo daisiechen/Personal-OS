@@ -23,7 +23,7 @@ class MigrateTest(unittest.TestCase):
             store.close()
 
     def test_each_recorded_right_away_so_an_interrupt_does_not_rerun(self):
-        """跑完一个记一个：后面的把进程打断了，前面跑过的下次不再跑（2026-11-04 部署超时）。"""
+        """跑完一个记一个：后面的把进程打断了，前面跑过的下次不再跑（部署超时）。"""
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / "repo" / "migrations").mkdir(parents=True)

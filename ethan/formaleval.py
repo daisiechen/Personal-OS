@@ -124,11 +124,13 @@ def _sample(db, n: int, seed: int, kind: str = None) -> list:
     """她说过、还算数的说法里抽几条（按编号排序后定种子抽，同一份数据每次抽到的一样）。"""
     from . import ontology
     sid = ontology.self_id(db)
+    from . import lifebase
+    cond, cargs = lifebase.mem_where("count", "statements", alias="s")  # 还算数 = 当前有效（lifebase 一处判）
     rows = db.conn.execute("SELECT s.id, s.value_text, m.fact_id FROM statements s LEFT JOIN fact_map m ON m.statement_id = s.id "
-                           "WHERE s.subject_id = ? AND s.review = 'accepted' AND s.valid_to IS NULL AND s.superseded_by IS NULL "
+                           f"WHERE s.subject_id = ? AND {cond} "
                            "AND s.said_by IN ('her_words', 'her_confirmation', 'her_provided') AND COALESCE(s.kind, 'fact') != 'hypothesis' "
                            "AND length(s.value_text) >= 4" + (" AND s.kind = ?" if kind else "") + " ORDER BY s.id",
-                           (sid, *([kind] if kind else []))).fetchall() if sid else []
+                           (sid, *cargs, *([kind] if kind else []))).fetchall() if sid else []
     rnd = random.Random(seed)
     return rnd.sample(list(rows), min(n, len(rows)))
 

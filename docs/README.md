@@ -1,14 +1,21 @@
-# 文档索引
+# Docs
 
-| 文档 | 内容 |
+English | [简体中文](README.zh-CN.md)
+
+The English operations guides are translations of the Chinese originals in `operations/`. If the two ever disagree, the Chinese version (and the code) wins — please open an issue.
+
+| Doc | What it covers |
 |---|---|
-| [../SETUP-FOR-AGENTS.md](../SETUP-FOR-AGENTS.md) | 写给 AI agent 的安装和定制步骤（从这里开始） |
-| [operations/deploy.md](operations/deploy.md) | 服务器部署、绑定聊天入口与日常命令 |
-| [operations/rebirth.md](operations/rebirth.md) | 记忆加密备份和从备份恢复 |
-| [operations/finance.md](operations/finance.md) | 接上记账（银行邮件、Monzo） |
-| [operations/devices.md](operations/devices.md) | 接上 Mac 工作时长和 iPhone 出门 / 到家 |
-| [operations/ethan-chat.md](operations/ethan-chat.md) | 在 Claude App 里和你的 AI 聊 |
-| [operations/fancy-moderation.md](operations/fancy-moderation.md) | 示例：给你自己的 App 接举报提醒 |
-| [operations/agent-export.md](operations/agent-export.md) | 每周自动把 Codex 里你说的话交给你的 AI |
-| [operations/wechat-export.md](operations/wechat-export.md) | 微信聊天记录本机只读导出、交给你的 AI 建人物卡 |
-| [operations/cloud-curfew.md](operations/cloud-curfew.md) | 云端会话也装上晚上收工钩子 |
+| [../SETUP-FOR-AGENTS.md](../SETUP-FOR-AGENTS.md) | Install and customize, written for your coding agent (start here) |
+| [glossary.md](glossary.md) | English ↔ Chinese term list (Buddy, season, quest, territory, workbench, ontology ...) |
+| [en/operations/deploy.md](en/operations/deploy.md) | Server deployment, connecting chat apps, everyday commands |
+| [en/operations/rebirth.md](en/operations/rebirth.md) | Encrypted memory backup and restoring from it |
+| [en/operations/finance.md](en/operations/finance.md) | Spending tracking (bank emails, Monzo) |
+| [en/operations/devices.md](en/operations/devices.md) | Mac work hours and iPhone leave / arrive home |
+| [en/operations/ethan-chat.md](en/operations/ethan-chat.md) | Chatting with your AI inside the Claude app |
+| [en/operations/fancy-moderation.md](en/operations/fancy-moderation.md) | Example: moderation alerts from your own app |
+| [en/operations/agent-export.md](en/operations/agent-export.md) | Weekly export of what you said to other agents (Codex, Grok) into memory |
+| [en/operations/wechat-export.md](en/operations/wechat-export.md) | Read-only local export of your WeChat history, handed to your AI |
+| [en/operations/cloud-curfew.md](en/operations/cloud-curfew.md) | Installing the late-night curfew hook in cloud sessions |
+
+Chinese originals: [README.zh-CN.md](README.zh-CN.md) lists `operations/deploy.md`, `operations/rebirth.md`, `operations/finance.md`, `operations/devices.md`, `operations/ethan-chat.md`, `operations/fancy-moderation.md`, `operations/agent-export.md`, `operations/wechat-export.md`, `operations/cloud-curfew.md`.

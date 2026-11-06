@@ -159,7 +159,7 @@ class MailTest(Base):
         self.assertIn(gx.SCENE, ivs[0]["text"])
         self.assertIn(f"\n【她】{SAID}\n", ivs[0]["text"])
         self.assertNotIn("【她】好的", ivs[0]["text"])  # 点头不交
-        self.assertIn("\n【Grok】听起来很棒！伦敦的早晨跑步路线有很多", ivs[0]["text"])  # 两边都交（她 11-04）
+        self.assertIn("\n【Grok】听起来很棒！伦敦的早晨跑步路线有很多", ivs[0]["text"])  # 两边都交
         self.assertIn("格式：整段对话；agent：Grok", ivs[0]["text"].split("\n", 1)[0])
         arch = list((self.root / "agent-archive").iterdir())
         self.assertEqual(len(arch), 1)
@@ -184,7 +184,7 @@ class ParseTest(Base):
         self.assertTrue(gx.conversations(a)[0]["at"].startswith("2026-10-20"))
         self.assertTrue(gx.conversations(b)[0]["at"].startswith("2025-10-2"))  # 秒数时间戳
 
-    def test_full_transcript_not_cut(self):  # 她 11-04：Grok 的话不再截 120 字，整段交
+    def test_full_transcript_not_cut(self):  # Grok 的话不再截 120 字，整段交
         long = "你好，" + "很长" * 100
         conv = gx.conversations(grok_backend([("assistant", long), ("human", SAID), ("assistant", "x"), ("human", SAID2)]))[0]
         lines = gx.transcript_lines(gx.all_turns(conv), "Grok", her=lambda t: t["her"])

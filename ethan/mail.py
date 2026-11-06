@@ -1,4 +1,4 @@
-"""邮件打理（docs/design/digital-life-spec.md 第 7.5 节；她 2026-10-30：“以后你看过的邮件能不能不提醒我了，而且标为已读？
+"""邮件打理（docs/design/digital-life-spec.md 第 7.5 节；“以后你看过的邮件能不能不提醒我了，而且标为已读？
 只有需要我关注的才提醒我去看”，并同意做）。
 
 分两半：
@@ -14,8 +14,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
-import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,13 +32,12 @@ BULK_SENDERS = re.compile(r"noreply@sysmail\.dajie\.com|lagoujobs|zhaopin\.com|l
                           r"techinasia|meetup\.com|mba_stu_club|campusgroups", re.I)
 
 # 签证、居留、使领馆、移民局这类：就算发件地址看着怪、Gmail 说像垃圾，也不能判成垃圾 / 推广 / 群发归档掉，一律留给她看
-# （她 11-04：“这个为什么是垃圾？”——芬兰签证中心经 london.edu 转发的补材料通知被判成了垃圾）
+# （——芬兰签证中心经 london.edu 转发的补材料通知被判成了垃圾）
 MUST_SEE = re.compile(r"签证|申根|居留|大使馆|领事馆|移民局|visa\b|schengen|residence permit|\bBRP\b|embassy|consulate|home office|"
                       r"immigration|UKVI|biometric", re.I)
 UNREADABLE = "（解析不了）"  # ethan/imapmail.py 给解析失败那封填的发件人
-# 邮箱自己的拦截通知（某商学院 的 Mimecast 等）：真信可能被扣在里面，要她看一眼放不放（她 2026-10-31 同意）
+# 邮箱自己的拦截通知（某商学院 的 Mimecast 等）：真信可能被扣在里面，要她看一眼放不放
 HELD = re.compile(r"held messages|quarantin|messages? (are )?(being )?held|被隔离|隔离区|拦截的邮件", re.I)
-DIGEST_AT = (18, 21)  # 傍晚汇总的时段（她的时区，小时）
 
 SCHEMA_OUT = {"type": "object", "required": ["category", "attention", "reason"], "properties": {
     "category": {"type": "string", "enum": list(FOLDERS)}, "attention": {"type": "boolean"}, "fyi": {"type": ["boolean", "null"]},
@@ -61,7 +58,7 @@ def ensure(db):
         db.conn.execute("ALTER TABLE mail_items ADD COLUMN applied INTEGER NOT NULL DEFAULT 0")
     if "via" not in have:  # 发到 hi@example.com 的“主页来信”（主页会话 2026-10-30 请求）
         db.conn.execute("ALTER TABLE mail_items ADD COLUMN via TEXT")
-    # 她 11-04 同意的三条：fyi = “知道一下”（进行中的大事、不用她做什么）；restore = 她点了“这封不是垃圾”，要放回收件箱
+    # 的三条：fyi = “知道一下”（进行中的大事、不用她做什么）；restore = 她点了“这封不是垃圾”，要放回收件箱
     # （1 = 等放回，2 = 放回了）；spam = 在 Gmail 垃圾箱里发现的
     for col in ("fyi", "restore", "spam"):
         if col not in have:
@@ -181,7 +178,7 @@ def process(store, router, limit: int = 40) -> dict:
     for r in db.conn.execute("SELECT * FROM mail_items WHERE status = ? ORDER BY id", (me,)).fetchall():
         from . import grokexport
         grok_urls = grokexport.is_export_mail(r["sender"] or "", r["subject"] or "", r["body"] or "")
-        if grok_urls:  # xAI 的数据导出邮件：小伴 自己下载导入，不算要她处理的事（她 11-04：“都发到邮箱里为什么你不能自动读？”）
+        if grok_urls:  # xAI 的数据导出邮件：小伴 自己下载导入，不算要她处理的事
             data = {"category": "personal", "attention": False, "fyi": True, "reason": grokexport.HANDLING, "todo": None, "event": None}
         elif r["sender"] == UNREADABLE:  # 服务器解析不了的那封（ethan/imapmail.py）：不猜，留在收件箱不动，请她在邮件 App 里看一眼
             data = {"category": "unsure", "attention": True, "reason": "这封服务器读不了，请你在邮件 App 里看一眼", "todo": None, "event": None}
@@ -194,7 +191,7 @@ def process(store, router, limit: int = 40) -> dict:
             from . import desk
             if desk.quiet_sender(db, r["sender"] or "") and not MUST_SEE.search(f"{r['sender']}\n{r['subject']}\n{(r['body'] or '')[:1500]}"):
                 data = {**data, "attention": False, "todo": None, "reason": "她之前对这个发件人都点了不用管"}
-        bank_email(db, r)  # 银行消费邮件：记一笔账（她 2026-11-01：邮件被整理走了，招行的消费就再没进账）
+        bank_email(db, r)  # 银行消费邮件：记一笔账（邮件被整理走了，招行的消费就再没进账）
         ev_id = lifebase.try_evidence(db, "email", f"mail:{r['msg_key']}", r["received_at"] or _now(),
                                       f"发件人：{r['sender']}\n主题：{r['subject']}\n{r['body']}", visibility="private")
         if grok_urls:
@@ -203,14 +200,12 @@ def process(store, router, limit: int = 40) -> dict:
             # 收到的邮件里关于她的有效信息记成说法（第三方来源，语境写清发件人；ontology-plan 1.6）。只写说法，不动待办和计划
             lifebase.write_mail_facts(db, ev_id, r["sender"] or "", r["received_at"] or _now(), data["about_her"])
         task_id = event_id = None
-        from . import locks
-        if data.get("todo") and data["todo"].get("title") and locks.she_deleted(db, data["todo"]["title"]):
-            data = {**data, "todo": None}  # 她删掉过的同一件事，邮件不再建回来
-        if data.get("attention") and data.get("todo") and data["todo"].get("title") and _already_tasked(db, data["todo"]["title"]):
-            data = {**data, "todo": None}  # 同一件事已经有待办，或者最近已经做完（2026-11-01 交行账单她早还清了，旧账单邮件又建了一条）
+        from . import taskrules
+        if data.get("todo") and data["todo"].get("title") and taskrules.already(db, data["todo"]["title"], "mail", money=True):
+            data = {**data, "todo": None}  # 统一查重：已经有了、她删过、改过名、最近做完（交行账单早还清了又建一条），账单金额对得上也算
         ev = data.get("event") or {}
         if data.get("todo") and ev.get("day") and ev.get("start") and (data["todo"].get("due") or ev["day"]) >= ev["day"]:
-            data = {**data, "todo": None}  # 有确定时间的活动进日程就够了，不另建待办；要提前准备的（截止在活动之前）才留（她 2026-11-01：送别活动是日程，要什么待办）
+            data = {**data, "todo": None}  # 有确定时间的活动进日程就够了，不另建待办；要提前准备的（截止在活动之前）才留（送别活动是日程，要什么待办）
         if data.get("attention") and data.get("todo") and data["todo"].get("title"):
             from . import naming
             task_id = db.add_task(naming.title(data["todo"]["title"]), due=data["todo"].get("due"))  # 标题式（ui-spec 第 5 节）
@@ -228,7 +223,7 @@ def process(store, router, limit: int = 40) -> dict:
         db.conn.execute("UPDATE mail_items SET status = 'done', category = ?, attention = ?, reason = ?, task_id = ?, event_id = ?, fyi = ? WHERE id = ?",
                         (data["category"], 1 if data["attention"] else 0, data.get("reason"), task_id, event_id, fyi, r["id"]))
         db.conn.commit()
-        if data["attention"] and r["sender"] != UNREADABLE:  # 收件台默认给她看中文（2026-10-30），先译好
+        if data["attention"] and r["sender"] != UNREADABLE:  # 收件台默认给她看中文，先译好
             try:
                 from . import desk
                 desk.translate(db, router, "mail", r["id"], "body")
@@ -238,29 +233,22 @@ def process(store, router, limit: int = 40) -> dict:
     return got
 
 
-def kick(root, spawn=subprocess.Popen) -> bool:
-    try:
-        spawn([sys.executable, "-m", "ethan.mail", "--data", str(root)], cwd=str(Path(__file__).resolve().parent.parent),
-              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except OSError:
-        return False
+def kick(root, spawn=None) -> bool:
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "mail", (), spawn))
 
 
 # ---------- 傍晚汇总 ----------
 def to_digest(db) -> list:
+    """傍晚汇总里的邮件：收件台 desk.VIEWS["digest"]（她在工作台已经处理过的——回了、不用管、记成待办又勾掉了——不再汇报，
+    2026-10-31 交行账单她勾完了 小伴 傍晚又说一遍）。"""
     ensure(db)
     from . import desk
-    desk.ensure(db)
-    # 她在工作台已经处理过的（回了、不用管、记成待办又勾掉了）不再汇报（2026-10-31 交行账单她勾完了 小伴 傍晚又说一遍）
-    return [dict(r) for r in db.conn.execute(
-        "SELECT m.id, m.account, m.sender, m.subject, m.reason, m.task_id FROM mail_items m LEFT JOIN tasks t ON t.id = m.task_id "
-        "WHERE m.status = 'done' AND m.attention = 1 AND m.digested = 0 AND COALESCE(m.desk_state, 'open') IN ('open', 'draft', 'drafting', 'todo') "
-        "AND COALESCE(t.done, 0) = 0 ORDER BY m.id")]
+    return [{k: r[k] for k in ("id", "account", "sender", "subject", "reason", "task_id")} for r in sorted(desk.rows(db, "digest", "mail"), key=lambda r: r["id"])]
 
 
 def archived(db, days: int = 1) -> list:
-    """这几天 小伴 替她归进垃圾、推广、群发的（她 11-04 同意：傍晚汇总报个数，工作台能抽查、一键说“不是垃圾”）。"""
+    """这几天 小伴 替她归进垃圾、推广、群发的（傍晚汇总报个数，工作台能抽查、一键说“不是垃圾”）。"""
     ensure(db)
     return [dict(r) for r in db.conn.execute(
         "SELECT id, account, sender, subject, category, reason, created_at FROM mail_items WHERE status = 'done' AND attention = 0 "
@@ -287,7 +275,7 @@ SPAM_WATCH = re.compile(MUST_SEE.pattern + r"|银行|bank\b|payment (failed|decl
 
 
 def receive_spam(db, items: list) -> int:
-    """Gmail 垃圾箱里发现的、像是重要的（签证、银行、学校）：只提醒她，不移动、不改已读（她 11-04 同意）。"""
+    """Gmail 垃圾箱里发现的、像是重要的（签证、银行、学校）：只提醒她，不移动、不改已读。"""
     ensure(db)
     n = 0
     for i in items:
@@ -348,16 +336,6 @@ def bank_email(db, r) -> dict:
     m = re.search(r"您(的)?(账户|尾号|信用卡).{0,200}?(元|RMB|CNY)", body)
     got = finance.record_cmb(db, m.group(0) if m else body[:300], at, sender)
     return got if got.get("parsed") else {}
-
-
-def _already_tasked(db, title: str, days: int = 45) -> bool:
-    """邮件要建的待办，和没做完的、或最近 45 天做完的是同一件事：标题差不多，或者里面的金额对得上。"""
-    import re
-    from .core.agent import similar_task
-    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    olds = [r[0] for r in db.conn.execute("SELECT title FROM tasks WHERE done = 0 OR done_at >= ?", (since,))]
-    money = {m.replace(",", "") for m in re.findall(r"\d[\d,]*\.\d{2}|\d{4,}", title)}
-    return similar_task(title, olds) or any(m in o.replace(",", "") for m in money for o in olds)
 
 
 if __name__ == "__main__":

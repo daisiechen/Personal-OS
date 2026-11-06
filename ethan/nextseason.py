@@ -1,4 +1,4 @@
-"""下个赛季：拆副本草稿、开季、这一季的结算（tasks-and-schedule.md 第 7 节；她 2026-11-02：“1-5 先做吧”，第 1 件）。
+"""下个赛季：拆副本草稿、开季、这一季的结算（tasks-and-schedule.md 第 7 节；第 1 件）。
 
 她之前定的：“每个赛季结算的时候……我们一起把下个赛季的副本按照我们的框架拆分一下”；“复盘只在聊天里聊吧，工作台上只看结果，就是汇总和草稿”。
 
@@ -169,16 +169,8 @@ def chat_text(d: dict) -> str:
 
 def kick(root, feedback: str = None, spawn=None) -> bool:
     """后台起草 / 重写（不卡住聊天）。"""
-    import subprocess
-    import sys
-    from pathlib import Path
-    args = [sys.executable, "-m", "ethan.nextseason", "--data", str(root)] + (["--feedback", feedback] if feedback else [])
-    try:
-        (spawn or subprocess.Popen)(args, cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except OSError:
-        return False
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "next-season", ["--feedback", feedback] if feedback else [], spawn))
 
 
 # ---------- 结算和开季 ----------

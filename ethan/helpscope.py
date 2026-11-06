@@ -1,8 +1,8 @@
-"""小伴 帮办按新结构挑（quest-structure.md 第 6 节；她 2026-11-02：“1-5 先做吧”，第 2 件）。
+"""小伴 帮办按新结构挑（quest-structure.md 第 6 节；第 2 件）。
 
 以前 小伴 替她准备的事，来自他在聊天里“答应”的和每天回头看时从聊天里补的，常常和她这周真要做的对不上。现在每天一次：
 - 范围：未来 7 天的待办和当前里程碑的阶段任务里，她本人要做、没有前置挡着、还没开始的；
-  给开发会话 / Claude / Codex 的权限、放行、配置这类系统运维事务不挑（prep.is_ops，她 11-05）；
+  给开发会话 / Claude / Codex 的权限、放行、配置这类系统运维事务不挑（prep.is_ops）；
 - 由 小伴 判断哪几件他能提前替她做一部分：起草、查资料、比价、准备材料、订位前的准备；要她本人出面的不挑；
 - 挑中的（一天最多 3 件、同时最多 6 件在准备）记成他的准备任务，挂在同一个副本下、截止跟着那件走，并记下是替哪件准备的；
   进准备队列时先问她要不要（ethan/prep.py 原来的规矩：新记下的先问，两件隔 2 小时）。
@@ -30,28 +30,13 @@ def ensure(db):
 
 
 def candidates(db, day: date) -> list:
-    """未来 7 天她要做的：截止在 7 天内的待办，加上当前里程碑里一次性的阶段任务；去掉做完的、被挡着的、还没到开始日的、已经在帮的。"""
+    """未来 7 天她要做的：按 ethan/taskrules.py 的 helpscope 视图（截止在 7 天内的、当前里程碑里一次性的阶段任务；
+    不挑复盘、系统运维的、被挡着的、在等的、推到明天的、说算了的、暂停副本的，统一），再去掉已经在帮的。"""
+    from . import taskrules
     ensure(db)
-    end = (day + timedelta(days=7)).isoformat()
-    current = {r[0] for r in db.conn.execute(
-        "SELECT m.id FROM milestones m WHERE m.status = 'open' AND m.seq = (SELECT MIN(seq) FROM milestones x "
-        "WHERE x.goal_id = m.goal_id AND x.status = 'open')")}
     helped = {r[0] for r in db.conn.execute("SELECT help_for FROM tasks WHERE help_for IS NOT NULL")}
-    out = []
-    for r in db.conn.execute("SELECT t.*, g.title AS goal, m.title AS ms FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id "
-                             "LEFT JOIN milestones m ON m.id = t.milestone_id WHERE t.done = 0 AND t.promised_by_ethan = 0 "
-                             "AND COALESCE(g.status, 'active') = 'active'"):
-        t = dict(r)
-        from . import prep
-        if t["id"] in helped or t.get("habit_id") or t.get("is_review") or stages.blocked(db, t) or prep.is_ops(t["title"]):  # 系统运维的不帮（11-05）
-            continue
-        if t.get("start_day") and t["start_day"] > end:
-            continue
-        soon = t.get("due") and t["due"] <= end
-        stage_now = t.get("milestone_id") in current and (t.get("cadence") or "once") == "once"
-        if soon or stage_now:
-            out.append(t)
-    return out
+    ms = {r[0]: r[1] for r in db.conn.execute("SELECT id, title FROM milestones")}
+    return [{**t, "ms": ms.get(t.get("milestone_id"))} for t in taskrules.rows(db, "helpscope", day, None) if t["id"] not in helped]
 
 
 def listing(items: list) -> str:

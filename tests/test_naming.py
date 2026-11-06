@@ -1,4 +1,4 @@
-"""文案规范：系统自动起的名字写成标题式（docs/design/ui-spec.md 第 5 节，她 2026-11-02 同意）。"""
+"""文案规范：系统自动起的名字写成标题式（docs/design/ui-spec.md 第 5 节）。"""
 
 import unittest
 

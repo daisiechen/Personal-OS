@@ -1,7 +1,7 @@
-"""关系：微信导出的统计 + 每晚整理成人物卡 + 社交管理三张清单（docs/design/relations.md，她 2026-11-04 认可方案 A）。
+"""关系：微信导出的统计 + 每晚整理成人物卡 + 社交管理三张清单（docs/design/relations.md，方案 A）。
 
-她 11-04：“你迁移之后能不能读到我跟这个人的聊天记录，并帮我建立这个人的人物卡？小伴 也要帮我做社交管理：
-哪些人物是重要的，哪些人物我最近没有跟他联系，哪些人物我最近要跟他发点什么。”页面名她定：叫“关系”。
+“你迁移之后能不能读到我跟这个人的聊天记录，并帮我建立这个人的人物卡？小伴 也要帮我做社交管理：
+哪些人物是重要的，哪些人物我最近没有跟他联系，哪些人物我最近要跟他发点什么。”页面名叫“关系”。
 
 1. 统计（ingest_stats）：她 Mac 上的 ethan/wechatexport.py 每次 --send 时按私聊联系人算好交过来（POST /cloud/people_stats，
    云端钥匙）。只覆盖数字字段（最近联系、90 / 365 天条数、她说的占比、谁先开口、共同群）；重要程度没被她改过就按统计自动排。
@@ -39,7 +39,7 @@ EDITABLE = {"name": 30, "circle": 20, "relation": 60, "how_met": 200, "notes": 5
             "topics": 200, "draft": 200, "importance": 1, "contact_every_days": 4}
 CIRCLES = ("家人", "挚友", "朋友", "同学", "同事", "合作", "老师", "其他")
 
-# 客服、中介、商家这类默认跳过（她 11-04：“客服、中介、酒店管家、商家这类默认跳过”）
+# 客服、中介、商家这类默认跳过
 SERVICE = re.compile(r"客服|中介|商家|商城|旗舰店|专营|店铺|小店|酒店|管家|签证|代办|代理|房产|地产|租房|公寓|物业|置业|"
                      r"专属服务|VIP|vip|小助手|助手|顾问|销售|售后|官方|服务号|经纪|留学|移民|保险|贷款|理财经理|"
                      r"快递|外卖|师傅|门店|前台|售楼|招聘|HR|猎头|课程顾问|健身教练|美容|美甲|医美")
@@ -127,6 +127,26 @@ def _deleted(db, key: str, name: str) -> bool:
     return name in locks.deleted_titles(db, "person")
 
 
+def upsert(db, name: str, source: str = "", **fields):
+    """建人物卡 / 改卡上的字段的唯一入口（修盘点 bug：删了的卡被聊天抽取、每晚整理、[人物] 标记建回来）。
+    她删过这个人（删除锁）→ 不建、不改，返回 None；卡已在 → 她改过（锁住）的字段不动，其余照写。返回卡的 id。
+    除这里、数据库层和初始化种子外，别处不直接调 db.upsert_person（tests/test_person_upsert.py 守卫）。"""
+    ensure(db)
+    name = " ".join(str(name or "").split())[:30]
+    if not name:
+        return None
+    row = db.conn.execute("SELECT id, wx_key FROM people WHERE name = ?", (name,)).fetchone()
+    if row is None and _deleted(db, "", name):
+        return None
+    if row is None and source:
+        fields.setdefault("source", source)
+    if row is not None:
+        if row["wx_key"] and locks.locked(db, "person", "wx:" + row["wx_key"], "deleted"):
+            return None
+        fields = {k: v for k, v in fields.items() if not locks.locked(db, "person", row["id"], k)}
+    return db.upsert_person(name, **fields)
+
+
 def _clean_stats(p: dict) -> dict:
     st = {}
     last = str(p.get("last") or "")[:10]
@@ -200,7 +220,7 @@ def _like(s: str) -> str:
 def _records(db, wx_name: str, key: str = None) -> tuple:
     """这个人的微信交接记录（访谈原始记录，会话名“微信 · <名字>”）：最近的优先，最多 MAX_TEXT 字。返回 (原文, 用到的证据编号)。
     新的是整段对话（每行【她】/【对方名字】，ethan/wechatexport.py），旧的是问/答，两种都原样给模型（提示词里写了怎么认）。
-    认人（Codex 评审 11-05 第 13 条）：记录头带了微信指纹（；wx：…）的按指纹认；没带的按会话名精确认（LIKE 转义），
+    认人（Codex 评审 11-05 第 13 条）：记录头带了微信指纹（wx：…）的按指纹认；没带的按会话名精确认（LIKE 转义），
     同一个显示名字有两张卡时，没带指纹的旧记录分不清是谁的，谁都不给。已删除的记录不读。"""
     memusers.check("relations")
     session = f"微信 · {wx_name}"[:80]
@@ -345,7 +365,30 @@ def forget_evidence(db, evidence_ids) -> list:
         sets.update(source_ids=json.dumps(sorted(used - gone)), organized_at=None)
         db.conn.execute(f"UPDATE people SET {', '.join(k + ' = ?' for k in sets)} WHERE id = ?", (*sets.values(), r["id"]))
         out.append(r["id"])
+    _scrub_deleted(db, gone)
     return out
+
+
+def _unorganize(snap: dict, gone: set) -> bool:
+    """删掉的卡留着的样子（恢复用）里，用到已忘掉记录的整理字段清空；改了返回 True。"""
+    used = {int(i) for i in _j(snap.get("source_ids"), [])}
+    if not used & gone:
+        return False
+    for k in ORGANIZED:
+        snap[k] = "[]" if k in ("topics", "dates", "open_loops") else None
+    snap.update(source_ids=json.dumps(sorted(used - gone)), organized_at=None)
+    return True
+
+
+def _scrub_deleted(db, gone: set):
+    """她忘掉记录时，删掉的人留着的样子也一起清（不然恢复时会把忘掉的内容带回来）。"""
+    if not db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'manual_locks'").fetchone():
+        return
+    for r in db.conn.execute("SELECT id, value FROM manual_locks WHERE obj LIKE 'person:%' AND field = 'deleted' "
+                             "AND released_at IS NULL AND value IS NOT NULL").fetchall():
+        snap = _j(r["value"], None)
+        if isinstance(snap, dict) and _unorganize(snap, gone):
+            db.conn.execute("UPDATE manual_locks SET value = ? WHERE id = ?", (json.dumps(snap, ensure_ascii=False), r["id"]))
 
 
 def candidates(db, limit: int = PER_NIGHT) -> list:
@@ -415,7 +458,7 @@ def _next_day(d: str, today: date):
 
 
 def allowed(db, user: str) -> bool:
-    """人物卡全是她的私密社交信息：对外的（合作方、公开两档，Dais、主页）一律不给；记忆暂停中只给她本人和系统维护
+    """人物卡全是她的私密社交信息：对外的（合作方、公开两档，主页助手、主页）一律不给；记忆暂停中只给她本人和系统维护
     （同 onto_query._gate、portrait.chat_text；Codex 评审 11-05）。"""
     who = memusers.check(user)
     if memusers.external(user):
@@ -456,6 +499,19 @@ def due(db, today: date, user: str = "relations") -> dict:
     days.sort(key=lambda x: x["in"])
     reply.sort(key=lambda x: x["ago"])
     return {"contact": contact, "days": days, "reply": reply}
+
+
+def contact_status(db, today: date, user: str) -> dict:
+    """“联系重要的人”这一项（领地页、属性分、Obsidian 看板共用，11-06 决定 5 起“该联系谁”只用人物卡这一套）：
+    {"tracked": 有提醒间隔、有最近联系日期的人数, "due": 该联系了的那张清单, "days": 生日和重要日子}。
+    提醒间隔她设过的优先，没设按重要程度默认（interval）；老的“只看手设间隔 + 生日”（db.people_to_contact）已下线。"""
+    d = due(db, today, user)
+    if not allowed(db, user):
+        return {"tracked": 0, **d}
+    ensure(db)
+    n = sum(1 for r in db.conn.execute("SELECT contact_every_days, importance, last_contact FROM people")
+            if r["last_contact"] and interval(dict(r)))
+    return {"tracked": n, **d}
 
 
 def week_line(db, today: date) -> dict:
@@ -499,7 +555,7 @@ def _card(p: dict, today: date, locked=()) -> dict:
 def page(db, today: date, user: str = "me_page") -> dict:
     """工作台“关系”页：她本人看自己的人物卡（记忆暂停中也能看，同“我”页）。"""
     if not allowed(db, user):
-        return {"due": due(db, today, user), "people": [], "defaults": DEFAULT_EVERY, "circles": list(CIRCLES)}
+        return {"due": due(db, today, user), "people": [], "defaults": DEFAULT_EVERY, "circles": list(CIRCLES), "deleted": []}
     ensure(db)
     held = {}
     for r in db.conn.execute("SELECT obj, field FROM manual_locks WHERE obj LIKE 'person:%' AND released_at IS NULL"):
@@ -507,7 +563,8 @@ def page(db, today: date, user: str = "me_page") -> dict:
     people = [_card(dict(r), today, held.get(f"person:{r['id']}", ()))
               for r in db.conn.execute("SELECT * FROM people ORDER BY importance IS NULL, importance DESC, "
                                        "last_contact IS NULL, last_contact DESC, name")]
-    return {"due": due(db, today, user), "people": people, "defaults": DEFAULT_EVERY, "circles": list(CIRCLES)}
+    return {"due": due(db, today, user), "people": people, "defaults": DEFAULT_EVERY, "circles": list(CIRCLES),
+            "deleted": deleted_people(db)}
 
 
 def set_field(db, pid: int, field: str, value) -> dict:
@@ -528,7 +585,7 @@ def set_field(db, pid: int, field: str, value) -> dict:
         if v is not None and not 1 <= v <= 3650:
             return {"ok": False, "msg": "提醒间隔是 1–3650 天"}
     elif field == "topics":
-        v = json.dumps([t.strip() for t in re.split(r"[，,、;；]", str(value or "")) if t.strip()][:6], ensure_ascii=False)
+        v = json.dumps([t.strip() for t in re.split(r"[，、;；]", str(value or "")) if t.strip()][:6], ensure_ascii=False)
     else:
         v = " ".join(str(value or "").split())[:EDITABLE[field]] or None
         if field == "birthday" and v and not MMDD.match(v):
@@ -564,21 +621,76 @@ def loop_done(db, pid: int, text: str) -> dict:
 
 
 def delete(db, pid: int) -> dict:
-    """删卡：删了以后导出的统计不再把这个人建回来（删除锁，按微信指纹和名字）。"""
+    """删卡：删了以后统计、聊天抽取、每晚整理、[人物] 标记都不再把这个人建回来（删除锁，按微信指纹和名字）。
+    卡上的内容存在删除锁里（value），关系页“删掉的人”能原样恢复（4）。"""
     ensure(db)
     row = db.conn.execute("SELECT * FROM people WHERE id = ?", (pid,)).fetchone()
     if row is None:
         return {"ok": False, "msg": "这张卡不在了"}
     ref = "wx:" + row["wx_key"] if row["wx_key"] else "name:" + row["name"]
-    locks.lock(db, "person", ref, "deleted", title=row["name"])
-    if row["wx_name"] and row["wx_name"] != row["name"]:
-        locks.lock(db, "person", "name:" + row["wx_name"], "deleted", title=row["wx_name"])
-    db.conn.execute("UPDATE manual_locks SET released_at = ? WHERE obj = ? AND released_at IS NULL", (_now(), f"person:{pid}"))
-    db.delete_person(row["name"])
-    return {"ok": True, "msg": f"删了 {row['name']} 的卡，以后不再从微信建回来", "log": f"关系：删了 {row['name']} 的卡"}
+    snap = {k: row[k] for k in row.keys() if k != "id"}
+    with tx.atomic(db):
+        locks.lock(db, "person", ref, "deleted", value=snap, title=row["name"])
+        if row["wx_name"] and row["wx_name"] != row["name"]:
+            locks.lock(db, "person", "name:" + row["wx_name"], "deleted", title=row["wx_name"], note=ALIAS + ref)
+        db.conn.execute("UPDATE manual_locks SET released_at = ? WHERE obj = ? AND released_at IS NULL", (_now(), f"person:{pid}"))
+        db.conn.execute("DELETE FROM people WHERE id = ?", (pid,))
+    return {"ok": True, "msg": f"删了 {row['name']} 的卡，以后不再自动建回来；要恢复去最下面“删掉的人”", "log": f"关系：删了 {row['name']} 的卡"}
 
 
-# ---------- 统计一到就把所有人整理完（她 11-04：“为什么不是所有的人物卡一起整理？”） ----------
+ALIAS = "alias:"  # 删卡时按微信名字另记的那把删除锁，note 写主锁是哪个
+
+
+def deleted_people(db) -> list:
+    """关系页“删掉的人”：[{id 锁编号, name, at 删的时间, relation, kept 卡上内容留着没有}]，新删的在前。"""
+    locks.ensure(db)
+    out = []
+    for r in db.conn.execute("SELECT id, title, value, at, note FROM manual_locks WHERE obj LIKE 'person:%' AND field = 'deleted' "
+                             "AND released_at IS NULL ORDER BY id DESC"):
+        if (r["note"] or "").startswith(ALIAS):
+            continue
+        snap = _j(r["value"], None)
+        snap = snap if isinstance(snap, dict) else {}
+        out.append({"id": r["id"], "name": snap.get("name") or r["title"] or "", "at": (r["at"] or "")[:10],
+                    "relation": snap.get("relation") or snap.get("circle") or "", "kept": bool(snap)})
+    return out
+
+
+def restore(db, lock_id: int) -> dict:
+    """她在“删掉的人”里点恢复：放开删除锁，卡按删的时候的样子建回来（11-06 以前删的没留内容，只建回名字，下次统计和整理补上）。
+    建卡走 upsert 这一个入口；用到已忘掉记录的整理字段不带回来。"""
+    locks.ensure(db)
+    ensure(db)
+    r = db.conn.execute("SELECT * FROM manual_locks WHERE id = ? AND obj LIKE 'person:%' AND field = 'deleted'", (lock_id,)).fetchone()
+    if r is None or r["released_at"]:
+        return {"ok": False, "msg": "这个人已经恢复过了"}
+    snap = _j(r["value"], None)
+    snap = dict(snap) if isinstance(snap, dict) else {}
+    name = snap.pop("name", None) or r["title"]
+    ref = r["obj"].split(":", 1)[1]
+    if not snap and ref.startswith("wx:"):
+        snap["wx_key"] = ref[3:]
+    gone = {e[0] for e in db.conn.execute("SELECT id FROM evidence WHERE deleted_at IS NOT NULL")} \
+        if db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'evidence'").fetchone() else set()
+    used = {int(i) for i in _j(snap.get("source_ids"), [])}
+    if used:
+        have = {e[0] for e in db.conn.execute(f"SELECT id FROM evidence WHERE id IN ({','.join('?' * len(used))})", tuple(used))} \
+            if db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'evidence'").fetchone() else set()
+        _unorganize(snap, gone | (used - have))
+    cols = {c[1] for c in db.conn.execute("PRAGMA table_info(people)")}
+    fields = {k: v for k, v in snap.items() if k in cols and k not in ("id", "updated_at")}
+    names = {name, snap.get("wx_name")} - {None, ""}
+    with tx.atomic(db):
+        db.conn.execute("UPDATE manual_locks SET released_at = ? WHERE released_at IS NULL AND field = 'deleted' AND obj LIKE 'person:%' "
+                        f"AND (id = ? OR note = ? OR title IN ({','.join('?' * len(names))}))",
+                        (_now(), lock_id, ALIAS + ref, *names))
+        if db.conn.execute("SELECT 1 FROM people WHERE name = ?", (name,)).fetchone():
+            return {"ok": True, "msg": f"已经有一张叫 {name} 的卡了，只是不再挡着自动建卡", "log": f"关系：恢复 {name}（已有同名卡）"}
+        upsert(db, name, **fields)
+    return {"ok": True, "msg": f"{name} 的卡恢复了", "log": f"关系：恢复了 {name} 的卡"}
+
+
+# ---------- 统计一到就把所有人整理完 ----------
 LOCK = ".relations-organize.lock"  # 后台 --organize-all 和每晚整理共用（Codex 评审 P2 第 10 条：以前每晚那边不拿锁，可能同时整理同一个人）
 
 
@@ -590,6 +702,10 @@ def lock(root):
 
 def nightly(store, router, today: date) -> dict:
     """每晚整理（ethan/nightly.py 调）：后台在整理就跳过，不和它同时整理同一个人。"""
+    from .bgwork import paid_block
+    b = paid_block(store.root)
+    if b:  # 在用付费额度 / 订阅额度用完：大批整理不跑
+        return {"skipped": b["reason"]}
     f = lock(store.root)
     if f is None:
         return {"skipped": "后台正在整理"}
@@ -600,10 +716,8 @@ def nightly(store, router, today: date) -> dict:
 
 
 def kick_all(root, spawn=None) -> bool:
-    """另起一个后台进程整理全部待整理的人（不受夜里任务的时间上限）；已经有一个在跑就不再起。输出写进 logs/relations.log。"""
-    import sys
-    from .bgwork import spawn_logged
-    return spawn_logged([sys.executable, "-m", "ethan.relations", "--data", str(root), "--organize-all"], root, "relations", spawn)
+    from .bgwork import kick
+    return bool(kick(root, "relations", ["--organize-all"], spawn))
 
 
 def organize_all(db, router, today: date, batch: int = 20, stop=None, beat=None) -> dict:
@@ -632,6 +746,9 @@ def main(argv=None) -> int:
     p.add_argument("--organize-all", action="store_true", help="把所有待整理的人一次整理完")
     p.add_argument("--max-minutes", type=float, default=0, help="这一轮最多跑几分钟（0 = 不设上限）")
     args = p.parse_args(argv)
+    from .bgwork import gate
+    if gate(args.data, "relations"):  # 在用付费额度 / 订阅额度用完：后台不跑
+        return 0
     lockf = lock(args.data)
     if lockf is None:
         print("已经有一个在整理了")
@@ -644,9 +761,13 @@ def main(argv=None) -> int:
         from .bgwork import deadline, heartbeat, patient  # 她在聊就让路、额度满了歇一会儿，不碰备用模型
         from .bgwork import retry_locked
         router = patient(build_router(args.data, 50.0), store)
-        stop = deadline(args.max_minutes)
-        print(retry_locked(lambda: organize_all(store.db, router, her_today(), stop=stop, beat=lambda n: heartbeat(args.data, n))),
-              flush=True)
+        from .bgwork import QuotaBlocked, stop_or_blocked
+        stop = stop_or_blocked(args.data, deadline(args.max_minutes))
+        try:
+            print(retry_locked(lambda: organize_all(store.db, router, her_today(), stop=stop, beat=lambda n: heartbeat(args.data, n))),
+                  flush=True)
+        except QuotaBlocked as e:  # 整理到一半发现在用付费额度：停（这个人下次再整理）
+            print(f"[relations] 停了：{e}", flush=True)
     finally:
         store.close()
         lockf.close()

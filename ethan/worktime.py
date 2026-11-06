@@ -1,6 +1,6 @@
 """她本人的工作时长（事业领地的健康线：每天不超过 8 小时，超过黄，超过 10 小时红，见 docs/design/territories.md）。
 
-怎么算（2026-10-27 她定）：Mac 键鼠活跃时间 + 她在 Claude 会话里发消息的时间；agent 自己在跑不算。
+怎么算：Mac 键鼠活跃时间 + 她在 Claude 会话里发消息的时间；agent 自己在跑不算。
 - Mac 上每 5 分钟看一次键鼠空闲了多久（ioreg 的 HIDIdleTime），这 5 分钟里动过就算一格，攒着发给接收口。
 - Claude 会话报到钩子里她发话（UserPromptSubmit，where=mac）也算一格。
 - 服务器按 5 分钟一格去重存进 work_slots，一格 = 5 分钟。
@@ -19,6 +19,7 @@ import sys
 import urllib.request
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from . import clock
 
 SLOT_MIN = 5
 URL = "https://ethan.example.com/cloud/activity"
@@ -29,7 +30,7 @@ PLIST = Path.home() / "Library" / "LaunchAgents" / "me.mia.ethan-worktime.plist"
 
 
 def slot_of(t: datetime) -> str:
-    """按伦敦本地时间取 5 分钟格（她在伦敦，工作日按本地算）。"""
+    """按本地时间取 5 分钟格（工作日按本地算）。"""
     t = t.astimezone(_tz())
     return t.replace(minute=t.minute - t.minute % SLOT_MIN, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M")
 
@@ -58,7 +59,7 @@ def record(db, slots, source: str) -> int:
     return n
 
 
-DAY_START = "05:00"  # 一天从早上 5 点算起：凌晨 0–5 点还算前一晚（她 2026-11-01：“昨晚的 2 小时”不该算进今天）
+DAY_START = f"{clock.DAY_START_HOUR:02d}:00"  # 一天从早上 5 点算起：凌晨 0–5 点还算前一晚（不该算进今天；常量在 clock）
 
 
 def day_range(day: date) -> tuple:
@@ -125,7 +126,7 @@ REPORT_URL = "https://ethan.example.com/cloud/agent/report"
 
 
 def flush_codex(opener=urllib.request.urlopen, spool: Path = None) -> int:
-    """Codex 桌面 App 在沙箱里跑报到脚本，连不了网（2026-10-29 日志：curl 退出码 6），脚本就把报到存进 ~/.codex/ethan_spool.jsonl，
+    """Codex 桌面 App 在沙箱里跑报到脚本，连不了网（日志：curl 退出码 6），脚本就把报到存进 ~/.codex/ethan_spool.jsonl，
     这里（每 5 分钟、在沙箱外）替它发出去；发成功的删掉，没发成功的留着下次。返回发出去几条。"""
     spool = spool or CODEX_SPOOL
     try:
@@ -154,7 +155,7 @@ def flush_codex(opener=urllib.request.urlopen, spool: Path = None) -> int:
 
 CURFEW_URL = "https://ethan.example.com/cloud/curfew"
 CURFEW_STATE = Path.home() / ".ethan-curfew.json"
-CURFEW_EVERY = 15 * 60  # 11 点后还在用：每 15 分钟再弹一次（她 2026-10-31：弹全屏提醒，不锁屏）
+CURFEW_EVERY = 15 * 60  # 11 点后还在用：每 15 分钟再弹一次（弹全屏提醒，不锁屏）
 FULLSCREEN = r"""
 ObjC.import('Cocoa');
 var app = $.NSApplication.sharedApplication;
@@ -164,7 +165,7 @@ var w = $.NSWindow.alloc.initWithContentRectStyleMaskBackingDefer(f, 0, 2, false
 w.setLevel(1000); w.setOpaque(false); w.setIgnoresMouseEvents(false);
 w.setBackgroundColor($.NSColor.colorWithCalibratedRedGreenBlueAlpha(0.07, 0.08, 0.17, 0.95));
 var W = Math.min(f.size.width - 160, 1100), X = (f.size.width - W) / 2;
-function label(text, size, y, h, r, g, b) {  // 自动换行、居中，宽度限在屏幕中间（2026-11-01 她截图：一行太长显示不全）
+function label(text, size, y, h, r, g, b) {  // 自动换行、居中，宽度限在屏幕中间（截图：一行太长显示不全）
   var t = $.NSTextField.wrappingLabelWithString(text);
   t.setFont($.NSFont.boldSystemFontOfSize(size)); t.setTextColor($.NSColor.colorWithCalibratedRedGreenBlueAlpha(r, g, b, 1));
   t.setAlignment(2); t.setFrame($.NSMakeRect(X, y, W, h));
@@ -200,7 +201,7 @@ def curfew_check(active: bool, now: float = None, opener=urllib.request.urlopen,
     except (OSError, ValueError):
         st = {}
     phase = c.get("phase", "ok")
-    night = datetime.now().strftime("%Y-%m-%d") if datetime.now().hour >= 5 else (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    night = clock.work_day(datetime.now(_tz())).isoformat()  # 按她的时区、凌晨 5 点分天（以前用 Mac 本地时间，写法违规）
     done = ""
     if phase in ("remind", "persuade") and st.get(phase) != night:
         text = {"remind": "9 点了，开始收尾吧，别再开新的了。", "persuade": "10 点了，今天到这儿吧，去做点工作以外的事。"}[phase]
@@ -209,7 +210,7 @@ def curfew_check(active: bool, now: float = None, opener=urllib.request.urlopen,
         done = "通知"
     elif c.get("stop") and now - float(st.get("full_at", 0)) >= CURFEW_EVERY:
         full = c.get("message") or "已经 11 点了，今天到这儿。"
-        head, _, rest = full.partition("。")  # 第一句做大标题，其余换行小字（2026-11-01：一行太长显示不全）
+        head, _, rest = full.partition("。")  # 第一句做大标题，其余换行小字（一行太长显示不全）
         title, msg = json.dumps(head + "。", ensure_ascii=False), json.dumps(rest.strip(), ensure_ascii=False)
         out = run(["osascript", "-l", "JavaScript", "-e", FULLSCREEN.replace("__TITLE__", title).replace("__MSG__", msg)],
                   capture_output=True, timeout=75)
@@ -266,8 +267,8 @@ def install() -> str:
     return f"装好了：{PLIST}，每 5 分钟记一次（11 点后还在用会弹全屏提醒）。{codex}不想记了：launchctl unload {PLIST}"
 
 
-CODEX_GUARD = """# ethan-curfew 开始：晚上 11 点后开新的 codex 先问一句（python3 -m ethan.worktime --install 装的，她 2026-10-31 定）
-# 她原来给 codex 设了别名：先记下别名的内容再取消，不然 zsh 报 defining function based on alias（2026-11-01）
+CODEX_GUARD = """# ethan-curfew 开始：晚上 11 点后开新的 codex 先问一句（python3 -m ethan.worktime --install 装的）
+# 她原来给 codex 设了别名：先记下别名的内容再取消，不然 zsh 报 defining function based on alias
 __ethan_codex_alias="${aliases[codex]:-${BASH_ALIASES[codex]:-}}"
 unalias codex 2>/dev/null
 function codex {

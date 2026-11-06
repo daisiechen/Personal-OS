@@ -32,7 +32,7 @@ class FakeRouter:
 
 class FilesTest(unittest.TestCase):
     def test_every_file_goes_into_memory_and_statement_into_ledger(self):
-        """2026-10-30 她说：发的所有文件都要提取内容存进记忆；流水逐笔入账（她同意）。"""
+        """发的所有文件都要提取内容存进记忆；流水逐笔入账（她同意）。"""
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             store = MemoryStore(root)

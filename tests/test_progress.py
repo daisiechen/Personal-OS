@@ -93,7 +93,7 @@ if __name__ == "__main__":
 
 class PausedWithoutMetricTest(unittest.TestCase):
     def test_paused_goal_without_metric_is_paused(self):
-        """2026-10-29：毕业论文这种没定指标的暂停副本，以前判成“没有数据”，还显示在副本进度里。"""
+        """毕业论文这种没定指标的暂停副本，以前判成“没有数据”，还显示在副本进度里。"""
         import tempfile
         from pathlib import Path
         from datetime import date

@@ -1,4 +1,4 @@
-"""状态转换记录（docs/design/system-rules.md 第 2 节，她 2026-11-02 认可）：做了再撤回回到原样；重复点不重复。"""
+"""状态转换记录（docs/design/system-rules.md 第 2 节）：做了再撤回回到原样；重复点不重复。"""
 
 import tempfile
 import unittest
@@ -52,7 +52,7 @@ class TransitionTest(unittest.TestCase):
     def test_repeat_clicks_do_not_stack(self):
         stages.check(self.db, self.review, DAY)
         once = self.snapshot()
-        for _ in range(3):  # 她 11-01 连点 4 次
+        for _ in range(3):  # 连点 4 次
             stages.check(self.db, self.review, DAY)
         self.assertEqual(self.snapshot(), once)
         stages.uncheck(self.db, self.review, DAY)

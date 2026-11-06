@@ -1,4 +1,4 @@
-"""数字生命的地基（docs/design/digital-life-spec.md 第 1、2 节，2026-10-30 她认可）。
+"""数字生命的地基（docs/design/digital-life-spec.md 第 1、2 节）。
 
 三层：证据（evidence，只追加）→ 事件（events，她经历了什么）→ 事实（facts，关于她这个人，可更新、作废不删）。
 再加画像摘要（profile_blocks，每个维度一段，每轮聊天常驻）和公开规则（visibility_rules，她只设一次）。
@@ -61,7 +61,7 @@ def head_lines(body: str):
             continue
         line = re.sub(r"^([-*+]|\d+[.、)])\s*", "", line)
         line = re.sub(r"\[\[([^\]|]+)(\|[^\]]+)?\]\]", r"\1", line).strip()
-        for part in (re.findall(r"[^。！？!?；;]+[。！？!?；;]?", line) if len(line) > 60 else [line]):
+        for part in (re.findall(r"[^。！？!?；]+[。！？!?；]?", line) if len(line) > 60 else [line]):
             part = part.strip()
             if len(part) >= 2:
                 out.append((_head_dim(heading), part))
@@ -128,11 +128,11 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-# locked：她亲口纠正、确认过的事实，系统不能自己改，冲突时只能问她（docs/design/memory-alignment.md，她 2026-10-31 同意）
+# locked：她亲口纠正、确认过的事实，系统不能自己改，冲突时只能问她（docs/design/memory-alignment.md）
 FACT_COLUMNS = (("locked", "INTEGER NOT NULL DEFAULT 0"),
-                # 有效期（她 2026-10-31：“我的习惯可能是会变的，过去的不见得是错的”）：until 到哪天为止，until_cond 在什么条件下（city:London）
+                # 有效期：until 到哪天为止，until_cond 在什么条件下（city:London）
                 ("until", "TEXT"), ("until_cond", "TEXT"),
-                # ontology 第一批地基（docs/design/ontology.md 第 3、6.1、7.1 节，2026-11-02）：先加结构、不改现有行为
+                # ontology 第一批地基（docs/design/ontology.md 第 3、6.1、7.1 节）：先加结构、不改现有行为
                 ("kind", "TEXT NOT NULL DEFAULT 'fact'"),  # 知识类型：KINDS
                 ("source_kind", "TEXT"),  # 来源类型：SOURCE_KINDS
                 ("context", "TEXT"),  # 适用条件 / 语境（偏好的条件、自述的场合和情绪）
@@ -156,7 +156,7 @@ DISCLOSURE_COLUMNS = (("once", "INTEGER NOT NULL DEFAULT 0"), ("used_at", "TEXT"
                       ("sent_at", "TEXT"),  # used_at = 领取时间；sent_at = 确认发出去了
                       # 逐条例外（ontology-plan 3.3，11-04）：mode allow = 这句放行 / deny = 这句挡住；指着哪条说法（可以空，按原文对）
                       ("mode", "TEXT NOT NULL DEFAULT 'allow'"), ("statement_id", "INTEGER"), ("fact_id", "INTEGER"))
-RENEW_DAYS = 30  # 长期的对外表达：30 天后在“待你定”问一次要不要续（她 2026-11-03 同意）
+RENEW_DAYS = 30  # 长期的对外表达：30 天后在“待你定”问一次要不要续
 # 对外表达能说给谁（登记表里对外的使用者）
 PUBLIC_USERS = ("twin", "site")
 FORGOTTEN_FILE = "forgotten.jsonl"  # 指纹另存一份在数据库外：从旧备份恢复后，按它把删除重做一遍
@@ -197,7 +197,7 @@ KINDS = ("fact", "self_report", "goal", "preference", "hypothesis", "prediction"
 SOURCE_KINDS = ("her_words", "her_confirmation", "her_provided", "behavior", "other_person", "system_inference", "agent_relay")
 # her_provided：她提供的资料（她发来的文件、图片、链接）——不自动等于她的原话：合同可能是别人写的，简历可能已经过时（Codex 评审 11-03）
 # 证据来源 → 来源类型（回填老数据、新条目没写时用）
-SOURCE_KIND_OF = {"interview": "her_words",  # 她在别的会话里亲口说的（她 2026-11-03 定算原话）
+SOURCE_KIND_OF = {"interview": "her_words",  # 她在别的会话里亲口说的（算原话）
                   "chat": "her_words", "correction": "her_confirmation", "workbench": "her_words", "file": "her_provided",
                   "recording": "her_words", "wechat": "her_words", "social": "her_words", "link": "her_provided",
                   "email": "other_person", "visitor": "other_person",
@@ -218,10 +218,14 @@ def ensure(db):
                     db.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         from . import ontology
         ontology.ensure(db)  # 新骨架的表（迁移第 1 步）
-        if not db.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'facts_mirror_ins_v4'").fetchone():
+        if not db.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'facts_mirror_ins_v5'").fetchone():
             db.conn.executescript("DROP TRIGGER IF EXISTS facts_mirror_ins; DROP TRIGGER IF EXISTS facts_mirror_upd; "
                                   "DROP TRIGGER IF EXISTS facts_mirror_ins_v2; DROP TRIGGER IF EXISTS facts_mirror_upd_v2; "
-                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v3; DROP TRIGGER IF EXISTS facts_mirror_upd_v3;" + MIRROR_SQL)  # 新旧双写
+                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v3; DROP TRIGGER IF EXISTS facts_mirror_upd_v3; "
+                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v4; DROP TRIGGER IF EXISTS facts_mirror_upd_v4;" + MIRROR_SQL)  # 新旧双写
+            # v5 起说法也带“预计到哪天”（临时状态到期，借鉴 6）：已经迁过的补上
+            db.conn.execute("UPDATE statements SET until = (SELECT f.until FROM fact_map m JOIN facts f ON f.id = m.fact_id "
+                            "WHERE m.statement_id = statements.id) WHERE id IN (SELECT statement_id FROM fact_map)")
             # v3 起说法也带权限（可见级别、读取名单、她锁定的）：已经迁过的补上
             db.conn.execute("UPDATE statements SET visibility = (SELECT f.visibility FROM fact_map m JOIN facts f ON f.id = m.fact_id "
                             "WHERE m.statement_id = statements.id), read_by = (SELECT f.read_by FROM fact_map m JOIN facts f ON f.id = m.fact_id "
@@ -323,8 +327,9 @@ def add_event(db, occurred_at: str, title: str, evidence_ids, created_by: str, s
 def add_fact(db, dimension: str, statement: str, evidence_ids, subject: str = "self", also_dims=(), territory: str = None,
              detail: str = None, tags=(), confidence: float = 0.6, importance: int = 3, valid_from: str = None,
              status: str = "active", visibility: str = None, kind: str = "fact", source_kind: str = None,
-             context: str = None, prop: str = None, locked: bool = False) -> int:
-    """locked：她亲口确认的，建的时候就锁上（2026-11-05 写作规范确认时用；双写触发器建说法时一起带上）。"""
+             context: str = None, prop: str = None, locked: bool = False, until: str = None) -> int:
+    """locked：她亲口确认的，建的时候就锁上（写作规范确认时用；双写触发器建说法时一起带上）。
+    until：临时状态预计到哪天（借鉴 6）——过了这天读取时不再当“现在”，不删，留作以前的状态。"""
     if dimension not in DIMENSIONS:
         raise ValueError(f"不认识的维度：{dimension}")
     also = [d for d in also_dims if d in DIMENSIONS and d != dimension][:3]
@@ -352,6 +357,8 @@ def add_fact(db, dimension: str, statement: str, evidence_ids, subject: str = "s
     if "kind" in ensure_columns:
         db.conn.execute("UPDATE facts SET kind = ?, source_kind = ?, context = ?, root_evidence_ids = ?, prop = ? WHERE id = ?",
                         (kind, sk, context, json.dumps(sorted(set(ids))), prop, cur.lastrowid))
+    if until:
+        db.conn.execute("UPDATE facts SET until = ? WHERE id = ?", (str(until)[:10], cur.lastrowid))
     return cur.lastrowid
 
 
@@ -427,15 +434,214 @@ def invalidate(db, fact_id: int, when: str = None, force: bool = False) -> bool:
     return True
 
 
-def current_facts(db, dimension: str = None, max_level: str = "private") -> list:
-    """现在仍成立的事实；max_level 是这个场景能看到的最宽级别（规格 5.2）。"""
+def current_facts(db, dimension: str = None, max_level: str = "private", include_expired: bool = False, today=None,
+                  view: str = "fact_ops") -> list:
+    """现在仍成立的事实（默认 MEM_VIEWS["fact_ops"]：当前的和候选的）；max_level 是这个场景能看到的最宽级别（规格 5.2）。
+    临时状态过了预计到的那天（until）就不算“现在”了（决定 10）；每晚问她“还算数吗”的那步要看到它们，传 include_expired。"""
     allowed = LEVELS[LEVELS.index(max_level):] if max_level != "private" else LEVELS
-    q = "SELECT * FROM facts WHERE valid_to IS NULL AND status NOT IN ('invalid', 'deleted', 'suspended') AND visibility IN (%s)" % ",".join("?" * len(allowed))
-    args = list(allowed)
+    case, args = mem_state_sql("facts", today)
+    states = sorted(MEM_VIEWS[view]["states"] | ({"expired"} if include_expired else set()))
+    q = (f"SELECT * FROM facts WHERE {case} IN ({','.join('?' * len(states))}) AND visibility IN ({','.join('?' * len(allowed))})")
+    args = args + states + list(allowed)
     if dimension:
         q += " AND (dimension = ? OR also_dims LIKE ?)"
         args += [dimension, f'%"{dimension}"%']
     return [dict(r) for r in db.conn.execute(q + " ORDER BY importance DESC, id", args)]
+
+
+# ---------- 临时状态到期（借鉴 6，docs/research/borrow-2026-11.md） ----------
+# “这周在生病”“这几天在出差”这类本来就会过期的说法，写入时带一个“预计到哪天”（facts.until，双写到 statements.until）。
+# 过了这天：读取（画像、检索、能力题、小伴 的提示词）不再当“现在”，不删、不自动结束（valid_to 不动），
+# 每晚 mepage.refresh 在“待你定”问她一句“还算数吗”，她说还算就改日期。模型乱填的风险靠这一点兜住。
+def _today_str(today=None) -> str:
+    if today is None:
+        from .clock import her_today
+        today = her_today()
+    return today.isoformat() if hasattr(today, "isoformat") else str(today)[:10]
+
+
+def expired(until, today=None) -> bool:
+    """预计到的那天已经过了（当天还算）。"""
+    return bool(until) and str(until)[:10] < _today_str(today)
+
+
+# ---------- 这条现在还算不算数：唯一判断（docs/design/memory-alignment.md “算不算数”一节，10） ----------
+# 决定 10：过了预计日期的临时状态，所有地方都不再当“现在”，“我”页标“到期了”。
+# 旧 facts 和新说法（statements）共用：fact_state() 判一行，mem_where() 给 SQL 用的同一份判断，MEM_VIEWS 定每个场景收哪几种。
+# 别的模块不再自己写 status / review / valid_to / until 的组合（tests/test_mem_rules.py 守着）。
+MEM_STATES = (  # 按先后取第一个命中的
+    "forgotten",   # 她删掉的（facts.status = deleted；说法 review = forgotten）
+    "retracted",   # 她说“不对”、作废的（invalid；retracted）
+    "suspended",   # 删除后剩下的依据待核（facts.status = suspended；说法上只是 candidate，按 fact_map 查回旧状态）
+    "past",        # 被取代或到了止日（facts：有 valid_to / superseded_by；说法：superseded_by 或止日不晚于今天）
+    "future",      # 还没开始（只看说法的 valid_from；旧 facts 的 valid_from 是记下的时间，不当计划）
+    "expired",     # 临时状态过了预计到的那天（until，借鉴 6 / 决定 10）
+    "candidate",   # 候选，还没确认（含和她锁定的冲突、等她选的）
+    "disputed",    # 有争议
+    "current",     # 当前有效
+)
+MEM_LABEL = {"forgotten": "删掉了", "retracted": "你说不对", "suspended": "删后停用", "past": "过时了", "future": "还没开始",
+             "expired": "到期了", "candidate": "待定", "disputed": "有争议", "current": ""}
+# 每个场景自己的规则：有名字、有原因
+MEM_RULES = {
+    "now_only": "当“现在”用的地方只收当前有效的（和有争议的，带标）；到期的临时状态不算（决定 10）",
+    "candidate_ok": "能力题的话题检索和“猜测”题把候选也给出去，标“待定”（ontology-structure.md 第 5 节）",
+    "ops_no_suspended": "每晚 fact_ops 只拿当前和候选的去证实 / 更新 / 作废：删后停用的不碰，免得被接回去（11-06 修的复活路径）",
+    "recall_labeled": "检索里到期的还能查到，正文写明“到期了：原定到哪天”，小伴 不当现在（借鉴 6、决定 10）",
+    "history_all": "“以前是怎样”的题收过时的和到期的（带日期）",
+    "me_all_labeled": "“我”页全部记忆默认列现在的和到期的（标“到期了”，她能改日期或删），历史里列其余的（过时、她说不对、待定、停用），带标签",
+    "expired_ask": "每晚“还算数吗”只问到期的（mepage.refresh / onto_query.expired_states）",
+    "public_current": "对外只说当前有效的，另外每条过 lifebase.disclose",
+    "portrait_candidate_kept": "画像摘要里待定的也先放进来（不丢），每周复盘再归位（portrait._block_facts 原来就这样）",
+    "count_current": "数条数（厚薄、这周新认识了什么、升级建议）只数当前有效的",
+    "background_all_times": "经历题（读过的学校、做过的工作）不按“现在成立”筛，过去的、以后的都算，出处一起给",
+    "changes_past": "“变了什么”只拿被新说法取代的旧说法；她说不对的（记错了）不算变化",
+    "style_accepted": "写作规范只给她确认过的，草稿、有争议的都不给",
+    "forget_scope": "删除时要找得到所有还没删掉的，含过时的、她说不对的、停用的",
+}
+MEM_VIEWS = {
+    "now":       {"states": {"current", "disputed"}, "rules": ("now_only",)},
+    "topic":     {"states": {"current", "disputed", "candidate"}, "rules": ("now_only", "candidate_ok")},
+    "portrait":  {"states": {"current", "candidate"}, "rules": ("now_only", "portrait_candidate_kept")},
+    "fact_ops":  {"states": {"current", "candidate"}, "rules": ("ops_no_suspended",)},
+    "recall":    {"states": {"current", "disputed", "candidate", "expired"}, "rules": ("recall_labeled",)},
+    "history":   {"states": {"current", "disputed", "past", "expired"}, "rules": ("history_all",)},
+    "me_now":    {"states": {"current", "expired"}, "rules": ("me_all_labeled",)},
+    "me_history": {"states": set(MEM_STATES) - {"current", "expired"}, "rules": ("me_all_labeled",)},
+    "me_similar": {"states": set(MEM_STATES) - {"forgotten", "suspended"}, "rules": ("me_all_labeled",)},
+    "expired":   {"states": {"expired"}, "rules": ("expired_ask",)},
+    "public":    {"states": {"current"}, "rules": ("public_current",)},
+    "count":     {"states": {"current"}, "rules": ("count_current",)},
+    "background": {"states": {"current", "disputed", "past", "future", "expired"}, "rules": ("background_all_times",)},
+    "changes":   {"states": {"past"}, "rules": ("changes_past",)},
+    "style":     {"states": {"current"}, "rules": ("style_accepted",)},
+    "deletable": {"states": set(MEM_STATES) - {"forgotten"}, "rules": ("forget_scope",)},
+}
+_FACT_GONE = {"deleted": "forgotten", "invalid": "retracted", "suspended": "suspended"}
+
+
+def _is_statement(row) -> bool:
+    return _g(row, "property") is not None or _g(row, "said_by") is not None or _g(row, "review") is not None
+
+
+def fact_state(row, today=None, db=None) -> str:
+    """一条记忆（facts 或 statements 的一行）现在算什么：MEM_STATES 里的一个。说法要查“删后停用”时传 db。"""
+    day = _today_str(today)
+    if _is_statement(row):
+        review = _g(row, "review") or "candidate"
+        if review in ("forgotten", "retracted"):
+            return review
+        if db is not None and statement_gone(db, _g(row, "id")):
+            return "suspended"
+        vt, vf = _g(row, "valid_to"), _g(row, "valid_from")
+        if _g(row, "superseded_by") is not None or (vt and str(vt)[:10] <= day):
+            return "past"
+        if vf and str(vf)[:10] > day:
+            return "future"
+        if expired(_g(row, "until"), day):
+            return "expired"
+        return {"candidate": "candidate", "disputed": "disputed"}.get(review, "current")
+    status = _g(row, "status") or "active"
+    if status in _FACT_GONE:
+        return _FACT_GONE[status]
+    if _g(row, "valid_to") or _g(row, "superseded_by") is not None:
+        return "past"
+    if expired(_g(row, "until"), day):
+        return "expired"
+    return "candidate" if status == "candidate" else "current"
+
+
+def mem_ok(view: str, row, today=None, db=None) -> bool:
+    """这一行在这个场景里收不收（MEM_VIEWS）。"""
+    return fact_state(row, today, db) in MEM_VIEWS[view]["states"]
+
+
+def _state_case(table: str, alias: str = "") -> tuple:
+    """和 fact_state 同一份判断的 SQL（CASE 表达式），返回 (sql, 要几个“今天”参数)。"""
+    a = f"{alias}." if alias else ""
+    until = f"({a}until IS NOT NULL AND {a}until != '' AND substr({a}until, 1, 10) < ?)"
+    if table == "statements":
+        return (f"(CASE WHEN {a}review IN ('forgotten', 'retracted') THEN {a}review "
+                f"WHEN {a}id IN (SELECT m.statement_id FROM fact_map m JOIN facts f ON f.id = m.fact_id "
+                f"WHERE f.status IN ('suspended', 'deleted', 'invalid')) THEN 'suspended' "
+                f"WHEN {a}superseded_by IS NOT NULL OR ({a}valid_to IS NOT NULL AND {a}valid_to != '' AND substr({a}valid_to, 1, 10) <= ?) THEN 'past' "
+                f"WHEN {a}valid_from IS NOT NULL AND {a}valid_from != '' AND substr({a}valid_from, 1, 10) > ? THEN 'future' "
+                f"WHEN {until} THEN 'expired' "
+                f"WHEN {a}review IN ('candidate', 'disputed') THEN {a}review ELSE 'current' END)", 3)
+    if table == "facts":
+        return (f"(CASE WHEN {a}status = 'deleted' THEN 'forgotten' WHEN {a}status = 'invalid' THEN 'retracted' "
+                f"WHEN {a}status = 'suspended' THEN 'suspended' "
+                f"WHEN ({a}valid_to IS NOT NULL AND {a}valid_to != '') OR {a}superseded_by IS NOT NULL THEN 'past' "
+                f"WHEN {until} THEN 'expired' WHEN {a}status = 'candidate' THEN 'candidate' ELSE 'current' END)", 1)
+    raise ValueError("table 只能是 facts 或 statements")
+
+
+def mem_where(view: str, table: str = "facts", today=None, alias: str = "") -> tuple:
+    """SQL 里用的同一份判断：返回 (条件片段, 参数)，拼在 WHERE 后面。"""
+    case, n = _state_case(table, alias)
+    states = sorted(MEM_VIEWS[view]["states"])
+    return f"{case} IN ({','.join('?' * len(states))})", [_today_str(today)] * n + states
+
+
+def mem_state_sql(table: str = "facts", today=None, alias: str = "") -> tuple:
+    """SELECT 里要带出状态时用：(表达式, 参数)。"""
+    case, n = _state_case(table, alias)
+    return case, [_today_str(today)] * n
+
+
+# 说法里明说了时间范围的才补（拿不准的“最近”“这段时间”不补，交给模型和她）
+TEMP_WORDS = (
+    (re.compile(r"今天|今晚|今早|今天上午|今天下午"), "day"),
+    (re.compile(r"这两天|这几天|这三天|近几天|最近几天|这阵子在出差|这几日"), "days"),
+    (re.compile(r"这周|这个星期|这礼拜|本周|这一周"), "week"),
+    (re.compile(r"这个月|本月|这一个月"), "month"),
+)
+
+
+def temp_until(text: str, since) -> str:
+    """一句说法要是明说了“今天 / 这几天 / 这周 / 这个月”，按说的那天算出预计到哪天；没说就是 None。
+    since：说这话的那天（date 或 'YYYY-MM-DD…'）。"""
+    from datetime import date as _date, timedelta as _td
+    if not text or not since:
+        return None
+    try:
+        d = since if isinstance(since, _date) else _date.fromisoformat(str(since)[:10])
+    except ValueError:
+        return None
+    for pat, span in TEMP_WORDS:
+        if pat.search(text):
+            if span == "day":
+                end = d
+            elif span == "days":
+                end = d + _td(days=3)
+            elif span == "week":
+                end = d + _td(days=6 - d.weekday())  # 到这周日
+            else:
+                nxt = (d.replace(day=28) + _td(days=4)).replace(day=1)
+                end = nxt - _td(days=1)  # 到月底
+            return end.isoformat()
+    return None
+
+
+def backfill_temp_until(db, dry_run: bool = False) -> list:
+    """给已有的临时状态补“预计到哪天”（迁移 20261105_temp_states_until）。
+    只补：关于她本人、现在还成立、还没有到期日和条件的；她锁定的（facts.locked）和她在工作台改过的（locks.py 的锁）一律不动；
+    说法里没明说“今天 / 这几天 / 这周 / 这个月”的不补。按她说这话那天（valid_from，没有就记下的那天）算。返回 [(编号, 到哪天)]。"""
+    from . import locks
+    locks.ensure(db)
+    out = []
+    for f in db.conn.execute("SELECT id, statement, valid_from, recorded_at FROM facts WHERE subject = 'self' AND valid_to IS NULL "
+                             "AND status = 'active' AND until IS NULL AND until_cond IS NULL AND COALESCE(locked, 0) = 0").fetchall():
+        if locks.locked(db, "fact", f["id"], "until"):
+            continue
+        until = temp_until(f["statement"], f["valid_from"] or f["recorded_at"])
+        if until:
+            out.append((f["id"], until))
+    if not dry_run:
+        for fid, until in out:
+            db.conn.execute("UPDATE facts SET until = ? WHERE id = ?", (until, fid))
+        tx.commit(db)
+    return out
 
 
 # ---------- 补登记现有数据 ----------
@@ -487,7 +693,7 @@ def backfill(store) -> dict:
             src = "grok" if "grok" in f"{e.get('label', '')}{e.get('path', '')}".lower() else "agent"
             try_evidence(db, src, f"inbox:{path.stem}:{i}", e.get("at") or path.stem, e.get("text"), path=f"inbox/{path.name}")
             got["grok"] += 1
-    # 以前每晚整理记下的事实 → 事实表。三处来源（2026-10-30 线上发现只读详情页一条都没迁到：详情页是当天才加的）：
+    # 以前每晚整理记下的事实 → 事实表。三处来源（线上发现只读详情页一条都没迁到：详情页是当天才加的）：
     # 1. 每天的记忆页 journal/<日期>：“新知道的：”下面每行“- 【主题】事实”，日期就是页名；
     # 2. 详情页 about/<主题>：每行“- （日期）事实”；
     # 3. about-mia 的“小伴 每晚整理”一节：### 主题 下面每行“- （日期）事实”或没有日期的“- 事实”。
@@ -542,7 +748,7 @@ def backfill(store) -> dict:
                  status="active" if topic in TOPIC_DIMS and topic != "其他" else "candidate")
         have.setdefault(dim, []).append(fact)
         got["facts"] += 1
-    # 4. 开头她自己写的（2026-10-31 收口：以后聊天和准备员只读事实和画像，不再整页读这页）。
+    # 4. 开头她自己写的（收口：以后聊天和准备员只读事实和画像，不再整页读这页）。
     #    她写的当真（信心 1.0），但不锁：分维度是猜的，每周复盘可以再归类；她在 Obsidian 改了新句子，下次照样迁。
     if wiki.exists("about-mia"):
         body = wiki.read("about-mia")["body"]
@@ -564,18 +770,15 @@ def backfill(store) -> dict:
 def backfill_handwritten(db) -> int:
     """她在工作台上亲手写的（ontology-plan 1.5，S17）登记成证据（来源“工作台”，算她的原话），每晚的访谈整理会拆成说法：
     - 她自己从空白写的日记（source = 'her'）：整篇；改了再存是新的一份，同一份不重复；
-    - 她在系统草稿上改过的（source = 'her_edited'，2026-11-05）：只登记她新增或改过的句子（和系统原稿逐句比），
+    - 她在系统草稿上改过的（source = her_edited，见 diary.HER）：只登记她新增或改过的句子（和系统原稿逐句比），
       编号 diary:<日期>:edit-<哈希>；没改的句子是系统写的，不算；
     - 系统写的、她没改的（'ethan'，旧叫法 'auto'）不算她的话；
-    - 今日卡上她写的心愿。
+    - 昨日卡上她写的心愿。
     人物卡、心愿单是系统从聊天里摘的，聊天本身已经进记忆，不重复登记。"""
     import hashlib
     from . import diary
     n = 0
-    try:
-        rows = [dict(r) for r in db.conn.execute("SELECT * FROM diary WHERE source IN ('her', 'her_edited') AND TRIM(body) != ''")]
-    except sqlite3.OperationalError:
-        rows = []
+    rows = diary.her_rows(db)  # “哪些是她写的”只在 diary 定义
     for r in rows:
         if r["source"] == "her":
             text, ref = r["body"], "diary:{day}:{h}"
@@ -739,10 +942,10 @@ def external_users() -> list:
 
 def approve_disclosure(db, text: str, quote: str, to_users=PUBLIC_USERS, dimension: str = None, until: str = None,
                        once: bool = False, to_whom: str = None, statement_id: int = None, fact_id: int = None) -> int:
-    """她逐条批准的一句对外表达（ontology.md 6.1 节，她 2026-11-02：“允许我逐条破例”）。
+    """她逐条批准的一句对外表达（ontology.md 6.1 节）。
     身体、钱、关系、性格这类默认不对外；她点头一句就只放这一句、这一版，对谁、到什么时候、她的原话都记下。
-    同类的别的内容照样不说，Dais 也不能顺着这句往下推（检索只给这句原文）。
-    两种（她 2026-11-03 同意）：once=True 是“这次对这个人可以说”（to_whom 写对象），说过一次就失效；
+    同类的别的内容照样不说，主页助手 也不能顺着这句往下推（检索只给这句原文）。
+    两种：once=True 是“这次对这个人可以说”（to_whom 写对象），说过一次就失效；
     长期的不自动到期，RENEW_DAYS 天后进“待你定”问一次要不要续（renewals_due）。"""
     ensure(db)
     text, quote = (text or "").strip(), (quote or "").strip()
@@ -827,7 +1030,7 @@ def unclaim_disclosure(db, disclosure_id: int, stamp: str) -> bool:
 
 
 def mark_disclosure_used(db, disclosure_id: int) -> None:
-    """Dais 真的对外说了这句：记下时间；“这次可以说”的从此失效。"""
+    """主页助手 真的对外说了这句：记下时间；“这次可以说”的从此失效。"""
     ensure(db)
     db.conn.execute("UPDATE disclosures SET used_at = COALESCE(used_at, ?) WHERE id = ?", (_now(), disclosure_id))
     tx.commit(db)
@@ -858,8 +1061,7 @@ def disclosures(db, user: str = None, now: str = None, mode: str = "allow") -> l
     return [r for r in rows if user is None or disclosure_ok(db, r["id"], user, now)]
 
 
-# ---------- 对外开关：三档受众 × 类别（ontology-plan 3.3，她 2026-11-04 认可） ----------
-# 她原话：“不能是只拿几句吧？应该是按照记忆提取出来的知识，批准她拿哪部分？”“以后的适用方不只是Dais吧？我要每一个都这么搞一遍么？”
+# ---------- 对外开关：三档受众 × 类别（ontology-plan 3.3） ----------
 # → 按三档设一次：自己人（internal，照内部规则全看）/ 合作方（partner）/ 公开（public）。登记表里每个使用者写 tier，新来的自动按那一档。
 TIERS = ("internal", "partner", "public")
 EXTERNAL_TIERS = ("partner", "public")
@@ -1077,7 +1279,7 @@ def disclose(db, user: str, fact, recipient: str = None) -> str:
 def reapply_deletions(db, root, may_hold: bool = True) -> dict:
     """从备份恢复后、启动各服务之前跑一次：按库外的删除记录把删除重做一遍（ontology-contracts.md 1.8 节）。
     核不清的时候（数据目录外那份记录不在，而库里或目录里有删过东西的痕迹，或者记录读坏了）：
-    她 2026-11-03 选“相关记忆先不用，等核清再说”——记一条“记忆暂停”，除了她本人和系统维护，谁都查不到记忆，
+    “相关记忆先不用，等核清再说”——记一条“记忆暂停”，除了她本人和系统维护，谁都查不到记忆，
     等她确认后用 --release-hold 放开。
     可重复跑（幂等）：已经删过的不再删。每晚整理开头也跑一次（may_hold=False：只重做删除，不再记暂停——
     她放开暂停后目录外那份仍可能不在，每晚都暂停会把她放开的又关上；暂停只在恢复时那次判断）。"""
@@ -1166,25 +1368,25 @@ if __name__ == "__main__":
 RELAY_SOURCES = ("grok", "agent")  # 转述来的（docs/design/ontology.md 7.1 节）：不算独立证据
 
 
-# 迁移第 2 步（ontology-structure.md 9.2 节，她 2026-11-03 同意）：新旧双写。旧 facts 还是各角色读的那份（说了算），
+# 迁移第 2 步（ontology-structure.md 9.2 节）：新旧双写。旧 facts 还是各角色读的那份（说了算），
 # 每次写 facts（不管哪个模块、哪条路径），数据库触发器在**同一个事务里**同步写一条说法，失败就一起失败。
 # 第 3 步起（v2）：关于她本人的和别人的（人物卡）都同步，主语按 object_refs 对应到对象；老数据由 migrate_old_facts 一次迁过来。
 # 说法变化记录只记审核状态和止日，不记内容（遗忘时内容不能留在变化记录里）。
 MIRROR_SQL = """
-CREATE TRIGGER IF NOT EXISTS facts_mirror_ins_v4 AFTER INSERT ON facts
+CREATE TRIGGER IF NOT EXISTS facts_mirror_ins_v5 AFTER INSERT ON facts
 WHEN (SELECT object_id FROM object_refs WHERE ref = NEW.subject) IS NOT NULL
 BEGIN
   INSERT INTO statements (subject_id, property, value_text, context, kind, said_by, valid_from, valid_to, recorded_at, review, superseded_by,
-                          visibility, read_by, locked)
+                          visibility, read_by, locked, until)
   VALUES ((SELECT object_id FROM object_refs WHERE ref = NEW.subject), COALESCE(NEW.prop, 'dim:' || NEW.dimension), COALESCE(NEW.statement, ''), NEW.context, COALESCE(NEW.kind, 'fact'),
-          COALESCE(NEW.source_kind, 'unknown'), NEW.valid_from, NEW.valid_to, COALESCE(NEW.recorded_at, datetime('now')), (CASE NEW.status WHEN 'active' THEN 'accepted' WHEN 'invalid' THEN 'retracted' WHEN 'deleted' THEN 'forgotten' ELSE 'candidate' END), (SELECT statement_id FROM fact_map WHERE fact_id = NEW.superseded_by LIMIT 1), NEW.visibility, NEW.read_by, COALESCE(NEW.locked, 0));
+          COALESCE(NEW.source_kind, 'unknown'), NEW.valid_from, NEW.valid_to, COALESCE(NEW.recorded_at, datetime('now')), (CASE NEW.status WHEN 'active' THEN 'accepted' WHEN 'invalid' THEN 'retracted' WHEN 'deleted' THEN 'forgotten' ELSE 'candidate' END), (SELECT statement_id FROM fact_map WHERE fact_id = NEW.superseded_by LIMIT 1), NEW.visibility, NEW.read_by, COALESCE(NEW.locked, 0), NEW.until);
   INSERT INTO fact_map (fact_id, statement_id) VALUES (NEW.id, last_insert_rowid());
   INSERT INTO statement_sources (statement_id, evidence_id, role)
     SELECT (SELECT statement_id FROM fact_map WHERE fact_id = NEW.id LIMIT 1), CAST(value AS INTEGER), 'supports' FROM json_each(COALESCE(NEW.evidence_ids, '[]'));
   INSERT INTO statement_sources (statement_id, role, source_unknown)
     SELECT (SELECT statement_id FROM fact_map WHERE fact_id = NEW.id LIMIT 1), 'supports', 1 WHERE json_array_length(COALESCE(NEW.evidence_ids, '[]')) = 0;
 END;
-CREATE TRIGGER IF NOT EXISTS facts_mirror_upd_v4 AFTER UPDATE ON facts
+CREATE TRIGGER IF NOT EXISTS facts_mirror_upd_v5 AFTER UPDATE ON facts
 WHEN EXISTS (SELECT 1 FROM fact_map WHERE fact_id = NEW.id)
 BEGIN
   INSERT INTO statement_changes (statement_id, field, old, new, at)
@@ -1194,7 +1396,7 @@ BEGIN
   UPDATE statements SET property = COALESCE(NEW.prop, 'dim:' || NEW.dimension), value_text = COALESCE(NEW.statement, ''), context = NEW.context,
     kind = COALESCE(NEW.kind, 'fact'), said_by = COALESCE(NEW.source_kind, 'unknown'), valid_from = NEW.valid_from, valid_to = NEW.valid_to,
     review = (CASE NEW.status WHEN 'active' THEN 'accepted' WHEN 'invalid' THEN 'retracted' WHEN 'deleted' THEN 'forgotten' ELSE 'candidate' END), superseded_by = (SELECT statement_id FROM fact_map WHERE fact_id = NEW.superseded_by LIMIT 1),
-    visibility = NEW.visibility, read_by = NEW.read_by, locked = COALESCE(NEW.locked, 0),
+    visibility = NEW.visibility, read_by = NEW.read_by, locked = COALESCE(NEW.locked, 0), until = NEW.until,
     retracted_at = CASE WHEN (CASE NEW.status WHEN 'active' THEN 'accepted' WHEN 'invalid' THEN 'retracted' WHEN 'deleted' THEN 'forgotten' ELSE 'candidate' END) IN ('retracted', 'forgotten') THEN COALESCE(retracted_at, datetime('now')) ELSE NULL END
   WHERE id = (SELECT statement_id FROM fact_map WHERE fact_id = NEW.id LIMIT 1);
   DELETE FROM statement_sources WHERE statement_id = (SELECT statement_id FROM fact_map WHERE fact_id = NEW.id LIMIT 1) AND NEW.evidence_ids IS NOT OLD.evidence_ids;
@@ -1205,9 +1407,8 @@ BEGIN
 END;
 """
 # 旧 facts 删后停用（suspended）、删掉、作废的，双写到说法里分别是 candidate / forgotten / retracted；停用的和“还没审”的候选
-# 在说法上分不出来，读说法的地方（onto_query、disclose）按对照查回旧 facts 的状态挡掉（Codex 评审 11-05：她删过的知识 小伴 按题还能读到）。
-NOT_GONE_STATEMENT = ("id NOT IN (SELECT m.statement_id FROM fact_map m JOIN facts f ON f.id = m.fact_id "
-                      "WHERE f.status IN ('suspended', 'deleted', 'invalid'))")
+# 在说法上分不出来，按对照查回旧 facts 的状态挡掉（Codex 评审 11-05：她删过的知识 小伴 按题还能读到）。
+# 11-06 起读说法的地方都走 fact_state / mem_where（SQL 版 _state_case 里同一条子查询），原来的 NOT_GONE_STATEMENT 并进去了。
 
 
 def statement_gone(db, statement_id) -> bool:
@@ -1242,12 +1443,13 @@ def migrate_old_facts(db) -> dict:
             keys = f.keys()
             cur = db.conn.execute(
                 "INSERT INTO statements (subject_id, property, value_text, context, kind, said_by, valid_from, valid_to, recorded_at, "
-                "review, retracted_at, visibility, read_by, locked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "review, retracted_at, visibility, read_by, locked, until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (subj, (f["prop"] if "prop" in keys and f["prop"] else None) or "dim:" + f["dimension"], f["statement"] or "", f["context"] if "context" in keys else None,
                  (f["kind"] if "kind" in keys else None) or "fact", (f["source_kind"] if "source_kind" in keys else None) or "unknown",
                  f["valid_from"], f["valid_to"], f["recorded_at"] or _now(), REVIEW_OF.get(f["status"], "candidate"),
                  _now() if f["status"] in ("invalid", "deleted") else None, f["visibility"],
-                 f["read_by"] if "read_by" in keys else None, (f["locked"] if "locked" in keys else 0) or 0))
+                 f["read_by"] if "read_by" in keys else None, (f["locked"] if "locked" in keys else 0) or 0,
+                 f["until"] if "until" in keys else None))
             sid = cur.lastrowid
             db.conn.execute("INSERT INTO fact_map (fact_id, statement_id) VALUES (?, ?)", (f["id"], sid))
             ids = json.loads(f["evidence_ids"] or "[]")
@@ -1293,7 +1495,7 @@ def reconcile_statements(db) -> list:
     try:
         rows = db.conn.execute("SELECT f.id fid, f.statement, f.status, f.valid_from, f.valid_to, f.evidence_ids, s.id sid, "
                                "f.prop, f.dimension, s.property, f.visibility, f.read_by, f.locked, s.visibility s_vis, s.read_by s_read, s.locked s_locked, "
-                               "s.value_text, s.review, s.valid_from s_from, s.valid_to s_to FROM fact_map m "
+                               "s.value_text, s.review, s.valid_from s_from, s.valid_to s_to, f.until, s.until s_until FROM fact_map m "
                                "JOIN facts f ON f.id = m.fact_id JOIN statements s ON s.id = m.statement_id").fetchall()
     except sqlite3.OperationalError:
         return []
@@ -1304,7 +1506,7 @@ def reconcile_statements(db) -> list:
             diff.append("内容")
         if REVIEW_OF.get(r["status"], "candidate") != r["review"]:
             diff.append("审核状态")
-        if (r["valid_from"], r["valid_to"]) != (r["s_from"], r["s_to"]):
+        if (r["valid_from"], r["valid_to"], r["until"]) != (r["s_from"], r["s_to"], r["s_until"]):
             diff.append("成立时间")
         if (r["visibility"], r["read_by"], r["locked"] or 0) != (r["s_vis"], r["s_read"], r["s_locked"] or 0):
             diff.append("权限")
@@ -1321,7 +1523,7 @@ def reconcile_statements(db) -> list:
 def integrity_problems(db) -> list:
     """给巡检和检查用（ethan/invariants.py）：
     - 只靠 Grok / 其他 agent 转述撑着、她也没确认过的事实，不该是“生效”的高把握事实；
-    - 身体、钱、关系、性格这几类默认不对外，她逐条破例之前不能是公开级（她 2026-11-02 定可逐条破例）。"""
+    - 身体、钱、关系、性格这几类默认不对外，她逐条破例之前不能是公开级（可逐条破例）。"""
     ensure(db)
     out = []
     src = {r["id"]: r["source"] for r in db.conn.execute("SELECT id, source FROM evidence")}
@@ -1419,7 +1621,7 @@ SOURCE_REGISTRY = (
     ("S14", "iPhone 到家离家", "SELECT MAX(at) FROM place_events", 3),
     ("S15", "Mac 工作时长", "SELECT MAX(slot) FROM work_slots", 4),
     ("S17", "日记（每晚自动写）", "SELECT MAX(updated_at) FROM diary", 3),
-    # 她自己在工作台写的日记、今日卡心愿（S17 里她亲手写的那部分，ethan/interviews.py 拆成说法）：想写才写，不报断档
+    # 她自己在工作台写的日记、昨日卡心愿（S17 里她亲手写的那部分，ethan/interviews.py 拆成说法）：想写才写，不报断档
     ("S17b", "工作台上你亲手写的", "SELECT MAX(recorded_at) FROM evidence WHERE source = 'workbench' AND "
      "(source_ref LIKE 'diary:%' OR source_ref LIKE 'wish:%')", None),
     # 她 Mac 上每周日 20:43 自动导出（launchd）；Mac 关着会晚一点，隔 9 天没收到才算断档。服务器只看“最近一次收到”
@@ -1585,17 +1787,22 @@ def write_mail_facts(db, evidence_id: int, sender: str, received_at: str, items)
     return n
 
 
-# ---------- 整段对话里别人 / agent 说的关于她的 → 说法（ontology-plan 1.9，ethan/interviews.py，她 11-04） ----------
+# ---------- 整段对话里别人 / agent 说的关于她的 → 说法（ontology-plan 1.9，ethan/interviews.py） ----------
 # other_person：别人对她的评价、提醒、和她约的事，语境“某某在微信里说的（日期）”；agent_relay：Grok 等给的建议和结论，
 # 只能记成假设（check_kind），只当资料。都私密、只新增（不改、不作废她的说法，她锁过的不碰），同一件事已经有（包括她说过“不对”的）就不再记。
+def known_statements(db, limit: int = 2000) -> list:
+    """查重用：关于她、现在成立的说法和她说过“不对”的（作废的也算，免得同一来源再记回来）。新的在前。"""
+    return [r["statement"] for r in db.conn.execute(
+        "SELECT statement FROM facts WHERE subject = 'self' AND statement != '' AND (status = 'invalid' "
+        "OR (status NOT IN ('deleted', 'suspended') AND valid_to IS NULL)) ORDER BY id DESC LIMIT ?", (limit,))]
+
+
 def write_said_facts(db, evidence_id: int, facts, session: str, day: str, props=()) -> dict:
     """facts：[{speaker, statement, dimension, property?, day?, source_kind: other_person / agent_relay}]。返回各写了几条。"""
     from .core.agent import similar_task
     ensure(db)
     got = {"other_person": 0, "agent_relay": 0}
-    olds = [r["statement"] for r in db.conn.execute(
-        "SELECT statement FROM facts WHERE subject = 'self' AND statement != '' AND (status = 'invalid' "
-        "OR (status NOT IN ('deleted', 'suspended') AND valid_to IS NULL)) ORDER BY id DESC LIMIT 2000")]
+    olds = known_statements(db)
     where = "微信里" if (session or "").startswith("微信") else f"“{session}”里"
     for f in facts or []:
         who, text, sk = str(f.get("speaker") or "").strip(), " ".join(str(f.get("statement") or "").split())[:60], f.get("source_kind")
@@ -1642,7 +1849,7 @@ _TXN_WORDS = r"入账|购汇|转出|转入|charge|一笔|两笔|几笔|各有一
 # 求职：投简历、校招、面试、岗位……不是签证 / 录取 / 证件 / 账户的申请，也不是在哪任职
 _JOB_HUNT = r"招聘|校招|校园招聘|实习生|岗位|简历|面试|职位|发邮件申请"
 # worked_at 要说得出具体单位：常见公司名，或“在 / 于 X 公司 / 银行……”
-_WORK_UNIT = _COMPANY + r"|(在|于)[^，。,；;]{1,20}(公司|集团|银行|基金|咨询|事务所|工作室)"
+_WORK_UNIT = _COMPANY + r"|(在|于)[^，。]{1,20}(公司|集团|银行|基金|咨询|事务所|工作室)"
 # (属性, 只看哪些方面, 必须都命中的关键词, 命中就不归的词)。一条命中两个属性 = 拿不准，留在“总的”（或交给模型）
 # 正则管不到的排除（同句、带金额的流水、别人喜欢……）在 _regroup_blocked 里。总原则：宁可留在“总的”里，也不要归错
 REGROUP_RULES = (
@@ -1654,7 +1861,7 @@ REGROUP_RULES = (
      _PLAN + r"|申请|面试|求职|找工作|投递|offer|投了|投简历|简历|招聘|看到[^。]{0,20}消息|(了解|学到|学会)了[^。]{0,20}流程"),
     ("project", ("abilities", "resources"),
      # 只提到“项目”不算（“项目因此停滞”）：要有做 / 牵头 / 立项 / 负责……项目这类动作
-     (r"(做|在做|牵头|主导|发起|立项|负责|参与|开发|带)[^，。,；;]{0,15}项目|项目[^，。,；;]{0,6}(上线|立项|落地)|"
+     (r"(做|在做|牵头|主导|发起|立项|负责|参与|开发|带)[^，。]{0,15}项目|项目[^，。]{0,6}(上线|立项|落地)|"
       r"创办|创立|创业|开发了|做了一个|做过一个|作品|参赛|比赛|获奖",),
      _PLAN + r"|停滞|搁置|耽误|因此|写邮件时|打不开|没人接|还不知道|晋级情况"),
     ("skill", ("abilities",),
@@ -1679,7 +1886,7 @@ REGROUP_RULES = (
 
 
 def _same_sentence(text: str, a: str, b: str) -> bool:
-    return any(re.search(a, x, re.I) and re.search(b, x, re.I) for x in re.split(r"[。！？!?；;\n]", text))
+    return any(re.search(a, x, re.I) and re.search(b, x, re.I) for x in re.split(r"[。！？!?；\n]", text))
 
 
 def _regroup_blocked(prop: str, text: str) -> bool:
@@ -1695,7 +1902,7 @@ def _regroup_blocked(prop: str, text: str) -> bool:
     if prop == "preference":
         if re.search(_WORK_WORDS, text, re.I):
             return True  # “在某公司只待了一年就离开，因为不喜欢……”：工作经历
-        if re.search(r"(因为|由于|原因是)[^，。,；;]*(喜欢|讨厌)", text):
+        if re.search(r"(因为|由于|原因是)[^，。]*(喜欢|讨厌)", text):
             return True  # 喜欢 / 不喜欢 出现在原因从句里
         if re.search(r"(?<![她我最更很也都不挺蛮还就])(喜欢|讨厌)的", text) and not re.search(r"(自己|本人)(最|更)?喜欢的", text):
             return True  # “女性喜欢的耳饰”：别人喜欢的，修饰名词

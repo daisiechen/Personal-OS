@@ -81,7 +81,7 @@ class PrepTest(unittest.TestCase):
             prep.start(self.db, self.db.add_task("又一件", promised_by_ethan=True))
         for _ in range(10):
             prep.run(self.store, r, self.grok)
-        self.assertEqual(len(r.calls), 20)  # 2026-10-30 她定：不限次数，每轮照样做 2 件
+        self.assertEqual(len(r.calls), 20)  # 不限次数，每轮照样做 2 件
 
 
     def test_grok_silence_times_out_and_delete_works(self):
@@ -99,7 +99,7 @@ class PrepTest(unittest.TestCase):
 
 class PrepReviseNowTest(PrepTest):
     def test_her_edit_runs_right_away_even_after_daily_limit(self):
-        """2026-10-29 她说跟 小伴 说哪里要改，改不了：意见一提就马上重做，不等下一轮、不被当天额度卡住。"""
+        """跟 小伴 说哪里要改，改不了：意见一提就马上重做，不等下一轮、不被当天额度卡住。"""
         r = FakeRouter([{"status": "ready", "result": "第一版", "summary": "s", "decision": ""},
                         {"status": "ready", "result": "按意见改的", "summary": "s", "decision": ""}])
         prep.run(self.store, r, self.grok, per_run=1, only=self.season)
@@ -126,7 +126,7 @@ class PrepReviseNowTest(PrepTest):
 
 class PrepKnowsHerGoalsTest(PrepTest):
     def test_brief_has_her_goals_and_chat_and_empty_note_works(self):
-        """2026-10-29 她说准备员看不到她的目标、点“让他改”还要再写一遍聊天里说过的话。"""
+        """准备员看不到她的目标、点“让他改”还要再写一遍聊天里说过的话。"""
         prep.ensure(self.db)
         self.store.raw.append("telegram", "mia", "指标要按我每个副本来，不是系统的")
         brief = prep.brief_for(self.store, {"id": self.main, "title": "给每个目标提量化指标", "goal": None})
@@ -142,7 +142,7 @@ class PrepKnowsHerGoalsTest(PrepTest):
 
 class PrepRedoAllTest(PrepTest):
     def test_brief_has_her_memory_and_redo_migration(self):
-        """2026-10-29 她说准备员没记忆；七件按新办法重做，旧版留底。"""
+        """准备员没记忆；七件按新办法重做，旧版留底。"""
         import importlib.util
         self.store.wiki.write("about-mia", "关于 Mia", "她喜欢普拉提，怕冷")
         self.assertIn("怕冷", prep.brief_for(self.store, {"id": self.main, "title": "挑体验课", "goal": None}))
@@ -164,7 +164,7 @@ class PrepRedoAllTest(PrepTest):
 
 class PrepPendingTest(PrepTest):
     def test_parked_items_are_not_waiting_on_her_and_come_back(self):
-        """2026-10-30 她要“先放着”：暂时用不上的收起来，不算等她确认，随时拿出来。"""
+        """“先放着”：暂时用不上的收起来，不算等她确认，随时拿出来。"""
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         r = FakeRouter([{"status": "ready", "result": "成品", "summary": "s", "decision": ""}] * 4)
@@ -185,7 +185,7 @@ class PrepPendingTest(PrepTest):
 
 class PrepOrderTrashTest(PrepTest):
     def test_her_order_wins_and_drop_goes_to_trash(self):
-        """2026-10-29：小伴 的事按她拖的顺序做；“不要了”进回收站，能放回。"""
+        """小伴 的事按她拖的顺序做；“不要了”进回收站，能放回。"""
         ids = [x["id"] for x in prep.queue(self.db)]
         prep.set_order(self.db, [self.season, self.main])
         self.assertEqual([x["id"] for x in prep.queue(self.db)][:2], [self.season, self.main])
@@ -212,7 +212,7 @@ class PrepOrderTrashTest(PrepTest):
 
 class PrepReviewTest(PrepTest):
     def test_review_decides_order_tops_up_but_never_ticks(self):
-        """2026-10-29：她排的顺序是参考，小伴 每天通盘看一遍定先后；做没做完她自己点。"""
+        """她排的顺序是参考，小伴 每天通盘看一遍定先后；做没做完她自己点。"""
         self.store.raw.append("telegram", "ethan", "某商学院 的资源我整理好了，发你啦")
         router = FakeRouter([{"order": [{"id": self.season, "why": "她这周就要用"}, {"id": self.main, "why": "副本下一步"}],
                               "done": [{"id": self.season}],
@@ -228,7 +228,7 @@ class PrepReviewTest(PrepTest):
         self.assertEqual(prep.review(self.store, FakeRouter([])), {"skipped": "今天看过了"})
 
     def test_review_drops_stale_and_parks_delivered(self):
-        """2026-11-01 她说：Hidden London 是昨天的事、生蚝罚单昨天已经补上了、查当天的票已经过期，怎么还在今天的活里。"""
+        """Hidden London 是昨天的事、生蚝罚单昨天已经补上了、查当天的票已经过期，怎么还在今天的活里。"""
         walk = self.db.add_task("出一条散步路线，逛完 Hidden London 后点开", promised_by_ethan=True)
         oyster = self.db.add_task("补上欠她的生蚝罚单", promised_by_ethan=True)
         ticket = self.db.add_task("查这里今天还有没有票", promised_by_ethan=True, due="2000-01-01")
@@ -240,7 +240,7 @@ class PrepReviewTest(PrepTest):
         self.assertNotIn(walk, ids)
         self.assertNotIn(ticket, ids)  # 截止日过了，自动进回收站
         self.assertEqual(set(got["stale"]), {walk, ticket})
-        self.assertNotIn(oyster, ids)  # 聊天里交过的直接算做完、收起（她 11-04：“11.9 帮我办的那件事怎么还在？”）
+        self.assertNotIn(oyster, ids)  # 聊天里交过的直接算做完、收起
         self.assertNotIn(walk, [o["id"] for o in prep.today_order(self.db)])
         self.assertTrue(any("Hidden London" in t["title"] for t in prep.trash(self.db)))
 
@@ -256,7 +256,7 @@ class PrepReviewTest(PrepTest):
 
 class PrepStarTest(PrepTest):
     def test_star_goes_first_and_team_queue_only_today(self):
-        """2026-10-29：她点星星的今天必须做完，最先做；团队页排队只放今天的。"""
+        """她点星星的今天必须做完，最先做；团队页排队只放今天的。"""
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         prep.set_order(self.db, [self.main, self.season])
@@ -273,7 +273,7 @@ class PrepStarTest(PrepTest):
 
 class PrepSecretTest(PrepTest):
     def test_surprise_hidden_from_her(self):
-        """2026-10-30 她说“他准备的那个惊喜不用告诉我”：照常准备，不出现在她的清单、红点、团队页和“等你看”里。"""
+        """“他准备的那个惊喜不用告诉我”：照常准备，不出现在她的清单、红点、团队页和“等你看”里。"""
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         self.db.conn.execute("UPDATE tasks SET done = 1 WHERE promised_by_ethan = 1")
@@ -289,7 +289,7 @@ class PrepSecretTest(PrepTest):
 
 class ParkedRemindTest(PrepTest):
     def test_parked_reminded_once_a_day(self):
-        """2026-10-30 她要：先放着的每天第一次打开工作台提醒看一次。"""
+        """先放着的每天第一次打开工作台提醒看一次。"""
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         from tests.test_workbench import NOON
@@ -322,7 +322,7 @@ class AskFirstTest(PrepTest):
 
 
 class HelpScopeTest(unittest.TestCase):
-    """quest-structure 第 6 节（她 2026-11-02 让做）：帮办从她未来 7 天的待办和阶段任务里挑。"""
+    """quest-structure 第 6 节（让做）：帮办从她未来 7 天的待办和阶段任务里挑。"""
 
     def setUp(self):
         import tempfile

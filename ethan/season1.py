@@ -1,4 +1,4 @@
-"""赛季 1 数据重整：按 docs/design/territories.md（2026-10-27 晚她逐块确认）改领地、副本、主线、日常和待办。
+"""赛季 1 数据重整：按 docs/design/territories.md（晚她逐块确认）改领地、副本、主线、日常和待办。
 
 先预览再执行：不带 --apply 只打印要改的清单，不动数据库；带 --apply 才改。可重复运行，已经改过的会跳过。
 按标题找目标和任务，不依赖编号。
@@ -165,7 +165,7 @@ def plan(db, cancel_test_redemption: bool = False, fresh_start: str = None, sett
         if r:
             add(f"撤销试用时那次兑换（退回 {r['cost']} 分），余额回到正数",
                 lambda rid=r["id"]: db.conn.execute("DELETE FROM redemptions WHERE id = ?", (rid,)))
-    if fresh_start:  # 2026-10-27 她说“系统从明天开始计算”：试用期的积分、兑换、打卡、休整日清零
+    if fresh_start:  # “系统从明天开始计算”：试用期的积分、兑换、打卡、休整日清零
         counts = {t: db.conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
                   for t in ("points", "redemptions", "habit_log", "rest_days")}
         if any(counts.values()):

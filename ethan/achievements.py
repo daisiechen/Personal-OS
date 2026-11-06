@@ -1,4 +1,4 @@
-"""成就（2026-10-27 晚她确认，内容见 docs/design/territories.md“成就”）。
+"""成就（晚她确认，内容见 docs/design/territories.md“成就”）。
 
 全部由代码按真实数据算，不让她打卡：有数据来源的显示进度，还没有来源的标“等记录”（以后接上一个亮一个）。
 奖励只给解锁、不给积分（免得刷成就）：解锁 小伴 的惊喜玩法（ethan/surprises.py，她不要提前看到，页面上没解锁的不露名字）。
@@ -90,7 +90,7 @@ def _once(key, name, cat, done, source=True, hint=""):
     return {"key": key, "name": name, "cat": cat, "done": bool(done), "source": source, "hint": hint, "steps": None}
 
 
-# 成就的名字和说明（2026-10-29 她说原来写得太随便：名字要像个称号，说明写清楚怎么拿）
+# 成就的名字和说明（原来写得太随便：名字要像个称号，说明写清楚怎么拿）
 NAMES = {
     "first_weigh": ("直面数字", "第一次称体重"),
     "first_dance": ("第一支舞", "上第一节舞蹈课，K-pop、古典舞都算"),
@@ -120,8 +120,8 @@ NAMES = {
     "hidden:rest": ("会停的人", "第一次用休整日"),
     "hidden:weekend": ("周末不打烊", "同一个周末的周六、周日都满勤"),
 }
-# 隐藏成就没达成时只给一句谜语一样的提示（2026-10-29 她要：目标是引导她去做，不是藏着不让发现）
-RIDDLES = {  # 2026-10-29 她说原来的太直白：要像谜语，读得出方向、读不出答案
+# 隐藏成就没达成时只给一句谜语一样的提示（目标是引导她去做，不是藏着不让发现）
+RIDDLES = {  # 原来的太直白：要像谜语，读得出方向、读不出答案
     "hidden:sleep_week": "灰姑娘的规矩，守满七回。",
     "hidden:train_week": "一周有五天，镜子里都是同一个倔强的人。",
     "hidden:protein_week": "七天里，没亏待过那些会变强的部分。",
@@ -139,7 +139,7 @@ def compute(db, root: Path, day: date) -> dict:
     ex = territory.explore_stats(root)
     hikes = next((v for k, v in sheets.items() if "徒步" in k or k == "城市"), [])  # 11-01 新表里这张叫“城市”
     fat = db.conn.execute("SELECT MIN(bodyfat) FROM body_measures WHERE bodyfat IS NOT NULL").fetchone()[0]
-    people = lifelog.new_friends(db)  # 只算新认识的（家人和老朋友不算，2026-10-28）
+    people = lifelog.new_friends(db)  # 只算新认识的（家人和老朋友不算）
     phrases = db.conn.execute("SELECT COUNT(*) FROM learning_items WHERE subject LIKE '%英语%' OR subject LIKE '%English%'").fetchone()[0]
     weighed = db.conn.execute("SELECT COUNT(*) FROM body_measures WHERE weight IS NOT NULL").fetchone()[0]
 
@@ -181,7 +181,7 @@ def compute(db, root: Path, day: date) -> dict:
         name = g.get("Goal") or ""
         if name and "56 个民族" not in name:  # 她删掉了这条
             items.append(_once("goal:" + name, name, "人生 Goal", g.get("状态") == "已结束", hint=g.get("状态") or ""))
-    # 隐藏：都列出来，没达成只显示谜语提示，达成那一刻弹出来、揭晓名字（2026-10-29 她改：引导她做，不是藏起来）
+    # 隐藏：都列出来，没达成只显示谜语提示，达成那一刻弹出来、揭晓名字（改：引导她做，不是藏起来）
     hidden = [_once("hidden:sleep_week", "0 点前睡满一周", "隐藏", _best_habit_run(db, "0 点前睡") >= 7),
               _once("hidden:train_week", "一周练满 5 次", "隐藏", _train_week(db)),
               _once("hidden:protein_week", "连续 7 天吃够蛋白质", "隐藏", _best_habit_run(db, "吃够蛋白质") >= 7),
@@ -196,7 +196,7 @@ def compute(db, root: Path, day: date) -> dict:
             it["name"], it["desc"] = NAMES[it["key"]]
         elif it["cat"] == "人生 Goal":
             it["desc"] = "探索地图里的人生 Goal"
-    for it in items:  # 按七块领域分组（她 2026-11-02 通过的成就页样稿）；不属于哪块的（满勤、全绿、休整这类）归“不分领域”
+    for it in items:  # 按七块领域分组（通过的成就页样稿）；不属于哪块的（满勤、全绿、休整这类）归“不分领域”
         it["domain"] = "life" if it["key"].startswith("goal:") else DOMAIN.get(it["key"])
     legend = [{"name": n, "desc": d, "cat": "终极"} for n, d in LEGEND]
     for it in items:  # 快达成的排前面：有进度、离下一档最近的
@@ -207,7 +207,7 @@ def compute(db, root: Path, day: date) -> dict:
             "hidden": "隐藏成就照着提示猜，做到了才揭晓名字。"}
 
 
-# ---------- 达成那一刻弹出来（2026-10-28 她要：不管在哪个界面都弹，让她开心一下） ----------
+# ---------- 达成那一刻弹出来（不管在哪个界面都弹，让她开心一下） ----------
 SEEN = "CREATE TABLE IF NOT EXISTS ach_seen (key TEXT PRIMARY KEY, tier TEXT, at TEXT NOT NULL, shown INTEGER NOT NULL DEFAULT 0);"
 RANK = {None: 0, "达成": 1, "铜": 1, "银": 2, "金": 3}
 
@@ -243,8 +243,8 @@ def celebrate(db, root: Path, day: date) -> list:
     if out:
         new_plays = [p for p in surprises.for_ethan(db) if p["new"]]
         out[-1]["gift"] = len(new_plays)  # 同时解锁了几个惊喜（不说是什么）
-    # 商店里攒够了能拆的，弹一次（2026-10-29 她说小惊喜能拆了系统没提示）。积分掉到不够（拆了、撤销了）就重新算，
-    # 下次攒够再弹（2026-11-01：退回 1800 分后又够了却没提醒——旧写法按兑换次数记，退回把次数也退回去了）
+    # 商店里攒够了能拆的，弹一次（小惊喜能拆了系统没提示）。积分掉到不够（拆了、撤销了）就重新算，
+    # 下次攒够再弹（退回 1800 分后又够了却没提醒——旧写法按兑换次数记，退回把次数也退回去了）
     bal = quests.totals(db)["balance"]
     for r in quests.rewards(db):
         key = f"shop:{r['id']}"
@@ -260,7 +260,7 @@ def celebrate(db, root: Path, day: date) -> list:
                 db.conn.execute("INSERT OR IGNORE INTO ach_seen (key, tier, at, shown) VALUES (?, '达成', ?, 0)", (key, now))
                 out.append({"key": key, "name": f"能拆「{r['title']}」了", "cat": "商店", "tier": "达成", "shop": True, "reward": r["id"]})
     db.conn.commit()
-    # 小伴 在聊天里揭晓了的奖励，工作台上也弹一次（2026-10-29 她说解锁了新奖励自己都不知道）
+    # 小伴 在聊天里揭晓了的奖励，工作台上也弹一次（解锁了新奖励自己都不知道）
     out += [{"key": "play:" + p["key"], "name": p["name"], "cat": "奖励", "tier": p["tier"], "play": True, "note": p["reveal"]}
             for p in surprises.reveals(db)]
     return out

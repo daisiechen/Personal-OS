@@ -89,7 +89,7 @@ def her_things(wiki) -> list:
 
 
 def _write_her_things(wiki, items: list):
-    # 过了一周的就不留了，页面不再越写越长（2026-10-29 自查）；按最新那件算起，不让刚记的被今天的日期删掉
+    # 过了一周的就不留了，页面不再越写越长（自查）；按最新那件算起，不让刚记的被今天的日期删掉
     newest = max([date.fromisoformat(i["date"]) for i in items] or [her_today()])
     old = (min(her_today(), newest) - timedelta(days=7)).isoformat()
     items = [i for i in items if i["date"] >= old]
@@ -117,7 +117,7 @@ def mark_asked(wiki, thing: dict):
 
 
 def upcoming_her_things(wiki, today: date, days: int = 3) -> list:
-    """今天起几天内、还没问过的事（伦敦日期）。"""
+    """今天起几天内、还没问过的事（本地日期）。"""
     end = (today + timedelta(days=days)).isoformat()
     return [i for i in her_things(wiki) if not i["asked"] and today.isoformat() <= i["date"] <= end]
 
@@ -195,7 +195,7 @@ def chat_context(wiki, settings=None, now: datetime = None) -> str:
     if fixed:  # 她纠正过的关于你自己的事（ethan/memusers.py 写的）
         parts += ["### 她纠正过的关于你自己的事（以这里为准）", fixed[-1500:]]
     past = past_days(wiki, home_day(now))
-    if past:  # 2026-10-31 她发现他忘了几天前的咖啡实验、说“这个月就一杯”：前几天过的日子也得记得
+    if past:  # 发现他忘了几天前的咖啡实验、说“这个月就一杯”：前几天过的日子也得记得
         parts += ["### 你前几天过的日子（剧本要点和当天临时变化；说起自己最近的事以这里为准）", past]
     things = upcoming_her_things(wiki, her_now(settings, now).date())
     if things:
@@ -207,7 +207,7 @@ def chat_context(wiki, settings=None, now: datetime = None) -> str:
 # ---------- 生成 ----------
 
 def _clock_map(settings, now: datetime) -> str:
-    """深圳整点对应的伦敦时间，帮模型排找她的时刻。"""
+    """深圳整点对应的本地时间，帮模型排找她的时刻。"""
     day = home_day(now)
     rows = []
     for hour in range(5, 24, 2):
@@ -279,7 +279,7 @@ def ensure_plans(store, router, persona: str, settings=None, now: datetime = Non
         her_day = her_now(settings, now).date()
         lesson = lessons.today(store.db, her_day) or lessons.pick(store.db, router, her_day, _chat_digest(store.raw.recent(30), settings))
         note = lessons.script_note(lesson)
-        slug = day_slug(day)  # 他今天的日子已经写好了（知识点挑得晚）：补进去（她 2026-11-01：“小伴 的今天里还是没写要教我什么”）
+        slug = day_slug(day)  # 他今天的日子已经写好了（知识点挑得晚）：补进去
         if note and wiki.exists(slug) and lesson["title"] not in _body(wiki, slug):
             page = wiki.read(slug)
             wiki.write(slug, page.get("title") or f"小伴 的一天 {day.isoformat()}", page["body"].rstrip() + "\n\n" + note)

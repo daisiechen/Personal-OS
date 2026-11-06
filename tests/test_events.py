@@ -22,7 +22,7 @@ class FakeCal:
 
 class EventsTest(unittest.TestCase):
     def test_add_from_chat_goes_to_calendar_and_planner_busy(self):
-        """2026-10-30 她发来周六午餐订位要进日历：以后的日程先登记，马上写日历，当天排计划时避开。"""
+        """发来周六午餐订位要进日历：以后的日程先登记，马上写日历，当天排计划时避开。"""
         with tempfile.TemporaryDirectory() as d:
             store = MemoryStore(Path(d))
             text = "好，记上了 [日程 2099-10-31 14:45-16:45 午餐（4 人） @ Dishoom]"
@@ -44,7 +44,7 @@ if __name__ == "__main__":
 
 
 class SameEventTest(unittest.TestCase):
-    """她 11-04：“我的日历里怎么还有这么多重复事项？”——同一个约叫法不同也要认出来。"""
+    """同一个约叫法不同也要认出来。"""
 
     def test_same_event_variants(self):
         from ethan.events import same_event as S

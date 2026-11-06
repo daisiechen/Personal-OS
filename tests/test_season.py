@@ -1,4 +1,4 @@
-"""赛季页（她 2026-11-02 选了样稿 B）：七块领域这个赛季怎么样、是什么造成的、彼此怎么此消彼长。"""
+"""赛季页（样稿 B）：七块领域这个赛季怎么样、是什么造成的、彼此怎么此消彼长。"""
 
 import json
 import tempfile
@@ -73,8 +73,8 @@ class SeasonTest(unittest.TestCase):
         self.assertIn("工作挤掉训练", body["crowded_by"])
         focus = [d for d in p["domains"] if d["focus"]]
         self.assertLessEqual(len(focus), 2)
-        self.assertTrue(all(len(d["calendar"]) == 21 for d in focus))
-        self.assertIsNone(p["next"])  # 没到三分之二，不出下季建议
+        self.assertTrue(all("calendar" not in d for d in p["domains"]))  # 11-05 第二版：大卡和 21 天小日历撤掉了
+        self.assertIsNone(p["next"])  # 没到三分之二，小伴 的正式建议不出
         self.assertTrue(p["line"])  # 小伴 没写时有代码拼的一句
 
     def test_weekly_note_written_by_ethan(self):
@@ -89,12 +89,86 @@ class SeasonTest(unittest.TestCase):
         self.assertTrue(late["late"])
 
 
+class SeasonPageV2Test(SeasonTest):
+    """的第二版：A 的通行证 + 小伴 总评和下赛季建议（一直显示）+ C 的七块领地分数柱（比开季、比上季）。"""
+
+    def test_suggestion_always_shown_rule_based_before_ethan(self):
+        p = season.page(self.db, self.s, START, TODAY)
+        sg = p["suggest"]
+        self.assertEqual(sg["by"], "rule")
+        self.assertEqual(sg["rule"], f"工作每周不超过 {season.WORK_CAP} 小时")  # 第 2 周干了 60 小时
+        self.assertTrue(any("事业少加码" in x and "健康" in x for x in sg["pause"]))  # 工作挤掉训练
+        self.assertTrue(all(x.startswith("把") for x in sg["start"]))
+
+    def test_ethan_suggestion_wins_when_late(self):
+        late = date(2026, 12, 20)
+        r = Router(json.dumps({"line": "收官前把训练补回来。", "next": {"keep": ["减脂"], "pause": [], "start": ["每周见一次朋友"], "rule": "工作不超过 45 小时"}},
+                              ensure_ascii=False))
+        season.write_note(self.db, r, self.s, START, late)
+        sg = season.page(self.db, self.s, START, late)["suggest"]
+        self.assertEqual(sg["by"], "小伴")
+        self.assertEqual(sg["keep"], ["减脂"])
+
+    def test_pass_points_and_level_ticks(self):
+        for n, pts in enumerate((300, 400, 500)):
+            self.db.conn.execute("INSERT INTO points (day, delta, reason, at) VALUES (?, ?, 't', 'x')", ((START + timedelta(days=n)).isoformat(), pts))
+        self.db.conn.execute("INSERT INTO points (day, delta, reason, at) VALUES (?, 200, 't', 'x')", (TODAY.isoformat(),))
+        self.db.conn.execute("INSERT INTO points (day, delta, reason, at) VALUES ('2026-01-01', 100, 'before', 'x')")
+        self.db.conn.commit()
+        ps = season.page(self.db, self.s, START, TODAY)["pass"]
+        self.assertEqual(ps["points"], 1400)  # 开季前的 100 不算
+        self.assertEqual(ps["week"], 200)
+        self.assertEqual(ps["projected"], round(1400 / 22 * 81))
+        self.assertTrue(ps["ticks"])
+        self.assertLessEqual(sum(t["got"] for t in ps["ticks"]), 1)  # 升过的只留最近一级
+        self.assertTrue(any(not t["got"] for t in ps["ticks"]))  # 至少标出下一级
+        self.assertTrue(all(0 < t["at"] <= ps["scale"] for t in ps["ticks"]))
+
+    def test_compare_with_last_season(self):
+        past = [{"name": "上一季", "domains": [{"name": "健康", "now": 90}, {"name": "事业", "now": None}]}]
+        doms = {d["key"]: d for d in season.page(self.db, self.s, START, TODAY, past)["domains"]}
+        if doms["body"]["now"] is not None:
+            self.assertEqual(doms["body"]["prev"], 90)
+            self.assertEqual(doms["body"]["prev_delta"], doms["body"]["now"] - 90)
+        self.assertIsNone(doms["career"]["prev_delta"])
+        self.assertIsNone(season.page(self.db, self.s, START, TODAY)["domains"][0]["prev"])  # 第一季没有上季
+
+
+class SeasonApiTest(unittest.TestCase):
+    def test_season_page_has_route_pass_and_waste(self):
+        from ethan.core.router import Settings
+        from ethan.workbench.api import Workbench
+        from tests.test_workbench import FakeCalendar, MONDAY, NOON, make_demo
+        from ethan import stages
+        with tempfile.TemporaryDirectory() as t:
+            store = make_demo(Path(t))
+            try:
+                wb = Workbench(store, Settings(Path(t) / "settings.json"), calendar=FakeCalendar())
+                gid = next(b["goal_id"] for b in wb.bosses(MONDAY) if b["main"])
+                m1 = stages.add_milestone(store.db, gid, "建立基线", "2026-11-10")
+                stages.add_milestone(store.db, gid, "一周练满五次", "2026-11-30")
+                store.db.conn.execute("UPDATE milestones SET status = 'done' WHERE id = ?", (m1,))
+                m2 = store.db.conn.execute("SELECT id FROM milestones WHERE goal_id = ? AND status = 'open'", (gid,)).fetchone()[0]
+                for i in range(3):
+                    tid = stages.add_task(store.db, m2, f"练 {i}")
+                    if i == 0:
+                        store.db.conn.execute("UPDATE tasks SET done = 1 WHERE id = ?", (tid,))
+                store.db.conn.commit()
+                p = wb.season_page(NOON)
+                self.assertEqual([m["state"] for m in p["route"]["milestones"]], ["clear", "now"])
+                self.assertEqual((p["route"]["milestones"][1]["done"], p["route"]["milestones"][1]["total"]), (1, 3))
+                for k in ("pass", "suggest", "waste", "domains", "line"):
+                    self.assertIn(k, p)
+            finally:
+                store.close()
+
+
 if __name__ == "__main__":
     unittest.main()
 
 
 class DomainStatsTest(SeasonTest):
-    """她 2026-11-02：七个领域页都应该是这个领域的分析——分数（开季→现在、组成、走势）和关键指标的变化图。"""
+    """七个领域页都应该是这个领域的分析——分数（开季→现在、组成、走势）和关键指标的变化图。"""
 
     def test_score_block_and_charts(self):
         from ethan import domain_stats
@@ -122,7 +196,7 @@ class DomainStatsTest(SeasonTest):
 
 class SeasonLineTest(SeasonTest):
     def test_fallback_says_state_and_impact_and_kicks_rewrite(self):
-        """她 2026-11-02：最上面那句不能只是数字，要说现在的状态和影响；小伴 没写或写旧了就后台重写。"""
+        """最上面那句不能只是数字，要说现在的状态和影响；小伴 没写或写旧了就后台重写。"""
         p = season.page(self.db, self.s, START, TODAY)
         self.assertIn("挤占", p["line"])
         self.assertTrue(p["stale"])

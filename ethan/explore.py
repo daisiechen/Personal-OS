@@ -1,4 +1,4 @@
-"""探索地图（她 2026-11-02 定：以后工作台就是唯一数据源，不再回飞书）。最早是她在飞书维护的表格，11-01 导入了最后一版；
+"""探索地图（以后工作台就是唯一数据源，不再回飞书）。最早是她在飞书维护的表格，11-01 导入了最后一版；
 之后加地方、改状态、改签证、删地方都在工作台里做。xlsx 导入的代码留着，只在需要整表重导时用。
 
 存成 <数据目录>/explore-map.json（私人资料，不进仓库）：{"sheets": {表名: [{列名: 值}]}}，领域页的探索地图、成就都读它。
@@ -91,8 +91,8 @@ def save(root, data: bytes) -> dict:
 
 
 STATUSES = ("已结束", "进行中", "未开始", "待二刷", "跳过", "签证困难")
-DOMESTIC = ("城市", "中国")  # 国内的表没有签证这回事（她 2026-11-01：“城市和中国里面不需要签证困难的 tag”）
-EDITABLE = ("签证",)  # 工作台里能直接改的文字列（她 2026-11-01：签证“内容我可改”）
+DOMESTIC = ("城市", "中国")  # 国内的表没有签证这回事
+EDITABLE = ("签证",)  # 工作台里能直接改的文字列（签证“内容我可改”）
 
 
 def statuses(sheet: str) -> list:
@@ -119,7 +119,7 @@ def _write(root, data: dict) -> None:
 
 
 def set_status(root, sheet: str, i: int, status: str) -> dict:
-    """工作台里直接改一行的状态（她 2026-11-01：去过、跳过这些我随时会调，不能每次改完再上传）。没标的就当未开始。"""
+    """工作台里直接改一行的状态（去过、跳过这些我随时会调，不能每次改完再上传）。没标的就当未开始。"""
     if status not in statuses(sheet):
         raise ValueError("状态只能是：" + "、".join(statuses(sheet)))
     data = load(root)
@@ -148,7 +148,7 @@ PRIMARY = {"城市": ("项目", None), "中国": ("城市", "省份")}  # 其他
 
 
 def add_row(root, sheet: str, name: str, sub: str = "", status: str = "未开始", visa: str = "") -> dict:
-    """工作台里加一处（她 2026-11-02：工作台是唯一数据源）。"""
+    """工作台里加一处（工作台是唯一数据源）。"""
     name = (name or "").strip()[:80]
     if not name:
         raise ValueError("写一下地名")

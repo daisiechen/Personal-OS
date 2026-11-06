@@ -16,7 +16,7 @@ CALL = re.compile(r"(memsearch\.search|portrait\.chat_text|\bsearch)\(([^()]*(?:
 
 
 class GateTest(unittest.TestCase):
-    """新进来的使用者必须先登记（她 2026-10-31）：绕开入口或用没登记的名字，这里不过、上线自动退回。"""
+    """新进来的使用者必须先登记：绕开入口或用没登记的名字，这里不过、上线自动退回。"""
 
     def files(self):
         return [p for p in ROOT.rglob("*.py") if "__pycache__" not in p.parts]
@@ -74,12 +74,12 @@ class MemUsersTest(unittest.TestCase):
         wrong = lifebase.add_fact(self.db, "resources", "她住在 Camden 公寓", [self.ev])
         memsearch.refresh(self.db)
         memsearch.search(self.db, ["Camden"], user="ethan")
-        got = memusers.note(self.db, "对不起我记错了[纠错 她 资源与处境 错：她住在 Camden 对：她住在 Islington 公寓]", quote="我现在住 Islington 了")
+        got = memusers.note(self.db, "对不起我记错了[纠错 她 资源与处境 错：她住在 Camden 对：她住在 Greenwich 公寓]", quote="我现在住 Greenwich 了")
         self.assertEqual(len(got), 1)
         t = got[0]
         self.assertEqual(t["layer"], "outdated")  # 原来记的是对的，后来她搬了
         f = self.db.conn.execute("SELECT * FROM facts WHERE id = ?", (t["fact_id"],)).fetchone()
-        self.assertEqual((f["statement"], f["locked"], f["confidence"], f["dimension"]), ("她住在 Islington 公寓", 1, 1.0, "resources"))
+        self.assertEqual((f["statement"], f["locked"], f["confidence"], f["dimension"]), ("她住在 Greenwich 公寓", 1, 1.0, "resources"))
         self.assertIsNotNone(self.db.conn.execute("SELECT valid_to FROM facts WHERE id = ?", (wrong,)).fetchone()[0])
         # 系统以后自己不能改它：冲突时变成问题
         newer = lifebase.add_fact(self.db, "resources", "她住在 Hackney", [self.ev])
@@ -90,12 +90,12 @@ class MemUsersTest(unittest.TestCase):
         self.assertEqual([p["kind"] for p in mepage.pending_items(self.db)], ["conflict"])  # 两条让她选
         self.assertFalse(lifebase.invalidate(self.db, t["fact_id"]))
         q = [p for p in mepage.pending_items(self.db) if p["kind"] == "question"]
-        self.assertIn("Islington", q[0]["question"])  # 可能不成立了：也进“待你定”，不另开一条线
+        self.assertIn("Greenwich", q[0]["question"])  # 可能不成立了：也进“待你定”，不另开一条线
         # 同一件事再被纠正：复发
-        again = memusers.open_ticket(self.db, "她住在 Islington 公寓", "她住在 Hackney")
+        again = memusers.open_ticket(self.db, "她住在 Greenwich 公寓", "她住在 Hackney")
         self.assertEqual(again["recurrence_of"], t["id"])
         memsearch.refresh(self.db)
-        memsearch.search(self.db, ["Islington"], user="ethan")
+        memsearch.search(self.db, ["Greenwich"], user="ethan")
         track = {x["id"]: x for x in memusers.locked_tracking(self.db)}
         self.assertEqual((track[t["id"]]["recurred"], track[t["id"]]["used_after"] >= 1), (1, True))
 

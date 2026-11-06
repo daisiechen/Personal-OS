@@ -20,9 +20,10 @@
 
 import json
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from . import lifebase, memusers, ontology
+from . import clock
 
 LOG = """CREATE TABLE IF NOT EXISTS function_log (id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, fn TEXT NOT NULL,
   user TEXT NOT NULL, status TEXT NOT NULL, n INTEGER NOT NULL)"""
@@ -36,7 +37,7 @@ def _now() -> str:
 def _out(db, fn, user, status, items=(), note=""):
     who = memusers.check(user)
     if not memusers.may_use(user, fn):
-        status, items, note = "forbidden", (), ""  # 只登记了读某几项的（日记只读写作规范，2026-11-05）
+        status, items, note = "forbidden", (), ""  # 只登记了读某几项的（日记只读写作规范）
     shown = "unknown" if status == "forbidden" else status  # 没权限和没有一样回答（contracts 1.6 节），真实情况只记在使用记录里
     try:
         db.conn.execute(LOG)
@@ -79,7 +80,7 @@ SENSITIVE = {p[0]: p[6] for p in ontology.PROPERTIES if p[6]}
 
 def _visible(user: str, row, db=None) -> bool:
     who = memusers.check(user)
-    if db is not None and lifebase.statement_gone(db, row["id"]):  # 她删后停用的（Codex 评审 11-05）
+    if db is not None and lifebase.fact_state(row, None, db) in ("suspended", "forgotten", "retracted"):  # 删后停用的（Codex 评审 11-05）
         return False
     if memusers.external(user):  # 对外两档：按对外开关和逐条例外（lifebase.disclose，ontology-plan 3.3），不按可见级别
         return db is not None and lifebase.disclose(db, user, row) == "allow"
@@ -90,10 +91,6 @@ def _visible(user: str, row, db=None) -> bool:
     # 细属性按登记的敏感标签算方面（1.11 把 dim:resources 的归到 application_status 后，对外那道双保险不能丢）
     dim = prop.split(":", 1)[1] if prop.startswith("dim:") else SENSITIVE.get(prop)
     return memusers.may_read(user, row["kind"], row["read_by"], dim)
-
-
-def _current(row, today: str) -> bool:
-    return (not row["valid_to"] or row["valid_to"][:10] > today) and (not row["valid_from"] or row["valid_from"][:10] <= today)
 
 
 def _match(text: str, words: str) -> bool:
@@ -115,11 +112,12 @@ def _item(db, r) -> dict:
             "guess": r["kind"] == "hypothesis", "sources": _sources(db, r["id"])}
 
 
-def _self_statements(db, where: str, args=()) -> list:
+def _self_statements(db, where: str = "1 = 1", args=(), view: str = "topic", day=None) -> list:
+    """关于她的说法里，这个场景收的（lifebase.MEM_VIEWS[view]，“算不算数”只在 lifebase 一处判）。"""
     lifebase.ensure(db)
     sid = ontology.self_id(db)
-    return db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND review IN ('accepted', 'disputed', 'candidate') "
-                           f"AND {lifebase.NOT_GONE_STATEMENT} AND ({where})", (sid, *args)).fetchall()
+    cond, cargs = lifebase.mem_where(view, "statements", day)
+    return db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND {cond} AND ({where})", (sid, *cargs, *args)).fetchall()
 
 
 # ---------- 第 4 题：偏好 ----------
@@ -129,11 +127,11 @@ def preferences(db, user: str, topic: str = None, today: date = None) -> dict:
     if blocked:
         return _out(db, "preferences", user, blocked)
     day = (today or lifebase_today()).isoformat()
-    rows = _self_statements(db, "(property IN ('dim:preferences', 'preference') OR kind = 'preference') AND property != 'writing_style'")  # 写作规范走 writing_style
+    rows = _self_statements(db, "(property IN ('dim:preferences', 'preference') OR kind = 'preference') AND property != 'writing_style'", day=day)  # 写作规范走 writing_style
     who = memusers.check(user)
     items, hidden = [], 0
     for r in rows:
-        if not _current(r, day) or not _match(f"{r['value_text']} {r['context'] or ''}", topic):
+        if not _match(f"{r['value_text']} {r['context'] or ''}", topic):
             continue
         if not _visible(user, r, db):
             hidden += 1
@@ -158,8 +156,8 @@ def prep_requirements(db, user: str, task_title: str, today: date = None) -> dic
     if blocked:
         return _out(db, "prep_requirements", user, blocked)
     day = (today or lifebase_today()).isoformat()
-    rows = _self_statements(db, "review IN ('accepted', 'disputed') AND kind != 'hypothesis'")
-    items = [_item(db, r) for r in rows if _current(r, day) and r["said_by"] in HER_OWN and _visible(user, r, db)
+    rows = _self_statements(db, "kind != 'hypothesis'", view="now", day=day)
+    items = [_item(db, r) for r in rows if r["said_by"] in HER_OWN and _visible(user, r, db)
              and _match(f"{r['value_text']} {r['context'] or ''}", task_title)]
     past = history(db, user, task_title, _log=False)
     note = "" if items else "没找到已确认的要求，按默认规则做，并在结果里写明"
@@ -246,17 +244,17 @@ def whereabouts_now(db, user: str, today: date = None) -> dict:
     day = (today or lifebase_today()).isoformat()
     ontology.ensure(db)
     me = ontology.self_id(db)
+    now_sql, now_args = lifebase.mem_where("now", "statements", day)
     doing = []
     for s in db.conn.execute("SELECT DISTINCT r.situation_id, o.name FROM situation_roles r JOIN objects o ON o.id = r.situation_id "
                              "WHERE r.object_id = ? AND o.status = 'active'", (me,)):
-        ends = {p: [x for x in db.conn.execute("SELECT * FROM statements WHERE subject_id = ? AND property = ? AND review IN ('accepted', 'disputed')",
-                                               (s["situation_id"], p))] for p in ("situation_start", "situation_end")}
-        start = [x["value_text"] for x in ends["situation_start"] if _current(x, day)]
-        end = [x["value_text"] for x in ends["situation_end"] if _current(x, day)]
+        ends = {p: [x for x in db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND property = ? AND {now_sql}",
+                                               (s["situation_id"], p, *now_args))] for p in ("situation_start", "situation_end")}
+        start = [x["value_text"] for x in ends["situation_start"]]
+        end = [x["value_text"] for x in ends["situation_end"]]
         if (not start or min(start) <= day) and (not end or max(end) >= day):
             doing.append({"what": s["name"], "start": start, "end": end, "disputed": len(set(end)) > 1})
-    lives = [_item(db, r) for r in _self_statements(db, "property = 'lives_in' AND review IN ('accepted', 'disputed')")
-             if _current(r, day) and _visible(user, r, db)]
+    lives = [_item(db, r) for r in _self_statements(db, "property = 'lives_in'", view="now", day=day) if _visible(user, r, db)]
     from . import whereabouts
     here = whereabouts.current(db)
     today_city = here["city"] if here["source"] == "told" and (here["at"] or "")[:10] == day else None
@@ -283,7 +281,7 @@ def background(db, user: str) -> dict:
     if blocked:
         return _out(db, "background", user, blocked)
     marks = ",".join("?" * len(ontology.BACKGROUND))
-    rows = _self_statements(db, f"property IN ({marks}) AND review IN ('accepted', 'disputed')", ontology.BACKGROUND)
+    rows = _self_statements(db, f"property IN ({marks})", ontology.BACKGROUND, view="background")
     items, hidden = [], 0
     for r in rows:
         if not _visible(user, r, db):
@@ -297,7 +295,7 @@ def background(db, user: str) -> dict:
     return _out(db, "background", user, "disputed" if any(i["review"] == "disputed" for i in items) else "answer", items)
 
 
-# ---------- 第 26 题：这周花了多少、和前几周比、哪几笔最大（ontology-plan 1.5，她 11-02：“只需要帮我监控每周的开销就行了”） ----------
+# ---------- 第 26 题：这周花了多少、和前几周比、哪几笔最大（ontology-plan 1.5） ----------
 def weekly_spend(db, user: str, today: date = None, weeks: int = 4) -> dict:
     """从银行流水现算（行为记录，不存成说法）：本周（周一到今天）各币种、折成人民币的总数、记了几天、最大的三笔，
     前几周的总数一起给。记录不全的照样报，标清“这周记录不完整”（Codex 评审：不统一等满七天）。钱是敏感方面，对外的拿不到。"""
@@ -334,15 +332,15 @@ def weekly_spend(db, user: str, today: date = None, weeks: int = 4) -> dict:
 
 # ---------- 作息的描述（行为记录，现算，不推性格；ontology-plan 1.5） ----------
 RHYTHM_MIN_SAMPLES = 3  # 少于 3 天不写说法
-DAY_START_MIN = 4 * 60  # 04:00 以前的不算“开始”
+DAY_START_MIN = clock.DAY_START_HOUR * 60  # 05:00 以前的不算“开始”，0–5 点算前一晚（决定 9：和工作时长一样按 5 点分天；以前 4 点）
 IDLE_GAP_MIN = 4 * 60  # 前面空了 4 小时以上才算新的一段
 
 
 def mac_sessions(db, start: date, day: date):
     """只看 Mac 来源的格（不算工作台、Claude 会话、手机），按“空 4 小时以上”切成一段一段。
     返回 (工作日每天的开始分钟数列表, 每晚最后一格的分钟数列表——相对那晚的 0 点，过了午夜的大于 1440)。
-    开始 = 当天 04:00 以后、前面空了 4 小时以上的第一格；跨午夜连着的不算开始。
-    熬夜 = 一段的最后一格，往前推 4 小时算哪一晚（01:10 算前一晚），每晚取最后的一段；后面空了 4 小时还没确认的不算。"""
+    开始 = 当天 05:00 以后、前面空了 4 小时以上的第一格；跨午夜连着的不算开始。
+    熬夜 = 一段的最后一格，往前推 5 小时算哪一晚（04:30 算前一晚；clock.DAY_START_HOUR），每晚取最后的一段；后面空了 4 小时还没确认的不算。"""
     from datetime import datetime, timedelta
     try:
         rows = [r[0] for r in db.conn.execute(
@@ -382,7 +380,7 @@ def rhythm_items(db, day: date, weeks: int = 4) -> list:
         mins = sorted(starts)
         mid = mins[len(mins) // 2]
         items.append({"key": "work_start", "what": "工作日开始用 Mac 的时间（中位数）", "value": f"{mid // 60:02d}:{mid % 60:02d}", "samples": len(mins),
-                      "note": "Mac 有键鼠动静、前面空了 4 小时以上的第一个 5 分钟（04:00 以后，跨午夜连着的不算），不等于开始工作"})
+                      "note": "Mac 有键鼠动静、前面空了 4 小时以上的第一个 5 分钟（05:00 以后，跨午夜连着的不算），不等于开始工作"})
     if len(nights) >= RHYTHM_MIN_SAMPLES:
         mins = sorted(nights)
         mid = mins[len(mins) // 2] % (24 * 60)
@@ -470,7 +468,7 @@ def _hit(text: str, words: str, need: float = 0.5) -> bool:
 
 
 def _private_only(db, fn, user):
-    """对外的（Dais、主页）一律没权限；放行返回 None。"""
+    """对外的（主页助手、主页）一律没权限；放行返回 None。"""
     blocked = _gate(db, user)
     if blocked:
         return _out(db, fn, user, blocked)
@@ -523,8 +521,8 @@ def last_said(db, user: str, topic: str, limit: int = 3) -> dict:
         if len(items) >= limit:
             break
     day = lifebase_today().isoformat()
-    selfs = [x for x in _self_statements(db, "kind = 'self_report' AND review IN ('accepted', 'disputed')")
-             if _current(x, day) and _visible(user, x, db) and _hit(f"{x['value_text']} {x['context'] or ''}", topic)]
+    selfs = [x for x in _self_statements(db, "kind = 'self_report'", view="now", day=day)
+             if _visible(user, x, db) and _hit(f"{x['value_text']} {x['context'] or ''}", topic)]
     for x in selfs:  # 自述的语境：按出处对回原话
         for s in _sources(db, x["id"]):
             for i in items:
@@ -556,12 +554,14 @@ def person(db, user: str, name: str) -> dict:
         ref = db.conn.execute("SELECT object_id FROM object_refs WHERE ref = ?", (f"person:{c['id']}",)).fetchone()
         says = []
         if ref:
-            for s in db.conn.execute("SELECT * FROM statements WHERE subject_id = ? AND review IN ('accepted', 'disputed')", (ref[0],)):
-                if _current(s, day) and _visible(user, s, db):
+            now_sql, now_args = lifebase.mem_where("now", "statements", day)
+            for s in db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND {now_sql}", (ref[0], *now_args)):
+                if _visible(user, s, db):
                     says.append({**_item(db, s), "property": s["property"]})
         last = _rows(db, "SELECT kind, day, text FROM life_log WHERE who = ? ORDER BY day DESC, id DESC LIMIT 1", (c["name"],))
+        card = _card_extra(c)  # 每晚整理出的近况、在聊的话题、没了结的事、重要日子（见面前提醒要用，借鉴 10）
         items.append({"person": c["id"], "name": c["name"], "circle": c.get("circle"), "how_met": c.get("how_met"),
-                      "notes": (c.get("notes") or "")[:300], "last_contact": c.get("last_contact"),
+                      "notes": (c.get("notes") or "")[:300], "last_contact": c.get("last_contact"), **card,
                       "relation": [x for x in says if x["property"] == "relation_to_her"],
                       "statements": [x for x in says if x["property"] != "relation_to_her"][:10],
                       "latest": last[0] if last else None})
@@ -571,6 +571,20 @@ def person(db, user: str, name: str) -> dict:
         return _out(db, "person", user, "disputed", items, "同名（或名字相近）的有好几位，先问她是哪位")
     disputed = any(x["review"] == "disputed" for x in items[0]["relation"] + items[0]["statements"])
     return _out(db, "person", user, "disputed" if disputed else "answer", items)
+
+
+def _card_extra(c: dict) -> dict:
+    """人物卡上每晚整理出来的几样（ethan/relations.py）：近况、话题、没了结的事（她了结过的不给）、重要日子。没整理过的是空。"""
+    def j(v, default):
+        try:
+            return json.loads(v) if v else default
+        except (TypeError, ValueError):
+            return default
+    from .relations import _done_keys, _is_done
+    done = _done_keys({"loops_done": c.get("loops_done")})
+    loops = [x for x in j(c.get("open_loops"), []) if isinstance(x, dict) and not _is_done(x, done)]
+    return {"relation_text": c.get("relation") or "", "recent": (c.get("recent") or "")[:300], "topics": j(c.get("topics"), [])[:5],
+            "open_loops": loops[:5], "dates": j(c.get("dates"), [])[:5], "birthday": c.get("birthday") or ""}
 
 
 # ---------- 第 5 题：她定过哪些长期规矩 ----------
@@ -614,8 +628,8 @@ def standing_rules(db, user: str, topic: str = None) -> dict:
     decs = _decisions_for(db, user, ("rule", "constraint", "exception"), topic)
     items = [_decision_item(d) for d in decs]
     day = lifebase_today().isoformat()
-    for r in _self_statements(db, "kind = 'decision' AND review IN ('accepted', 'disputed')"):
-        if _current(r, day) and r["said_by"] in HER_OWN and _visible(user, r, db) and _match(f"{r['value_text']} {r['context'] or ''}", topic):
+    for r in _self_statements(db, "kind = 'decision'", view="now", day=day):
+        if r["said_by"] in HER_OWN and _visible(user, r, db) and _match(f"{r['value_text']} {r['context'] or ''}", topic):
             items.append(_item(db, r))
     if not items:
         return _out(db, "standing_rules", user, "unknown", note="没找到她定过的规矩")
@@ -764,8 +778,8 @@ def hypothesis_case(db, user: str, topic: str = None) -> dict:
     day = lifebase_today().isoformat()
     items = []
     relay = {r["id"] for r in _rows(db, "SELECT id FROM evidence WHERE source IN ('grok', 'agent')")}
-    for r in _self_statements(db, "kind = 'hypothesis' AND review IN ('accepted', 'disputed', 'candidate')"):
-        if not _current(r, day) or not _match(f"{r['value_text']} {r['context'] or ''}", topic):
+    for r in _self_statements(db, "kind = 'hypothesis'", day=day):
+        if not _match(f"{r['value_text']} {r['context'] or ''}", topic):
             continue
         src = _rows(db, "SELECT evidence_id, from_statement, role, source_unknown FROM statement_sources WHERE statement_id = ?", (r["id"],))
         sup = [s for s in src if s["role"] in ("supports", "quotes", "derived")]
@@ -848,8 +862,8 @@ def _outside(db, user, recipient=None):
     allow, ask = [], []
     if memusers.check(user).get("all"):
         return allow, ask
-    for r in _self_statements(db, "1 = 1"):
-        if not _current(r, day) or r["value_text"] is None:
+    for r in _self_statements(db, day=day):
+        if r["value_text"] is None:
             continue
         mode = lifebase.disclose(db, user, r, recipient=recipient)
         if mode == "deny":
@@ -945,7 +959,7 @@ def public_offer(db, user: str, topic: str = None, recipient: str = None) -> dic
 
 
 def public_answer(db, user: str, question: str, recipient: str = None) -> dict:
-    """对外使用者（Dais、主页、合作方 agent）回答访客的统一入口：按问题分到第 16 / 15 / 14 题；
+    """对外使用者（主页助手、主页、合作方 agent）回答访客的统一入口：按问题分到第 16 / 15 / 14 题；
     要先问她的，在“待你定”里生成一条（谁问的、问了什么、拟答），回答“我问问她”。返回题的结果 + reply（能直接说的话）+ pending。"""
     import re
     q = (question or "").strip()[:200]
@@ -1011,9 +1025,8 @@ def changes(db, user: str, topic: str, since: str = None) -> dict:
         return no
     from datetime import timedelta
     since = since or (lifebase_today() - timedelta(days=31)).isoformat()
-    rows = [r for r in _self_statements(db, "1 = 1") if _visible(user, r, db) and _match(f"{r['value_text']} {r['context'] or ''}", topic)]
-    olds = _rows(db, "SELECT * FROM statements WHERE subject_id = ? AND superseded_by IS NOT NULL AND review != 'forgotten'",
-                 (ontology.self_id(db),))
+    rows = [r for r in _self_statements(db) if _visible(user, r, db) and _match(f"{r['value_text']} {r['context'] or ''}", topic)]
+    olds = _self_statements(db, "superseded_by IS NOT NULL", view="changes")
     by_id = {r["id"]: r for r in rows}
     pairs = []
     for o in olds:
@@ -1039,7 +1052,8 @@ def still_there(db, user: str, words: str) -> dict:
         return no
     lifebase.ensure(db)
     ev = [r["id"] for r in _rows(db, "SELECT id, text FROM evidence WHERE deleted_at IS NULL AND text IS NOT NULL") if _hit(r["text"], words)]
-    sts = [r["id"] for r in _rows(db, "SELECT id, value_text FROM statements WHERE review NOT IN ('forgotten')") if _hit(r["value_text"], words)]
+    sts_sql, sts_args = lifebase.mem_where("deletable", "statements")
+    sts = [r["id"] for r in _rows(db, f"SELECT id, value_text FROM statements WHERE {sts_sql}", sts_args) if _hit(r["value_text"], words)]
     from . import memsearch
     idx = [r["key"] for r in memsearch.search(db, [words], "chat", log=False, user="me_page", via="q19")]
     diary = [r["day"] for r in _rows(db, "SELECT day, body FROM diary") if _hit(r["body"], words)]
@@ -1179,7 +1193,7 @@ INTENT = r"我(要|得|想|打算|准备|计划|回头|明天|周末|下周|今�
 
 
 def said_not_todo(db, user: str, today: date = None, days: int = 7) -> dict:
-    """只列出来，不自动建待办（她 11-03 定）。和现有待办（含做完的、删掉的）说的是同一件就不列。"""
+    """只列出来，不自动建待办。和现有待办（含做完的、删掉的）说的是同一件就不列。"""
     no = _private_only(db, "said_not_todo", user)
     if no:
         return no
@@ -1209,9 +1223,30 @@ def said_not_todo(db, user: str, today: date = None, days: int = 7) -> dict:
     return _out(db, "said_not_todo", user, "answer", items, "只列出来，不自动建待办")
 
 
-# ---------- 写作规范（ontology.md 3.2，她 11-05“提前做”；docs/design/style-and-skills.md） ----------
+# ---------- 写作规范（ontology.md 3.2，“提前做”；docs/design/style-and-skills.md） ----------
 STYLE_CHAT_PER_DAY = 6  # 聊天原话抽样：每天最多几句、一共最多几句（不全量）
 STYLE_CHAT_MIN = 6  # 太短的（“好”“嗯嗯”）不要
+FRESH_YEARS = 2  # 写作规范和 skill 只用最近两年的材料
+
+
+def fresh_cutoff(today: date = None) -> str:
+    d = today or lifebase_today()
+    return d.replace(year=d.year - FRESH_YEARS).isoformat() if not (d.month == 2 and d.day == 29) else d.replace(year=d.year - FRESH_YEARS, day=28).isoformat()
+
+
+def recent_only(db, got: dict, today: date = None) -> dict:
+    """把一题的结果里“出处全是两年前的原始记录”的条目去掉（没有出处日期的、她当面确认过的照留）。给 skill 和写作规范用，不改原题。"""
+    cut = fresh_cutoff(today)
+    keep = []
+    for i in got.get("items", []):
+        ids = [s["evidence"] for s in i.get("sources") or [] if s.get("evidence")]
+        if ids and i.get("said_by") != "her_confirmation":
+            q = ",".join("?" * len(ids))
+            dates = [r[0] for r in db.conn.execute(f"SELECT occurred_at FROM evidence WHERE id IN ({q})", ids) if r[0]]
+            if dates and max(dates)[:10] < cut:
+                continue
+        keep.append(i)
+    return {**got, "items": keep}
 
 
 def style_materials(db, user: str, chat_limit: int = 80) -> dict:
@@ -1232,10 +1267,27 @@ def style_materials(db, user: str, chat_limit: int = 80) -> dict:
     h = lambda t: hashlib.sha1(t.encode("utf-8")).hexdigest()[:12]
     lifebase.ensure(db)
     items = []
+    from . import diary, desk
+    desk.ensure(db)
+    cut = fresh_cutoff()
+    # 小伴 起草、她照发的邮件不算她写的：
+    # 发出的邮件里含 小伴 草稿原文的整封不收；她改过的只收改前→改后（和日记一样）
+    norm = lambda t: re.sub(r"\s+", "", t or "")
+    ethan_sent = []
+    for r in _rows(db, "SELECT msg_key, draft, ethan_draft, COALESCE(sent_at, created_at) AS at FROM mail_items "
+                       "WHERE COALESCE(ethan_draft, '') != '' AND COALESCE(draft, '') != '' AND desk_state = 'sent'"):
+        ethan_sent.append(norm(r["draft"]))
+        if norm(r["draft"]) != norm(r["ethan_draft"]) and (r["at"] or "")[:10] >= cut:
+            for before, after in diary.changes(r["ethan_draft"], r["draft"]):
+                kind = "pair" if before and after else "added" if after else "deleted"
+                items.append({"ref": f"mailpair:{r['msg_key']}:{h(before + '→' + after)}", "kind": kind, "before": before,
+                              "text": after or before, "at": r["at"], "evidence": None})
     for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'sent' AND deleted_at IS NULL AND text IS NOT NULL "
-                       "ORDER BY occurred_at DESC, id DESC LIMIT 60"):
+                       "AND SUBSTR(COALESCE(occurred_at, ''), 1, 10) >= ? ORDER BY occurred_at DESC, id DESC LIMIT 60", (cut,)):
         head, _, body = (r["text"] or "").partition("\n")
         body = body.strip() if head.startswith("主题：") else (r["text"] or "").strip()
+        if body and any(len(d) >= 4 and d in norm(body) for d in ethan_sent):
+            continue
         if body:
             items.append({"ref": f"sent:{r['id']}", "kind": "mail", "text": body[:1500], "subject": head[3:80] if head.startswith("主题：") else "",
                           "at": r["occurred_at"], "evidence": r["id"]})
@@ -1243,7 +1295,7 @@ def style_materials(db, user: str, chat_limit: int = 80) -> dict:
     ev_of = {}
     for r in _rows(db, "SELECT id, source_ref FROM evidence WHERE source = 'workbench' AND source_ref LIKE 'diary:%' AND deleted_at IS NULL"):
         ev_of.setdefault(r["source_ref"][6:16], []).append(r["id"])
-    for r in _rows(db, "SELECT * FROM diary WHERE source IN ('her', 'her_edited') AND TRIM(body) != '' ORDER BY day DESC LIMIT 60"):
+    for r in diary.her_rows(db, 60):  # “哪些是她写的”只在 diary 定义
         ev = (ev_of.get(r["day"]) or [None])[-1]
         if r["source"] == "her":
             items.append({"ref": f"diary:{r['day']}:{h(r['body'])}", "kind": "diary", "text": r["body"][:2000], "at": r["day"], "evidence": ev})
@@ -1259,7 +1311,7 @@ def style_materials(db, user: str, chat_limit: int = 80) -> dict:
             items.append({"ref": f"disliked:{r['id']}", "kind": "disliked", "text": r["text"], "note": r["note"][:200], "at": r["day"], "evidence": None})
     per_day, n = {}, 0
     for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'chat' AND source_ref LIKE 'raw:%' AND deleted_at IS NULL "
-                       "AND text LIKE 'mia：%' ORDER BY id DESC LIMIT 3000"):
+                       "AND text LIKE 'mia：%' AND SUBSTR(COALESCE(occurred_at, ''), 1, 10) >= ? ORDER BY id DESC LIMIT 3000", (cut,)):
         words = " ".join((r["text"] or "")[len("mia："):].split())
         day = (r["occurred_at"] or "")[:10]
         if len(words) < STYLE_CHAT_MIN or per_day.get(day, 0) >= STYLE_CHAT_PER_DAY or n >= chat_limit:
@@ -1278,18 +1330,18 @@ STYLE_BAD = re.compile(r"写得不好|不像我|不是我的(语气|口吻|说�
 def writing_style(db, user: str, audience: str = None) -> dict:
     """她**确认过**的写作规范（说法 property = writing_style，review = accepted）；草稿、她说不对的都不给。
     audience（friend 朋友 / elder 长辈 / work 工作）：只给通用的和这一类的。
-    对外的（Dais）只给规则本身，不给出处原句（原句里是她写过的内容），也不按对外开关挡——规范只管怎么说，不涉及内容权限（她 11-05 定）。"""
+    对外的（主页助手）只给规则本身，不给出处原句（原句里是她写过的内容），也不按对外开关挡——规范只管怎么说，不涉及内容权限。"""
     blocked = _gate(db, user)
     if blocked:
         return _out(db, "writing_style", user, blocked)
     outside = memusers.external(user)
     day = lifebase_today().isoformat()
-    rows = _self_statements(db, "property = 'writing_style' AND review = 'accepted'")
+    rows = _self_statements(db, "property = 'writing_style'", view="style", day=day)
     meta = {r["statement_id"]: r for r in _rows(db, "SELECT * FROM style_rules WHERE status = 'confirmed' AND statement_id IS NOT NULL")}
     items = []
     for r in rows:
         m = meta.get(r["id"])
-        if not _current(r, day) or (m is None and r["said_by"] not in HER_OWN):
+        if m is None and r["said_by"] not in HER_OWN:
             continue
         aud = (m or {}).get("audience") or "all"
         if audience and aud not in ("all", audience):
@@ -1351,6 +1403,33 @@ def switch(db, user: str, on: bool, note: str = "") -> None:
     else:
         db.conn.execute("UPDATE onto_switch SET off_at = ?, note = ? WHERE user = ?", (_now(), note, user))
     db.conn.commit()
+
+
+# ---------- 到期了的临时状态（借鉴 6） ----------
+EXPIRED_DAYS = 14  # 到期两周内的还拿出来提一句；更早的就只是以前的事了
+
+
+def expired_states(db, user: str, today: date = None, days: int = EXPIRED_DAYS, _log_empty: bool = True) -> dict:
+    """“这周在生病”“这几天在出差”这类带了预计到哪天的说法，过了那天就不再当“现在”（lifebase.fact_state 判成 expired），转成“以前的状态”：
+    这里列出最近到期、还没被新说法取代的，给 小伴 当“上次说的是……，现在还这样吗”的话头。不删、不改，她说还算数由“我”页改日期。
+    不是能力题（没有题号），只给自己人。"""
+    no = _private_only(db, "expired_states", user)
+    if no:
+        return no
+    day = today or lifebase_today()
+    lo = (day - timedelta(days=days)).isoformat()
+    rows = _self_statements(db, "substr(until, 1, 10) >= ?", (lo,), view="expired", day=day)
+    items = [{**_item(db, r), "until": r["until"][:10]} for r in rows if _visible(user, r, db)]
+    items.sort(key=lambda i: i["until"], reverse=True)
+    if not items and not _log_empty:  # 每轮聊天都带一下：没有到期的就不记使用记录（免得每轮一条“没有”）
+        return {"status": "unknown", "items": [], "note": ""}
+    return _out(db, "expired_states", user, "answer" if items else "unknown", items[:8])
+
+
+def expired_lines(db, user: str, today: date = None) -> str:
+    """给提示词用：到期了的临时状态，一条一行（带原定到哪天）。没有就空。"""
+    got = expired_states(db, user, today=today, _log_empty=False)
+    return "\n".join(f"- {i['value']}（原定到 {i['until'][5:]}）" for i in got["items"] if not i["guess"])
 
 
 def preference_lines(db, user: str, today: date = None) -> str:

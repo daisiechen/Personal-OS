@@ -1,4 +1,4 @@
-"""提前登记的日程（2026-10-30 她发来周六的午餐订位：“这个帮我加进明天的日历”）。
+"""提前登记的日程（发来周六的午餐订位：“这个帮我加进明天的日历”）。
 
 工作台“加日程”只能加到已经排好计划的那天；以后的日子还没有计划，硬建一份会让当天 06:30 的计划器以为排过了。
 所以以后的日程先记在这里：马上写进苹果日历“小伴 计划”（有自己的 UID，计划器同步时不会删它），
@@ -45,7 +45,7 @@ _COMMON = set("的了和与在去到一个活动会议")
 
 
 def same_event(a, b) -> bool:
-    """同一天的两条安排是不是同一件事（她 11-04：“我的日历里怎么还有这么多重复事项？”——同一个约在邮件、聊天、她自己日历里
+    """同一天的两条安排是不是同一件事（——同一个约在邮件、聊天、她自己日历里
     叫法不一样，比如“某商学院 交换生送别活动”和“IEPAUT26 Farewell Event”）。a、b 是 (开始, 结束, 标题, 地点)。
     时间要重叠、开始相差不到 30 分钟，再加上标题像、地点对得上、或共用两个以上的字 / 一个英文词，才算同一件。"""
     (s1, e1, t1, p1), (s2, e2, t2, p2) = a, b
@@ -85,7 +85,7 @@ def add(db, day: str, start: str, end: str, title: str, place: str = "", note: s
 
 def note_chat(db, text: str) -> list:
     out = []
-    for verb, eid in DECIDE.findall(text):  # 撞时间的那条：她定了去不去（2026-11-02）
+    for verb, eid in DECIDE.findall(text):  # 撞时间的那条：她定了去不去
         ensure(db)
         if verb == "确认":
             db.conn.execute("UPDATE future_events SET conflict = NULL, note = '她确认过' WHERE id = ?", (int(eid),))
@@ -104,7 +104,7 @@ def strip(text: str) -> str:
     return MOVE.sub("", DECIDE.sub("", MARK.sub("", text)))
 
 
-# ---------- 计划里的事和她后来约的事撞了（她 2026-11-02：Sunday Roast 和训练撞了，为什么没先问要不要把训练往后推） ----------
+# ---------- 计划里的事和她后来约的事撞了（Sunday Roast 和训练撞了，为什么没先问要不要把训练往后推） ----------
 def find_plan_clashes(db, day: date, busy: list, now_hm: str = "00:00") -> list:
     """今天计划里还没开始的日程（训练等），和她日历上的安排撞了的，记下来等 小伴 问她。返回新记下的。"""
     db.conn.execute(CLASH_SQL)
@@ -187,7 +187,7 @@ def sync(db, calendar) -> int:
     cal = calendar.ethan_calendar()
     written = 0
     for r in rows:
-        if r["conflict"] is None and r["note"] != "她确认过":  # 写之前先看她日历上那段时间有没有别的安排（她 2026-11-02：撞了为什么没人找我确认）
+        if r["conflict"] is None and r["note"] != "她确认过":  # 写之前先看她日历上那段时间有没有别的安排（撞了为什么没人找我确认）
             try:
                 busy = calendar.busy(date.fromisoformat(r["day"]))
             except Exception:
@@ -216,7 +216,7 @@ def sync(db, calendar) -> int:
 
 
 def dedupe_existing(db, cal) -> str:
-    """一次性清掉今天以后已经写重的（她 11-04：“我的日历里怎么还有这么多重复事项？”）。只动 小伴 写的那份，她自己的不删。
+    """一次性清掉今天以后已经写重的。只动 小伴 写的那份，她自己的不删。
     迁移脚本跑的时候拿不到日历账号，改在每 10 分钟那一轮里跑一次（ethan/proactive.py）。"""
     import urllib.parse
     ensure(db)
@@ -260,7 +260,7 @@ def dedupe_existing(db, cal) -> str:
 
 
 def find_dupes(cal, start: date, days: int) -> list:
-    """只读：这几天所有日历里像是同一件的两两一对（她 11-04：“日历里还是有很多重复日程”）。"""
+    """只读：这几天所有日历里像是同一件的两两一对。"""
     from datetime import timedelta
     out = []
     for i in range(days):

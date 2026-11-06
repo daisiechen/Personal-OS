@@ -51,7 +51,7 @@ class InterviewTest(unittest.TestCase):
         ev = self.db.conn.execute("SELECT * FROM evidence WHERE id = ?", (out["evidence"],)).fetchone()
         self.assertEqual((ev["source"], ev["visibility"]), ("interview", "private"))
         self.assertIn("会话：2- 个人主页", ev["text"])
-        self.assertEqual(lifebase.source_kind_for(self.db, [ev["id"]]), "her_words")  # 她定：算原话
+        self.assertEqual(lifebase.source_kind_for(self.db, [ev["id"]]), "her_words")  # 算原话
         self.assertEqual(self.send()[1]["evidence"], out["evidence"])  # 同一份交两次不重复
         self.assertEqual(interviews.receive(self.store, {"text": "x"})[0], 400)
 
@@ -153,7 +153,7 @@ class InterviewTest(unittest.TestCase):
         self.assertIn("skipped", self.send()[1])
 
     def test_file_handed_over_in_a_session(self):
-        payload = {"kind": "file", "session": "开发会话", "name": "简历.pdf", "text": "教育经历：2012-2016 某大学"}
+        payload = {"kind": "file", "session": "开发会话", "name": "简历.pdf", "text": "教育经历：2014-2018 某大学"}
         code, out = interviews.receive(self.store, payload)
         ev = self.db.conn.execute("SELECT source, path FROM evidence WHERE id = ?", (out["evidence"],)).fetchone()
         self.assertEqual((ev["source"], ev["path"]), ("file", "handoff/简历.pdf"))
@@ -188,7 +188,7 @@ TX = ("〔2026-11-02〕\n【小林】你最近是不是又熬夜了，脸色好�
 
 
 class TranscriptTest(unittest.TestCase):
-    """整段对话（她 11-04：“难道别人跟我的对话不是我的记忆么！！！”）：三种来源分对、原话按说话人校验、后台一次整理完。"""
+    """整段对话：三种来源分对、原话按说话人校验、后台一次整理完。"""
     setUp, tearDown, send = InterviewTest.setUp, InterviewTest.tearDown, InterviewTest.send
 
     def send_tx(self, **kw):

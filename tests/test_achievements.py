@@ -143,7 +143,7 @@ if __name__ == "__main__":
 
 class ShopNoticeTest(AchievementsTest):
     def test_affordable_reward_pops_once_and_again_after_redeem(self):
-        """2026-10-29：小惊喜能拆了系统没提示。攒够了弹一次，拆过再攒够还会再弹。"""
+        """小惊喜能拆了系统没提示。攒够了弹一次，拆过再攒够还会再弹。"""
         achievements.celebrate(self.db, self.root, MONDAY)  # 第一次把已有的记成弹过
         quests.award(self.db, 2500, "测试", MONDAY)
         shop = [x for x in achievements.celebrate(self.db, self.root, MONDAY) if x.get("shop")]

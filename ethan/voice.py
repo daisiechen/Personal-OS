@@ -1,4 +1,4 @@
-"""工作台里说一段话转文字（她 2026-11-01：日记里“说一段”用浏览器自带的识别，说了很长一段只认出一小截，没法用）。
+"""工作台里说一段话转文字（日记里“说一段”用浏览器自带的识别，说了很长一段只认出一小截，没法用）。
 
 改成：工作台录完整段音频，传到服务器，用和 Telegram 语音同一个本地 faster-whisper 转（ethan/channels/media.py）。
 转写要十几秒到一分钟，放在后台进程里做，不占着工作台；页面每两秒问一次好了没有。
@@ -9,8 +9,6 @@
 import argparse
 import json
 import secrets
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -24,7 +22,7 @@ def _dir(root) -> Path:
     return d
 
 
-def start(root, data: bytes, ctype: str = "", spawn=subprocess.Popen) -> str:
+def start(root, data: bytes, ctype: str = "", spawn=None) -> str:
     """存下音频、后台开始转写，返回编号。"""
     if not data:
         raise ValueError("没录到声音")
@@ -34,8 +32,8 @@ def start(root, data: bytes, ctype: str = "", spawn=subprocess.Popen) -> str:
     job = secrets.token_hex(8)
     ext = EXT.get((ctype or "").split(";")[0].strip().lower(), ".webm")
     (_dir(root) / f"{job}{ext}").write_bytes(data)
-    spawn([sys.executable, "-m", "ethan.voice", "--data", str(root), "--job", job],
-          cwd=str(Path(__file__).resolve().parent.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    from .bgwork import kick
+    kick(root, "voice", ["--job", job], spawn)
     return job
 
 

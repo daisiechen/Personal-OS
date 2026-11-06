@@ -1,6 +1,6 @@
-"""每周五“这周末可以去”（她 2026-11-04 定，设计见 docs/design/mias-os.md 9.5“休闲体验”）。
+"""每周五“这周末可以去”（设计见 docs/design/mias-os.md 9.5“休闲体验”）。
 
-她原话：“我想去的地方都会给grok发链接让他帮我记住，只是我没明着跟他说是这个目的而已，他要自己能从我分享的内容里识别我分享的目的，
+“我想去的地方都会给grok发链接让他帮我记住，只是我没明着跟他说是这个目的而已，他要自己能从我分享的内容里识别我分享的目的，
 我想去的店、展、演出我还等着ethan和grok给我推荐呢。想试的运动就舞蹈吧，之前小伴不是帮我找过一次么？”
 
 1. 周四、周五白天（她的时区，ethan/clock.py）派 Grok 查一次：伦敦这个周末的新展、演出、和她收藏同类的新店；
@@ -23,7 +23,7 @@ from . import brain
 PREFIX = "weekend:"
 MARK = "【周末推荐"
 REPLY = re.compile(r"^【周末推荐\s*(\d{4}-\d{2}-\d{2})\s*】")
-WINDOW = (time(12, 0), time(20, 30))
+# 推荐的时段（周五 12:00–20:30）写在打扰登记表 nudge_registry.RULES["weekend:"]
 WAIT_UNTIL = time(16, 0)  # Grok 还没回：16 点前再等等
 ASK_FROM = time(9, 0)
 MIN_PICKS, MAX_PICKS, SAVED_MAX = 3, 5, 3
@@ -227,12 +227,13 @@ def _line(x: dict) -> str:
 
 def due(db, now_local: datetime, done: dict):
     """周五 12:00–20:30：(weekend:周五日期, 场合说明) 或 None。发出去以后 proactive 记 told，这周不再发。"""
-    if now_local.weekday() != 4 or not (WINDOW[0] <= now_local.time() < WINDOW[1]):
+    from . import nudges
+    from .nudge_registry import in_window
+    if now_local.weekday() != 4 or not in_window(PREFIX, now_local):
         return None
     fri = now_local.date()
     key = PREFIX + fri.isoformat()
-    from . import nudges
-    if key in done or nudges.told(db, key):
+    if not nudges.fresh(db, key, done):
         return None
     row = _row(db, fri) or {}
     if row.get("asked_at") and not row.get("reply") and now_local.time() < WAIT_UNTIL:
@@ -245,7 +246,7 @@ def due(db, now_local: datetime, done: dict):
     db.conn.execute("INSERT INTO weekend_recs (week, picks) VALUES (?, ?) ON CONFLICT(week) DO UPDATE SET picks = excluded.picks",
                     (fri.isoformat(), json.dumps(items + got["dance"], ensure_ascii=False)))
     db.conn.commit()
-    parts = ["今天周五，你主动给她发一条“这周末可以去”（她 11-04：“我想去的店、展、演出我还等着ethan和grok给我推荐呢”）。"]
+    parts = ["今天周五，你主动给她发一条“这周末可以去”。"]
     if got["saved"]:
         parts.append("她自己收藏过、还没去的（先说这些，点一句“你之前收藏的”）：\n" + "\n".join("- " + _line(x) for x in got["saved"]))
     if got["new"]:

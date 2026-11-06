@@ -1,4 +1,4 @@
-"""系统巡检统一 review（2026-11-04）：定时器都登记、下次时间算得对、在跑/卡住/从没跑过分得清、大批整理进度和卡住、
+"""系统巡检统一 review：定时器都登记、下次时间算得对、在跑/卡住/从没跑过分得清、大批整理进度和卡住、
 内存低、部署挂掉的测试名和心跳、收工钩子的云端启动脚本。"""
 
 import json
@@ -15,7 +15,7 @@ from ethan.memory import MemoryStore
 
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "deploy" / "systemd"
-NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)  # 周三，伦敦 12:00
+NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)  # 周三，本地 12:00
 
 
 class TimersRegisteredTest(unittest.TestCase):
@@ -53,13 +53,13 @@ class TimersRegisteredTest(unittest.TestCase):
 
 class NextRunTest(unittest.TestCase):
     def test_schedules(self):
-        at = datetime(2026, 11, 4, 22, 25, tzinfo=timezone.utc)  # 伦敦 22:25（冬令时 = UTC）
+        at = datetime(2026, 11, 4, 22, 25, tzinfo=timezone.utc)  # 本地 22:25（冬令时 = UTC）
         self.assertEqual(jobs.next_run(jobs.JOBS["prep"][2], at), datetime(2026, 11, 5, 8, 20, tzinfo=timezone.utc))
         self.assertEqual(jobs.next_run(jobs.JOBS["proactive"][2], at), datetime(2026, 11, 4, 22, 30, tzinfo=timezone.utc))
         self.assertEqual(jobs.next_run(jobs.JOBS["vault"][2], at), datetime(2026, 11, 4, 23, 0, tzinfo=timezone.utc))
         self.assertEqual(jobs.next_run(jobs.JOBS["weekly"][2], at), datetime(2026, 11, 8, 20, 0, tzinfo=timezone.utc))
         self.assertEqual(jobs.next_run(jobs.JOBS["mail"][2], at), at + timedelta(minutes=10))
-        summer = datetime(2026, 7, 1, 4, 0, tzinfo=timezone.utc)  # 夏令时：伦敦 06:30 = UTC 05:30
+        summer = datetime(2026, 7, 1, 4, 0, tzinfo=timezone.utc)  # 夏令时：本地 06:30 = UTC 05:30
         self.assertEqual(jobs.next_run(jobs.JOBS["planner"][2], summer), datetime(2026, 7, 1, 5, 30, tzinfo=timezone.utc))
 
 

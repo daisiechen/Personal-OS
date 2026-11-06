@@ -1,4 +1,4 @@
-"""Codex 自动领活（2026-10-28 她同意）：定时从 agent 任务队列领一件 Codex 的活，在独立副本里用 codex exec 干完，
+"""Codex 自动领活：定时从 agent 任务队列领一件 Codex 的活，在独立副本里用 codex exec 干完，
 自动跑验收命令，把改动（patch）、用量、用时记回队列，状态变成“等审查”。
 
 Codex 不碰 GitHub：服务器的仓库钥匙只读，改动由 Claude 取回、复测、审查后推送；打回就重新排队（返工 +1）。
@@ -20,7 +20,7 @@ from pathlib import Path
 from . import agents
 from .memory import MemoryStore
 
-# codex-cli 0.165.0（2026-10-28 服务器实测）：没有 --full-auto 了；--approve-for-me 自带只写当前副本的沙盒、
+# codex-cli 0.165.0（服务器实测）：没有 --full-auto 了；--approve-for-me 自带只写当前副本的沙盒、
 # 审批请求自动处理（不能再和 --sandbox 一起用）
 CODEX_CMD = ["codex", "exec", "--json", "--approve-for-me", "--skip-git-repo-check"]
 CODEX_TIMEOUT = 45 * 60
@@ -81,7 +81,7 @@ def _git(run, *args, cwd=None) -> str:
 
 def recover_stale(db, now=None) -> list:
     """上次干到一半进程没了（服务器重启、内存不够被杀），活会一直挂在“在干”：超过两个超时还没收尾的判失败，她可以点重试。
-    （2026-10-29 自查发现的）"""
+    （自查发现的）"""
     from datetime import datetime, timedelta, timezone
     cutoff = ((now or datetime.now(timezone.utc)) - timedelta(seconds=CODEX_TIMEOUT + VERIFY_TIMEOUT + 600)).isoformat(timespec="seconds")
     rows = db.conn.execute("SELECT id FROM agent_tasks WHERE agent = 'codex' AND status = 'running' AND started_at < ?", (cutoff,)).fetchall()
@@ -177,6 +177,9 @@ def main():
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--work", type=Path, default=Path.home() / "agent-work")
     args = parser.parse_args()
+    from .bgwork import gate
+    if gate(args.data, "codex"):  # Claude 订阅在用付费额度 / 用完时后台一律不跑；Codex 自己的额度另有 QUOTA 处理
+        return
     if shutil.which("codex") is None:  # 还没装好就安静跳过，装好后下一次定时自动开始
         print("[codex] 还没装 codex 命令行，跳过", flush=True)
         return

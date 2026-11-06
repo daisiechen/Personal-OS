@@ -1,11 +1,11 @@
-"""她发的文件都存进记忆（2026-10-30 她说：“以后我发的所有文件都要提取内容之后存进记忆里”）。
+"""她发的文件都存进记忆。
 
 以前 PDF、图片只在那一轮给模型看一眼，聊天记录里只留一行“已附上”，下一轮就忘了（三个月银行流水就是这么丢的）。
 现在：Telegram / 微信下载到 <数据目录>/media/ 的每个文件（PDF、图片、Word、文本），都提取全文：
 - 有文字层的 PDF 用 pdftotext，Word 读 XML，文本直接读；扫描件、图片交给模型转写和描述；
 - 全文存 <数据目录>/files/<编号>.txt（不截断），再让模型写标题、摘要、判断是什么文件；
 - 进第二大脑（类型“你发的文件”，状态“在用”），小伴 回话时能搜到、能打开全文；
-- 银行流水交给 finance.import_statement 逐笔入账（她 2026-10-30 同意）。
+- 银行流水交给 finance.import_statement 逐笔入账。
 视频截的画面（-f0.jpg 这种）不单独存。已经存过的按内容哈希跳过，所以重跑、补以前的都安全。
 
 运行：python3 -m ethan.files --data <数据目录> [--limit 20]
@@ -17,7 +17,6 @@ import hashlib
 import json
 import re
 import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -159,16 +158,12 @@ def process(store, router, limit: int = 20, runner=subprocess.run) -> list:
     return out
 
 
-def kick(root, spawn=subprocess.Popen) -> bool:
+def kick(root, spawn=None) -> bool:
     """她刚发了文件：后台马上存，不等定时任务。没有 media 目录（测试、没接聊天渠道）就不跑。"""
     if not (Path(root) / "media").is_dir():
         return False
-    try:
-        spawn([sys.executable, "-m", "ethan.files", "--data", str(root)], cwd=str(Path(__file__).resolve().parent.parent),
-              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        return True
-    except OSError:
-        return False
+    from .bgwork import kick as _kick
+    return bool(_kick(root, "files", (), spawn))
 
 
 def main():

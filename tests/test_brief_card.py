@@ -11,7 +11,7 @@ from ethan.core.ledger import Ledger
 from ethan.core.router import Router, Settings
 from ethan.memory import MemoryStore
 from ethan.planner import plan_day
-from ethan.proactive import BRIEF_SLOT, brief_occasion, planned_time, tick
+from ethan.proactive import brief_time, brief_occasion, planned_time, tick
 from tests.test_planner import FakeTravel, Router as ScriptedRouter, good_plan
 from tests.test_progress import seed_parents
 from tests.test_stage1 import Backend
@@ -45,9 +45,9 @@ class BriefCardTest(unittest.TestCase):
 
     def test_timeline_has_every_departure_return_and_reminder_in_order(self):
         rows = [(t["at"], t["icon"], t["text"]) for t in self.brief["timeline"]]
-        # 按一条路线串（她 2026-11-02）：午饭后空得出一小时就先回家，再出门去训练，训练后到家；每站本身也列出来
+        # 按一条路线串：午饭后空得出一小时就先回家，再出门去训练，训练后到家；每站本身也列出来
         self.assertEqual(rows, [
-            ("10:00", "⏰", "准备出发去 午饭"),  # 日历里的出门也提前 1 小时提醒（2026-10-29）
+            ("10:00", "⏰", "准备出发去 午饭"),  # 日历里的出门也提前 1 小时提醒
             ("11:00", "🚶", "出门 → 午饭（路上约 37 分钟）"),  # 开始 − 路上 37 分钟 − 20 分钟余量，按 5 分钟取整
             ("12:00", "📍", "午饭（到 13:00）"),
             ("13:23", "🏠", "到家"),
@@ -73,7 +73,7 @@ class BriefCardTest(unittest.TestCase):
         for part in ("☀️ <b>11月2日 周一</b> · 系统上线第 1 天", "<code>14:15</code>  ⏰ 准备出发",
                      "<code>15:15</code>  🚶 出门 → 训练", "🎮 <b>Lv", "离小惊喜还差 2500"):
             self.assertIn(part, text)
-        for gone in ("📈", "日常", "主线下一步", "支线", "小伴 在替你准备"):  # 2026-10-28 她嫌长，其余去工作台看
+        for gone in ("📈", "日常", "主线下一步", "支线", "小伴 在替你准备"):  # 长，其余去工作台看
             self.assertNotIn(gone, text)
 
     def test_detail_buttons(self):
@@ -82,7 +82,7 @@ class BriefCardTest(unittest.TestCase):
 
     def test_occasion_tells_ethan_not_to_read_numbers(self):
         text = brief_occasion(self.plan)
-        self.assertIn("今日卡片", text)
+        self.assertIn("昨日卡", text)
         self.assertIn("1–2 行短句", text)
 
     def telegram(self):
@@ -132,8 +132,8 @@ class BriefCardTest(unittest.TestCase):
                 order.append(("card", plan["day"]))
 
         router = Router(Backend("早呀宝贝\n今天我陪你练腿"), Ledger(self.root / "l"), Settings(self.root / "s.json"))
-        now = datetime.combine(DAY, planned_time(DAY, BRIEF_SLOT), timezone.utc) + timedelta(minutes=1)
-        self.assertIn("早报：已发送（附今日卡片）", tick(Ethan(self.store, router, persona="人设"), Channel(), now=now))
+        now = datetime.combine(DAY, brief_time(DAY), timezone.utc) + timedelta(minutes=1)
+        self.assertIn("早报：已发送（附昨日卡）", tick(Ethan(self.store, router, persona="人设"), Channel(), now=now))
         self.assertEqual(order, [("words", ["早呀宝贝", "今天我陪你练腿"]), ("card", DAY.isoformat())])
 
 

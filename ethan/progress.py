@@ -28,7 +28,7 @@ def goal_progress(db, goal: dict, today: date) -> dict:
     """返回 {"goal_id", "title", "kind", "status", "text", ...数字}；status 是 领先/正常/落后/达成/暂停/还没有数据。"""
     m = db.metric(goal["id"])
     base = {"goal_id": goal["id"], "title": goal["title"], "due": goal.get("due"), "kind": m["kind"] if m else None}
-    if goal.get("status") == "paused":  # 先看暂停：没有指标的暂停副本以前漏判成“没有数据”，还显示在副本进度里（2026-10-29）
+    if goal.get("status") == "paused":  # 先看暂停：没有指标的暂停副本以前漏判成“没有数据”，还显示在副本进度里
         return {**base, "status": STATUS_PAUSED, "text": "暂停中，不算落后"}
     if not m:
         return {**base, "status": NO_DATA, "text": "没有量化指标"}

@@ -1,4 +1,4 @@
-"""服务器直接收邮件（她 2026-10-30 选的 B：电脑关机、人在外面也不停）。
+"""服务器直接收邮件（的 B：电脑关机、人在外面也不停）。
 
 每 10 分钟（ethan2-mail.timer）：
 1. 按 ~/.config/ethan/mail_accounts.json 里的邮箱（她自己用 --add 录，专用密码不进聊天和仓库），用 IMAP 读收件箱里的新邮件
@@ -38,7 +38,7 @@ PRESETS = {"gmail.com": "imap.gmail.com", "googlemail.com": "imap.gmail.com", "i
            "london.edu": "outlook.office365.com"}
 FIRST_DAYS = 3
 FETCH_BYTES = 200_000
-SEARCH_BYTES = 40_000  # 搜索只取开头一段：够看到订单号；QQ 整箱返回时每封取 200K 会拖到 30 秒（2026-10-31）
+SEARCH_BYTES = 40_000  # 搜索只取开头一段：够看到订单号；QQ 整箱返回时每封取 200K 会拖到 30 秒
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS imap_state (account TEXT PRIMARY KEY, uidvalidity TEXT, last_uid INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS mail_moves (id INTEGER PRIMARY KEY, account TEXT NOT NULL, msg_key TEXT NOT NULL, folder TEXT NOT NULL,
@@ -60,7 +60,7 @@ def ensure(db):
         db.conn.execute("ALTER TABLE mail_items ADD COLUMN move_tries INTEGER NOT NULL DEFAULT 0")
 
 
-# 登录连续失败（2026-10-31 的 126：授权码作废后每 10 分钟从洛杉矶登一次，失败几十次）：连续 3 次失败后改成每 2 小时试一次，
+# 登录连续失败（126：授权码作废后每 10 分钟从洛杉矶登一次，失败几十次）：连续 3 次失败后改成每 2 小时试一次，
 # 别让一直失败的登录把网易的风控越触越紧；设置页体检里写清从几点开始登不上、报错原文。录了新码（--add）就恢复每轮都试。
 FAIL_BACKOFF = 3
 RETRY_EVERY = timedelta(hours=2)
@@ -263,7 +263,7 @@ BACKLOG_PER_RUN = 30
 
 
 def fetch_backlog(m, db, acc_name: str, skip=()) -> list:
-    """接进来之前就在收件箱里的旧未读，按同样的规则补整理（2026-10-31 她要）。每轮最多 30 封，补完这个邮箱就不再看。
+    """接进来之前就在收件箱里的旧未读，按同样的规则补整理。每轮最多 30 封，补完这个邮箱就不再看。
     要在 fetch_new 之后调（收件箱已选中）。"""
     row = db.conn.execute("SELECT * FROM imap_state WHERE account = ?", (acc_name,)).fetchone()
     if not row or row["backlog_done"]:
@@ -294,7 +294,7 @@ def fetch_backlog(m, db, acc_name: str, skip=()) -> list:
 
 
 def move(m, uid: int, folder: str, delim: str, has_move: bool, flat: bool = False) -> str:
-    """移到 folder；返回实际用的文件夹名。flat：这个邮箱不让建子文件夹（126 报 TRYCREATE Folder not exist，2026-11-01），
+    """移到 folder；返回实际用的文件夹名。flat：这个邮箱不让建子文件夹（126 报 TRYCREATE Folder not exist），
     改成一层的“小伴整理-账单”。"""
     path = folder.replace("/", "-") if flat else folder.replace("/", delim)
     if not flat:
@@ -349,13 +349,13 @@ def run(store, router, accounts=None, dry_run: bool = False, factory=imaplib.IMA
             for uid, item in new:
                 uid_of[mail.key_of(item)] = (acc["name"], uid)
             report[acc["name"]] = {"new": len(new) - len(old), **({"backlog": len(old)} if old else {})}
-            try:  # Gmail 垃圾箱里像是重要的：只提醒（她 11-04 同意）
+            try:  # Gmail 垃圾箱里像是重要的：只提醒
                 found = mail.receive_spam(db, [{**i, "account": acc["name"]} for i in fetch_spam(m, db, acc["name"], now)])
                 if found:
                     report[acc["name"]]["spam_watch"] = found
             except Exception as e:
                 print(f"[imapmail] {acc['name']} 垃圾箱没看成：{type(e).__name__} {e}", flush=True)
-            try:  # 她自己发出去的信：她写的部分算她的原话（她 11-04 “后面的继续做吧”，ontology-plan 1.6）
+            try:  # 她自己发出去的信：她写的部分算她的原话（“后面的继续做吧”，ontology-plan 1.6）
                 mine = fetch_sent(m, db, acc["name"], now)
                 if mine:
                     report[acc["name"]]["sent"] = mine
@@ -472,7 +472,7 @@ def undo(store, hours: float = 24, accounts=None, factory=imaplib.IMAP4_SSL) -> 
     return f"放回了 {n} 封"
 
 
-# ---------- 替她在邮箱里找东西（她 2026-10-31：“订单号也在我邮箱里自己去找”） ----------
+# ---------- 替她在邮箱里找东西 ----------
 def _search_folder(m, folder: str, words: list, gmail: bool) -> list:
     typ, _ = m.select(quote(folder), readonly=True)  # 只读打开，不改已读状态
     if typ != "OK":
@@ -493,7 +493,7 @@ def _search_folder(m, folder: str, words: list, gmail: bool) -> list:
 
 
 def all_mail(m) -> str:
-    """Gmail 的“所有邮件”文件夹：界面是中文时不叫 [Gmail]/All Mail，按 \\All 标记找（2026-10-31 线上 1 秒就返回 0 封）。"""
+    """Gmail 的“所有邮件”文件夹：界面是中文时不叫 [Gmail]/All Mail，按 \\All 标记找（线上 1 秒就返回 0 封）。"""
     try:
         typ, data = m.list('""', '"*"')
     except Exception:
@@ -523,7 +523,7 @@ def spam_folder(m):
 
 
 def fetch_spam(m, db, acc_name: str, now: datetime) -> list:
-    """垃圾箱里新来的（只读、不改已读、不移动；她 11-04 同意）。返回 [内容]，交给 mail.receive_spam 挑签证 / 银行 / 学校的。"""
+    """垃圾箱里新来的（只读、不改已读、不移动）。返回 [内容]，交给 mail.receive_spam 挑签证 / 银行 / 学校的。"""
     folder = spam_folder(m)
     if not folder:
         return []
@@ -696,7 +696,7 @@ def _search_account(acc: dict, words: list, factory, limit: int) -> list:
 
 def search(words: list, accounts=None, factory=imaplib.IMAP4_SSL, limit: int = 5, budget: float = 30.0) -> list:
     """在她所有邮箱里搜（含 小伴整理 的归档；Gmail 搜全部邮件），只读不动。返回最新的几封：账户、文件夹、发件人、主题、日期、正文开头。
-    各邮箱同时搜（2026-10-31：一个一个搜时 QQ 就要 25 秒，后面的邮箱轮不到），总共等 budget 秒。"""
+    各邮箱同时搜（一个一个搜时 QQ 就要 25 秒，后面的邮箱轮不到），总共等 budget 秒。"""
     from concurrent.futures import ThreadPoolExecutor, wait
     words = [w for w in (str(x).strip() for x in words) if w][:4]
     if not words:

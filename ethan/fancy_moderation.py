@@ -1,4 +1,4 @@
-"""DemoApp 举报提醒（2026-10-29 她同意）：DemoApp 的 worker 推数字和后台链接过来，小伴 在 Telegram 提醒她去复核。
+"""DemoApp 举报提醒：DemoApp 的 worker 推数字和后台链接过来，小伴 在 Telegram 提醒她去复核。
 
 举报的 24 小时复核由她本人负责，小伴 只负责提醒：看不到举报内容，也不做任何处理。
 接口 POST /fancy/moderation，密钥 INBOX_TOKEN_FANCY（只能让 小伴 发这类提醒，碰不到记忆和聊天）。
@@ -14,6 +14,10 @@
 
 去重：同一 kind 10 分钟内重复到达只发第一条；urgent 在 10 分钟内按 count 合并——count 比已提醒过的大才再发一条
 （报新的总数），否则不发。count 按 DemoApp 这一批紧急举报的条数理解。
+
+打扰规则（决定 2）：发之前过主动消息的关口 proactive.gate（登记表 fancy-urgent: / fancy）。
+紧急的照发、不管免打扰；早晚两次常规的守免打扰——免打扰里到的先存着（state 的 held，同一类只留最新一条），
+主动消息每 10 分钟那一轮（proactive.main → flush_held）在免打扰结束后补发；存了超过 HOLD_MAX 的作废（数字已经过时）。
 """
 
 import json
@@ -33,6 +37,7 @@ MAX_URL = 2048
 MAX_SENT_AT = 64
 HOST = "demoapp.example"
 DEDUPE = timedelta(minutes=10)
+HOLD_MAX = timedelta(hours=14)
 LOG = "fancy-moderation.jsonl"
 STATE = "fancy-moderation-state.json"
 
@@ -126,12 +131,54 @@ def message(alert: dict) -> str:
     return f"{text}\n→ {url}"
 
 
+def gate_key(alert: dict) -> str:
+    """登记表里的键：紧急 fancy-urgent:，早晚常规 fancy:<kind>。"""
+    return f"fancy-urgent:{alert['sentAt']}" if alert["kind"] == "urgent" else f"fancy:{alert['kind']}:{alert['sentAt']}"
+
+
 class Alerts:
-    def __init__(self, root: Path, notify=None):
-        """notify(text) -> bool：把消息发到她的 Telegram；没配就是 None。"""
+    def __init__(self, root: Path, notify=None, settings=None):
+        """notify(text) -> bool：把消息发到她的 Telegram；没配就是 None。settings：她的设置（免打扰、时区），默认读数据目录里的。"""
         self.root = Path(root)
         self.notify = notify
         self.lock = threading.Lock()  # 接收口多线程：查重、发送、记状态一次只让一个线程做，免得重复提醒
+        self._settings = settings
+
+    def settings(self):
+        if self._settings is None:
+            from .core.router import Settings
+            self._settings = Settings(self.root / "settings.json")
+        return self._settings
+
+    def _gate(self, alert: dict, now: datetime):
+        from .clock import DEFAULT_TZ
+        from .proactive import gate
+        from zoneinfo import ZoneInfo
+        s = self.settings()
+        return gate(gate_key(alert), now.astimezone(ZoneInfo(s.get("timezone", DEFAULT_TZ))), s)
+
+    def flush_held(self, now: datetime = None) -> list:
+        """免打扰里存着的常规提醒：现在过得了关口就补发（proactive.main 每 10 分钟调一次）。返回发出去的 kind。"""
+        now = now or datetime.now(timezone.utc)
+        sent = []
+        with self.lock:
+            state = self._state()
+            held = state.get("held") or {}
+            for kind, alert in list(held.items()):
+                if now - datetime.fromisoformat(alert["heldAt"]) > HOLD_MAX:
+                    held.pop(kind)
+                    self._log(alert, now, "held expired")
+                    continue
+                if self.notify is None or self._gate(alert, now):
+                    continue
+                if self.notify(message(alert)):
+                    held.pop(kind)
+                    state[kind] = {"at": now.isoformat(timespec="seconds"), "count": alert["count"]}
+                    self._log(alert, now, "sent (held)")
+                    sent.append(kind)
+            state["held"] = held
+            self._save(state)
+        return sent
 
     def handle(self, data, now: datetime = None) -> tuple:
         try:
@@ -153,6 +200,12 @@ class Alerts:
             if self.notify is None:
                 self._log(alert, now, "no telegram")
                 return 503, {"ok": False, "error": "telegram not configured"}
+            why = self._gate(alert, now)
+            if why:  # 早晚常规的在免打扰里：先存着，结束后补发（紧急的规则不守免打扰，不会走到这里）
+                state.setdefault("held", {})[alert["kind"]] = {**alert, "heldAt": now.isoformat(timespec="seconds")}
+                self._save(state)
+                self._log(alert, now, "held")
+                return 200, {"ok": True, "sent": False, "why": "held: " + why}
             if not self.notify(text):
                 self._log(alert, now, "failed")
                 return 502, {"ok": False, "error": "telegram send failed"}

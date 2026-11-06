@@ -7,7 +7,7 @@
                        她的 chat id 存入 settings.json，之后只回复她
   OPENROUTER_API_KEY   可选，OpenRouter 兜底（需 Mia 发 /openrouter on 开启）；也用于语音合成
 
-Mia 习惯连发好几条（2026-10-22）：收到第一条后显示“正在输入”，
+Mia 习惯连发好几条：收到第一条后显示“正在输入”，
 等她停下 QUIET 秒（最多 MAX_WAIT 秒）再把这一段合在一起回一次。
 她发语音时，小伴 用语音回。她说“看看总览”时，单独回一条完整的总览。
 """
@@ -23,7 +23,7 @@ from pathlib import Path
 
 from datetime import date
 
-from .. import brief_card, game_view, links, relay, workbench
+from .. import brief_card, game_view, links, workbench
 from ..cli import build_router
 from ..clock import her_now
 from ..core.tts import build_tts
@@ -219,7 +219,7 @@ class TelegramChannel:
                 raise
 
     def send_brief_card(self, chat_id, plan: dict):
-        """早报的今日卡片：文字照旧，按钮只留“打开工作台”（2026-10-27 她定：有了工作台，Telegram 里的游戏按钮下线）。"""
+        """早报的昨日卡：文字照旧，按钮只留“打开工作台”（有了工作台，Telegram 里的游戏按钮下线）。"""
         text, _ = self.render_view("quests")
         self.api.call("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
                       reply_markup={"inline_keyboard": [[workbench.open_button()]]})
@@ -379,15 +379,10 @@ class TelegramChannel:
                 self.sleep(5)
 
     def relay_grok(self, now=None):
-        """Grok 替 小伴 办完她交代的事，回报到了就由 小伴 在这里告诉她（见 ethan/relay.py）。"""
-        root = self.ethan.store.root
-        results = relay.pending(root, now)
-        if not results or self.owner is None:
-            return
-        relay.mark(root, results[-1]["at"])  # 先记下，模型出错也不会反复转告
-        reply = self.ethan.reach_out("telegram", relay.occasion(results), now=now)
-        self.deliver(self.owner, reply["bubbles"], reply["voice"], reply.get("photo_files", ()),
-                     reply.get("image_urls", ()))
+        """Grok 替 小伴 办完她交代的事，回报到了就由 小伴 在这里告诉她（见 ethan/relay.py）。
+        过主动消息的关口（proactive.relay_grok → gate，守免打扰，夜里到的早上 8 点后再说）。"""
+        from ..proactive import relay_grok
+        return relay_grok(self.ethan, self, now)
 
 
 def main():

@@ -33,7 +33,7 @@ class CheckupTest(unittest.TestCase):
         self.assertEqual(checkup.problems(self.root, self.store.db, NOW, UP, meminfo=mem), [])
 
     def test_reports_what_is_wrong(self):
-        """2026-10-29 她要：系统出问题主动找她，不等她发现。"""
+        """系统出问题主动找她，不等她发现。"""
         (self.root / "deploy-status.json").write_text(json.dumps(
             {"result": "失败，已退回原版本", "to": "abc1234", "step": "跑测试", "detail": "FAILED (failures=1)"}))
         jobs.record(self.root, "proactive", False, NOW - timedelta(minutes=5), NOW - timedelta(minutes=4), "Traceback\nValueError: x")

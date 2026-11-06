@@ -1,4 +1,4 @@
-"""“她改过”的锁（docs/design/system-rules.md 第 1 节，她 2026-11-02 认可、先试行）：她亲手改过、删过的，自动流程不改回去、不建回来。"""
+"""“她改过”的锁（docs/design/system-rules.md 第 1 节，、先试行）：她亲手改过、删过的，自动流程不改回去、不建回来。"""
 
 import tempfile
 import unittest

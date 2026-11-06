@@ -1,4 +1,4 @@
-"""服务器自己上线（2026-10-27 她定：Mac 关机时用 Claude 云端会话兜底，云端改完、她同意合进 main 后自动上线）。
+"""服务器自己上线（Mac 关机时用 Claude 云端会话兜底，云端改完、她同意合进 main 后自动上线）。
 
 每 2 分钟看一次 GitHub 的 main 有没有新提交，有就按手动部署的步骤走：
 备份数据库 → 快进拉代码 → 跑全部测试 → 装上改过的 systemd 文件 → 重启 Telegram、微信、收件箱 → 确认都在跑
@@ -7,7 +7,7 @@
 就成了“新数据 + 旧代码”，比“新代码 + 有一个改动没做成”更难收拾；跑得久（超时 15 分钟）也不该挡住代码上线。
 任何一步失败就退回原来的版本并重启。同一个失败的提交不再重试，等下一个新提交。
 结果写进 <数据目录>/deploy-status.json（最新一次）和 deploy-log.jsonl（历史），由 Claude 会话读取后在会话里告诉她；
-不发 Telegram（她定：运维消息不打扰她和 小伴 的聊天）。
+不发 Telegram（运维消息不打扰她和 小伴 的聊天）。
 以 root 运行（要重启服务、装 systemd 文件），git 和测试用 ethan 用户跑。
 
 运行：python3 -m ethan.autodeploy --repo /home/ethan/Personal-OS --data /home/ethan/data
@@ -24,7 +24,7 @@ from pathlib import Path
 SERVICES = ("ethan2-telegram", "ethan2-weixin", "ethan2-inbox", "ethan2-workbench")
 STATUS = "deploy-status.json"
 LOG = "deploy-log.jsonl"
-CHECK = "deploy-check.json"  # 每 2 分钟看一眼 main 就记一笔（心跳）：定时器停了、拉不到代码，体检能看出来（2026-11-04 统一巡检）
+CHECK = "deploy-check.json"  # 每 2 分钟看一眼 main 就记一笔（心跳）：定时器停了、拉不到代码，体检能看出来（统一巡检）
 UNIT_DIR = "deploy/systemd"
 
 
@@ -61,7 +61,7 @@ def bad_migrations(e: StepFailed) -> str:
 def shell(cmd: list, cwd: str = None) -> str:
     try:
         proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=900)
-    except subprocess.TimeoutExpired:  # 超时也算这一步没过，照常记结果（2026-11-04 数据改动跑超 15 分钟，整次部署没留下记录）
+    except subprocess.TimeoutExpired:  # 超时也算这一步没过，照常记结果（数据改动跑超 15 分钟，整次部署没留下记录）
         raise StepFailed(f"超过 15 分钟没跑完：{' '.join(cmd)[-200:]}")
     if proc.returncode != 0:
         full = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
@@ -165,7 +165,7 @@ class Deployer:
         units = []
         try:
             db = self.data / "ethan.sqlite"
-            # 用 SQLite 自己的备份接口，不直接 cp：库开了 WAL 以后，最近写的可能还在 -wal 文件里（2026-11-02）
+            # 用 SQLite 自己的备份接口，不直接 cp：库开了 WAL 以后，最近写的可能还在 -wal 文件里
             self.as_ethan("python3", "-c", BACKUP_PY, str(db), f"{db}.bak-auto-{new[:7]}")
             step = "拉代码"
             self.git("merge", "--ff-only", "-q", "origin/main")
@@ -177,7 +177,7 @@ class Deployer:
                 raise
             changed = self.git("diff", "--name-only", old, new).split()
             from .memeval import touches_memory
-            if touches_memory(changed):  # 改到记忆相关的：再跑一遍她的检验题，以前过的这次没过就退回（2026-10-31 她同意）
+            if touches_memory(changed):  # 改到记忆相关的：再跑一遍她的检验题，以前过的这次没过就退回
                 step = "跑记忆检验题"
                 out = self.as_ethan("python3", "-m", "ethan.memeval", "--data", str(self.data), "--gate")
                 record["memeval"] = out.strip()[-300:]

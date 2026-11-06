@@ -1,4 +1,4 @@
-"""永远要成立的检查（docs/design/system-rules.md 第 7 节，她 2026-11-02 认可）。
+"""永远要成立的检查（docs/design/system-rules.md 第 7 节）。
 
 测试里的“整天回放”每一步后跑一遍；以后巡检也跑（python3 -m ethan.invariants --data <数据目录>）。
 每个检查返回问题列表（空 = 没问题），只读，不改数据。
@@ -27,7 +27,8 @@ def badges_have_targets(wb, day) -> list:
     out = []
     b = wb.badges(day)
     if "map" in b:
-        waste = sum(1 for t in territory.open_tasks(wb.db) if not territory.task_territory(t))
+        from . import taskrules
+        waste = sum(1 for t in taskrules.rows(wb.db, "territory", day) if not t["territory"])
         if waste != b["map"]:
             out.append(f"赛季红点 {b['map']}，荒原里有 {waste} 件")
     if "main" in b:
@@ -43,11 +44,11 @@ def badges_have_targets(wb, day) -> list:
     asks = brain.counts(wb.db, "ask")["tabs"].get("ask", 0)  # “我”页收藏和资料里“要你看”那一栏
     if b.get("brain", 0) != asks:
         out.append(f"收藏和资料红点 {b.get('brain', 0)}，“要你看”那一栏有 {asks} 条")
-    waiting = sum(1 for x in desk.items(wb.db) if x["state"] in ("open", "draft"))  # 首页“邮件和留言”里等她处理的（“知道一下”不算）
+    waiting = sum(1 for x in desk.items(wb.db) if x["wait"] in desk.VIEWS["invariant"]["states"])  # 列表里标着“等你”的（desk.state_of 一处判断）
     if b.get("desk", 0) != waiting:
         out.append(f"邮件和留言红点 {b.get('desk', 0)}，等你处理的有 {waiting} 条")
     out += [f"红点「{k}」没在打扰登记表里，不知道点进去是哪" for k in b if k not in nudge_registry.BADGES]
-    # 首页“小伴 今天在准备”上“先放着”的红点：数字等于弹层里“先放着”那栏的条数（她 11-05：进去不知道红点说的是哪）
+    # 首页“小伴 今天在准备”上“先放着”的红点：数字等于弹层里“先放着”那栏的条数（进去不知道红点说的是哪）
     parked = wb.parked_remind(day) if hasattr(wb, "parked_remind") else 0
     if parked:
         shown = sum(1 for x in prep.queue(wb.db) if x["state"] == "pending" and not x["secret"])
@@ -102,8 +103,9 @@ def states_valid(db) -> list:
     out += transitions.unknown_states(db)
     out += [f"待办 #{r['id']} 标着做完却没有完成时间" for r in db.conn.execute("SELECT id FROM tasks WHERE done = 1 AND done_at IS NULL")]
     for table, col, allowed in (("reviews", "status", transitions.STATES["review"]), ("season_drafts", "status", transitions.STATES["season_draft"]),
-                                ("prep_work", "state", transitions.STATES["prep"])):
-        if db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = ?", (table,)).fetchone():
+                                ("prep_work", "state", transitions.STATES["prep"]), ("mail_items", "desk_state", transitions.STATES["mail_desk"]),
+                                ("visitor_messages", "desk_state", transitions.STATES["visitor_desk"]), ("outbox", "desk_state", transitions.STATES["outbox_desk"])):
+        if col in {r[1] for r in db.conn.execute(f"PRAGMA table_info({table})")}:  # 表或列还没建（收件台没用过）就不查
             for r in db.conn.execute(f"SELECT {col} AS st, COUNT(*) n FROM {table} GROUP BY {col}"):
                 if r["st"] not in allowed:
                     out.append(f"{table} 里有 {r['n']} 条状态是「{r['st']}」，不在状态图里")
@@ -117,10 +119,26 @@ def inference_not_fact(db) -> list:
     return lifebase.integrity_problems(db)
 
 
+def views_agree(db, day) -> list:
+    """各视图之间的关系（ethan/taskrules.py，统一）：今日和其他不重复、计划页 = 今日 ∪ 其他、Telegram 清单和计划页一样、
+    说算了的只在“你说算了的”里。"""
+    from . import taskrules
+    ids = lambda v: set(taskrules.view_ids(db, v, day))
+    today, other, panel = ids("today"), ids("other"), ids("plan_panel")
+    out = [f"#{i} 同时在今日任务和“其他”里" for i in sorted(today & other)]
+    out += [f"计划页和首页对不上：{sorted(panel ^ (today | other))}"] if panel != today | other else []
+    out += [f"Telegram 清单和计划页对不上：{sorted(ids('tg_list') ^ panel)}"] if ids("tg_list") != panel else []
+    dropped = ids("dropped")
+    for v in taskrules.VIEWS:
+        if v != "dropped" and dropped & ids(v):
+            out.append(f"说算了的出现在「{v}」：{sorted(dropped & ids(v))}")
+    return out
+
+
 def run_all(wb, day) -> dict:
     return {"今日任务一致": today_consistent(wb, day), "红点有去处": badges_have_targets(wb, day),
             "编号不重用": ids_not_reused(wb.db), "她改过的没被改回": locks_respected(wb.db, day), "状态合法": states_valid(wb.db),
-            "推断没写成事实": inference_not_fact(wb.db)}
+            "推断没写成事实": inference_not_fact(wb.db), "各处列表一致": views_agree(wb.db, day)}
 
 
 def main():

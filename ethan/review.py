@@ -113,6 +113,6 @@ def page(db, root: Path, today: date, season: dict, bosses=None) -> dict:
         months.setdefault(w["week"][:7], []).append(w)
     done = [w for w in ws if not w["live"]]
     return {"weeks": ws, "months": [{"month": m, **rollup(v)} for m, v in sorted(months.items(), reverse=True)],
-            # 灯只数过完的周；积分和满勤把本周也算上（2026-10-29 她看到回顾积分 0、首页 110 对不上）
+            # 灯只数过完的周；积分和满勤把本周也算上（看到回顾积分 0、首页 110 对不上）
             "season": {**season, **rollup(done), "points": sum(w["points"] for w in ws),
                        "full_days": sum(w["full_days"] for w in ws), "days_left": max(0, (date.fromisoformat(season["end"]) - today).days)}}
