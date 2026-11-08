@@ -33,7 +33,7 @@ Agent 任务队列（见 ethan/agents.py），同样用 INBOX_TOKEN_CLOUD：
   GET  /cloud/profile                   个人主页用：{"city","source": "told"|"home","at","birthday": "MM-DD"}（ethan/whereabouts.py）
   POST /cloud/mail                      她 Mac 上的邮件程序送新邮件、取处理办法（ethan/mail.py，钥匙同报到钩子）
   POST /cloud/visitor                   个人主页访客留言；GET /cloud/public/now 主页近况；GET /cloud/public/feed 生活栏目（ethan/publicsite.py）。
-  GET /cloud/site/reply-requests、POST /cloud/site/reply-drafts、/cloud/site/reply-status  留言回复：主页助手起草、她确认、中转从 hi@ 发。
+  GET /cloud/site/reply-requests、POST /cloud/site/reply-drafts、/cloud/site/reply-status  留言回复：Days起草、她确认、中转从 hi@ 发。
                                         这些和 /cloud/profile 也认主页中转的钥匙 INBOX_TOKEN_SITE（只能用这些，profile 只给城市和今天是不是生日）
   POST /cloud/people_stats              她 Mac 上微信导出算的私聊统计 {"people": [{"key","name","last","n90","n365",...}]}，一次最多 64KB（ethan/relations.py）
   GET  /cloud/maps/<文件名>               领地地图底图（<数据目录>/maps/ 下的 jpg/png），给云端会话取图做设计稿
@@ -127,7 +127,7 @@ class Inbox:
                 return 400, {"ok": False, "error": "bad json"}
             with self.db_lock:
                 return publicsite.receive(self.store.db, payload, now)
-        if path in ("/cloud/site/reply-drafts", "/cloud/site/reply-status"):  # 主页中转交主页助手的草稿、回报发没发出（publicsite.py）
+        if path in ("/cloud/site/reply-drafts", "/cloud/site/reply-status"):  # 主页中转交Days的草稿、回报发没发出（publicsite.py）
             if not (self._authorized("site", headers) or self._authorized("cloud", headers)):
                 return 401, {"ok": False, "error": "unauthorized"}
             if len(body) > 32 * 1024:
@@ -298,6 +298,8 @@ class Inbox:
         if not isinstance(data, dict):
             return 400, {"ok": False, "error": "bad json"}
         with self.db_lock:
+            if path == "/cloud/spend" and (data.get("kind") == "applepay" or ("merchant" in data and "amount" in data)):
+                return 200, finance.record_applepay(self.store.db, data, now)  # iPhone 快捷指令：Apple Pay 每刷一次
             if path == "/cloud/spend":  # iPhone 快捷指令转发的招行消费短信（ethan/finance.py）
                 text = data.get("text") or data.get("sms") or ""
                 if not str(text).strip():

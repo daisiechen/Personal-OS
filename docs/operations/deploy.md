@@ -323,7 +323,7 @@ Mia 在 Telegram 里可以发：
 
 ## 自动部署
 
-`ethan2-autodeploy.timer`（root）每 2 分钟检查 main，有新提交就备份数据库、快进拉代码、装改过的 systemd 文件、跑测试、重启 Telegram/微信/收件箱，失败退回原版本。结果在 `/home/ethan/data/deploy-status.json` 和 `deploy-log.jsonl`，由 Claude 会话读取后在会话里告诉她，不发 Telegram。查看：`cat /home/ethan/data/deploy-status.json`。手动部署照旧可用。
+`ethan2-autodeploy.timer`（root）每 2 分钟检查 main，有新提交就备份数据库、快进拉代码、跑测试（`python3 -m ethan.testrun -q`，按文件分几路同时跑，见 test-speed.md）、装改过的 systemd 文件、重启 Telegram/微信/收件箱，失败退回原版本。结果在 `/home/ethan/data/deploy-status.json` 和 `deploy-log.jsonl`，由 Claude 会话读取后在会话里告诉她，不发 Telegram。查看：`cat /home/ethan/data/deploy-status.json`。手动部署照旧可用。
 
 数据改动（`migrations/`，`ethan/migrate.py`）在重启之后跑：跑过的记在数据库 `migrations_done` 表，和脚本的改动同一个事务提交（`migrations.json` 只是给人看的副本）；有脚本失败时代码不退回（数据改动撤不回，退回旧代码会变成“新数据 + 旧代码”），结果写成“已上线，但数据改动出错：<名字>”，巡检当失败报（Codex 评审）。
 

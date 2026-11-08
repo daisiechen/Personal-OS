@@ -12,7 +12,7 @@ from ethan.memory import MemoryStore
 T0 = datetime(2026, 10, 28, 9, 0, tzinfo=timezone.utc)
 
 
-class SessionHookTest(unittest.TestCase):
+class SessionHookBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -27,6 +27,8 @@ class SessionHookTest(unittest.TestCase):
         body = json.dumps({"session_id": "s1", "cwd": "/Users/d/Grab-in-London", **event}).encode()
         return self.inbox.handle(f"/cloud/agent/hook?where={where}", {"Authorization": f"Bearer {token}"}, body, now)[0]
 
+
+class SessionHookTest(SessionHookBase):
     def test_hook_events_drive_state(self):
         self.assertEqual(self.post({"hook_event_name": "SessionStart"}, token="g"), 401)  # Grok 的钥匙不行
         self.assertEqual(self.post({"hook_event_name": "SessionStart"}), 200)
@@ -89,7 +91,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AgentReportTest(SessionHookTest):
+class AgentReportTest(SessionHookBase):
     def test_any_agent_can_report_and_codex_notify_installs(self):
         """所有 agent 都汇总到团队页——Codex 等自己报到，和 Claude 钩子并排显示。"""
         body = json.dumps({"agent": "codex", "id": "th1", "project": "DemoApp", "title": "修登录页", "state": "working", "where": "mac"}).encode()

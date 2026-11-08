@@ -781,26 +781,33 @@ class CardTest(unittest.TestCase):
         return Resp()
 
     def test_training_day_card_generated_with_references(self):
+        """昨天（周一）练了：周二早上出的昨日卡画训练，按昨天练的写（今天的计划不进昨日卡）。"""
         maker, ledger = FakeMaker(), FakeLedger()
-        card = cards.make_card(self.root, self.store.db, MONDAY, self.plan, maker=maker, ledger=ledger,
+        tue = MONDAY + timedelta(days=1)
+        card = cards.make_card(self.root, self.store.db, tue, None, maker=maker, ledger=ledger,
                                fetch=lambda url, timeout: self.fetch())
         self.assertEqual((card["code"], card["rarity"], card["generated"]), ("S1", "普通", True))
-        self.assertIn("训练日", card["reason"])
         train = next(i["title"] for i in self.plan["items"] if i["kind"] == "event" and i["title"].startswith("训练"))
-        self.assertEqual(card["line"], cards.line_for("S1", train))  # 按今天实际练的写，不写死“练腿”
+        self.assertIn("昨天练了", card["reason"])
+        self.assertEqual(card["line"], cards.line_for("S1", train))  # 按昨天实际练的写，不写死“练腿”
         self.assertNotIn("练腿", cards.line_for("S1", "训练：体态 + 核心 + 有氧"))
-        self.assertEqual(cards.line_for("S1", "训练：体态 + 核心 + 有氧"), "今天练体态 + 核心 + 有氧，练完奖励自己，也奖励我一张照片。")
+        self.assertEqual(cards.line_for("S1", "训练：体态 + 核心 + 有氧"), "体态 + 核心 + 有氧练完了，辛苦啦，奖励自己，也奖励我一张照片。")
         self.assertEqual(card["weather"], "雨 8–12°")
         self.assertEqual(maker.calls[0][1][:2], ["avatar-day.jpg", "avatar-night.jpg"])
         self.assertNotIn("S1.png", maker.calls[0][1])  # 图库场景图不再当参考（免得天天同一个构图）
         self.assertIn("Setting:", maker.calls[0][0])
         self.assertEqual(ledger.rows, [("openrouter", 0.09, "daily-card")])
-        self.assertTrue((self.root / "cards" / "2026-11-02.jpg").is_file())
-        again = cards.make_card(self.root, self.store.db, MONDAY, self.plan, maker=maker)
+        self.assertTrue((self.root / "cards" / "2026-11-03.jpg").is_file())
+        again = cards.make_card(self.root, self.store.db, tue, None, maker=maker)
         self.assertEqual(len(maker.calls), 1)  # 一天只画一张
         self.assertEqual(again["title"], card["title"])
         wb = Workbench(self.store, Settings(self.root / "settings.json"))
-        self.assertEqual(wb.state(NOON)["card"]["image"], "/img/card/2026-11-02")
+        img = wb.state(NOON + timedelta(days=1))["card"]["image"]
+        self.assertTrue(img.startswith("/img/card/2026-11-03?v="))  # 带图的修改时间：重出后地址变，浏览器不拿旧图
+        import os
+        p = self.root / "cards" / "2026-11-03.jpg"
+        os.utime(p, (p.stat().st_mtime + 100, p.stat().st_mtime + 100))
+        self.assertNotEqual(wb.state(NOON + timedelta(days=1))["card"]["image"], img)
 
     def test_director_uses_her_day_and_wish(self):
         """卡册的动作和视角太固定：按当天的事编镜头；她能点单（含 cosplay），一天用一条。"""
@@ -824,7 +831,7 @@ class CardTest(unittest.TestCase):
                                fetch=lambda url, timeout: self.fetch(), router=d)
         self.assertEqual(card["title"], "大本钟战士")
         self.assertIn("水手服", d.briefs[0])
-        self.assertIn("训练", d.briefs[0])  # 她今天的安排交给导演
+        self.assertIn("训练", d.briefs[0])  # 昨天的日记交给导演
         self.assertIn("fisheye", maker.calls[0][0])
         self.assertIn("Her face stays her own", maker.calls[0][0])
         self.assertEqual(cards.wishes(self.store.db), [])  # 用掉了
@@ -990,7 +997,7 @@ class CardTest(unittest.TestCase):
         self.assertIn("思考", diary.PROMPT)
 
     def test_rest_day_rain_and_failure_falls_back_to_library(self):
-        tue = MONDAY + timedelta(days=1)
+        tue = MONDAY  # 昨天（周日）没训练
         card = cards.make_card(self.root, self.store.db, tue, None, maker=FakeMaker(fail=True),
                                fetch=lambda url, timeout: self.fetch(61))
         self.assertEqual((card["code"], card["generated"]), ("W6", False))
@@ -1214,6 +1221,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

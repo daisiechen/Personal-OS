@@ -109,6 +109,87 @@ class ServerTest(unittest.TestCase):
         r = self.db.conn.execute("SELECT * FROM people WHERE name = ?", (name,)).fetchone()
         return dict(r) if r else None
 
+    def test_merge_chat_card_into_wechat_card(self):
+        """聊天里冒出来的卡（妈妈）和微信那张（母上大人）是同一个人，给个合并入口；合完以后聊天再提到“妈妈”也记到这张上。"""
+        from ethan import lifebase
+        self.post([item("b2" * 8, "母上大人", last="2026-11-02")])
+        mom = self.person("母上大人")["id"]
+        self.db.conn.execute("UPDATE people SET relation = '她妈妈' WHERE id = ?", (mom,))
+        chat = relations.upsert(self.db, "妈妈", circle="家人", birthday="03-14", notes="爱跳广场舞")
+        self.db.conn.commit()
+        sug = relations.merge_suggestions(self.db)
+        self.assertEqual([(m["drop"]["name"], m["keep"]["name"]) for m in sug], [("妈妈", "母上大人")])
+        lifebase.ensure(self.db)
+        ev = lifebase.add_evidence(self.db, "chat", "raw:m:1", "2026-11-01", "mia：我妈爱跳广场舞")
+        fid = lifebase.add_fact(self.db, "relationships", "妈妈爱跳广场舞", [ev], subject=f"person:{chat}")
+        r = relations.merge(self.db, mom, chat)
+        self.assertTrue(r["ok"], r)
+        self.assertIsNone(self.person("妈妈"))
+        p = self.person("母上大人")
+        self.assertEqual((p["circle"], p["birthday"], p["notes"]), ("家人", "03-14", "爱跳广场舞"))
+        self.assertEqual(self.db.conn.execute("SELECT subject FROM facts WHERE id = ?", (fid,)).fetchone()[0], f"person:{mom}")
+        self.assertEqual(relations.upsert(self.db, "妈妈", recent="最近在学太极"), mom)  # 别名：不再新建
+        self.assertIsNone(self.person("妈妈"))
+        self.assertEqual(relations.merge_suggestions(self.db), [])
+        self.assertFalse(relations.merge(self.db, mom, mom)["ok"])
+
+    def test_loops_list_people_with_open_things(self):
+        """待回复改名待履约，列有没了结的事的人（不限 7 天、不分谁欠谁）。"""
+        import json as _json
+        from datetime import date as _d
+        pid = relations.upsert(self.db, "阿杰")
+        loops = [{"kind": "she_promised", "date": "2026-09-01", "text": "帮他看简历", "quote": "x"},
+                 {"kind": "they_asked", "date": "2026-10-20", "text": "问她要不要一起去芬兰", "quote": "y"}]
+        self.db.conn.execute("UPDATE people SET open_loops = ? WHERE id = ?", (_json.dumps(loops, ensure_ascii=False), pid))
+        self.db.conn.commit()
+        got = relations.due(self.db, _d(2026, 11, 7))["loops"]
+        self.assertEqual([(x["name"], x["n"], x["text"]) for x in got], [("阿杰", 2, "问她要不要一起去芬兰")])
+
+    def test_no_star_never_reminds_by_default(self):
+        """"""
+        self.assertIsNone(relations.interval({"importance": 0, "contact_every_days": None}))
+        self.assertIsNone(relations.interval({"importance": 1, "contact_every_days": None}))
+        self.assertEqual(relations.interval({"importance": 0, "contact_every_days": 30}), 30)  # 她自己设了天数照她的
+
+    def test_her_edits_are_reference_not_frozen(self):
+        """改过的只是冷启动用的，系统要根据交往随时调整，参考她改过的备注。"""
+        from datetime import date as _d
+        self.post([item()])
+        p = self.person("小林")
+        self.assertIn("参考", relations.set_field(self.db, p["id"], "relation", "大学室友")["msg"])  # 提示不再说“不动”
+        relations.set_field(self.db, p["id"], "notes", "去年搬去上海了")
+        self.assertIn("不会改", relations.set_field(self.db, p["id"], "birthday", "03-14")["msg"])
+        row = self.db.conn.execute("SELECT * FROM people WHERE id = ?", (p["id"],)).fetchone()
+        hers = relations.hers_for(self.db, row)
+        self.assertEqual((hers["relation"], hers["notes"]), ("大学室友", "去年搬去上海了"))
+        relations._apply_card(self.db, row, {"relation": "大学室友，现在在上海做咨询", "birthday": "05-01"}, _d(2026, 11, 7), started="9999")
+        after = self.person("小林")
+        self.assertEqual(after["relation"], "大学室友，现在在上海做咨询")  # 描述类跟着往来更新
+        self.assertEqual(after["birthday"], "03-14")  # 她的设置不动
+
+    def test_no_star_and_new_circles(self):
+        """重要程度加“没星”；关系圈加“中介”“不重要”。"""
+        self.post([item()])
+        pid = self.person("小林")["id"]
+        self.assertTrue(relations.set_field(self.db, pid, "importance", 0)["ok"])
+        self.assertIsNone(relations.interval(self.person("小林")))  # 没星：不按重要程度提醒
+        self.assertIn("服务", relations.CIRCLES)  # 把“中介”改名“服务”（中介、客服、导游……）
+        self.assertNotIn("中介", relations.CIRCLES)
+        self.assertNotIn("不重要", relations.CIRCLES)  # 不重要是重要程度（没星），不是关系
+
+    def test_suggestions_only_her_own_kin_and_can_dismiss(self):
+        """要能点“不是同一个人”。"""
+        self.post([item("c1" * 8, "李林花"), item("c2" * 8, "母上大人"), item("c3" * 8, "新海美婷"), item("c4" * 8, "* Y")])
+        for name, rel in (("李林花", "朱天宇的妈妈，想给她介绍对象的长辈"), ("母上大人", "她妈妈"),
+                          ("新海美婷", "叫她“姐姐”的妹妹，她给对方拍过照片"), ("* Y", "她的妹妹，两人都叫同一对父母“咱爸咱妈”")):
+            self.db.conn.execute("UPDATE people SET relation = ? WHERE name = ?", (rel, name))
+        mom, sis = relations.upsert(self.db, "妈妈", circle="家人"), relations.upsert(self.db, "妹妹", circle="家人")
+        self.db.conn.commit()
+        got = {m["drop"]["name"]: m["keep"]["name"] for m in relations.merge_suggestions(self.db)}
+        self.assertEqual(got, {"妈妈": "母上大人", "妹妹": "* Y"})
+        relations.not_same(self.db, sis, self.person("* Y")["id"])
+        self.assertEqual({m["drop"]["name"] for m in relations.merge_suggestions(self.db)}, {"妈妈"})
+
     def test_auth(self):
         self.assertEqual(self.post([item()], {"Authorization": "Bearer wrong"})[0], 401)
         self.assertEqual(self.inbox.handle("/cloud/people_stats", AUTH, b"not json")[0], 400)
@@ -179,7 +260,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(router.calls), 2)  # 第一次原话不在记录里，重试
         self.assertIn("圣诞回不回国", router.calls[0])
         p = self.person("小林")
-        self.assertEqual((p["relation"], p["circle"], p["birthday"], p["recent"]), ("大学同学", "同学", "03-14", "她自己写的近况"))
+        self.assertEqual((p["relation"], p["circle"], p["birthday"], p["recent"]), ("大学同学", "同学", "03-14", "下周三答辩"))  # 11-07 起她改的只当参考
+        self.assertIn("她自己写的近况", router.calls[-1])  # 她写的交给模型参考了
         self.assertTrue(p["organized_at"])
         self.assertEqual(relations.candidates(self.db), [dict(self.db.conn.execute("SELECT * FROM people WHERE name = '没记录的人'").fetchone())])
         d = relations.due(self.db, TODAY)
@@ -207,17 +289,27 @@ class ServerTest(unittest.TestCase):
         self.assertEqual([x["name"] for x in relations.due(self.db, TODAY)["reply"]], ["小林"])
 
     def test_due_lists(self):
-        self.post([item(last="2026-10-01"), item("b2" * 8, "母上大人", last="2026-11-03", n90=200),
+        self.post([item(last="2026-07-01"), item("b2" * 8, "母上大人", last="2026-11-03", n90=200),
                    item("c3" * 8, "老同学", n90=0, n365=2, last="2026-03-01")])
         mom = self.person("母上大人")["id"]
         self.db.conn.execute("UPDATE people SET birthday = '11-10', topics = ? WHERE id = ?", (json.dumps(["羽绒服"]), mom))
         self.db.conn.execute("UPDATE people SET recent = '刚换了工作' WHERE name = '小林'")
         self.db.conn.commit()
         d = relations.due(self.db, TODAY)
-        self.assertEqual([x["name"] for x in d["contact"]], ["小林", "老同学"])  # 2 级 30 天、1 级 90 天都超了；妈妈昨天才聊
+        self.assertEqual([x["name"] for x in d["contact"]], ["小林"])  # 2 级 90 天超了；1 级不按时间提醒（改）；妈妈昨天才聊
         self.assertIn("刚换了工作", d["contact"][0]["topic"])
         self.assertEqual([(x["name"], x["in"]) for x in d["days"]], [("母上大人", 6)])
-        relations.set_field(self.db, self.person("小林")["id"], "contact_every_days", 60)  # 她改了间隔
+        relations.set_field(self.db, self.person("小林")["id"], "contact_every_days", 200)  # 她改了间隔
+        self.assertEqual([x["name"] for x in relations.due(self.db, TODAY)["contact"]], [])
+        # 要能选“永不”；再点“默认”回到按重要程度
+        old = self.person("老同学")["id"]
+        self.assertTrue(relations.set_field(self.db, old, "contact_every_days", "never")["ok"])
+        self.assertEqual(relations.due(self.db, TODAY)["contact"], [])
+        self.assertIsNone(relations.interval(self.person("老同学")))
+        self.assertFalse(relations.set_field(self.db, old, "contact_every_days", "5000")["ok"])
+        relations.set_field(self.db, old, "contact_every_days", "")  # 回到默认：一颗星不按时间提醒
+        self.assertEqual(relations.due(self.db, TODAY)["contact"], [])
+        relations.set_field(self.db, old, "contact_every_days", "30")  # 一颗星也能自己设间隔
         self.assertEqual([x["name"] for x in relations.due(self.db, TODAY)["contact"]], ["老同学"])
         line = relations.week_line(self.db, TODAY)
         self.assertIn("老同学", line["这周该联系谁"][0])
@@ -263,7 +355,7 @@ class WorkbenchTest(unittest.TestCase):
         self.assertEqual([p["name"] for p in page["people"]], ["母上大人", "小林"])  # 重要的在前
         lin = page["people"][1]
         self.assertNotIn("wx_key", lin)
-        self.assertEqual((lin["every"], lin["every_set"]), (30, False))
+        self.assertEqual((lin["every"], lin["every_set"]), (90, False))  # 两颗星默认 90 天（改）
         out = self.wb.act("person.set", {"id": lin["id"], "field": "circle", "value": "挚友"})
         self.assertTrue(out["ok"], out)
         lin = next(p for p in self.wb.relations_page()["people"] if p["name"] == "小林")

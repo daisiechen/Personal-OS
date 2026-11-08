@@ -21,6 +21,11 @@ const OVERLAYS = ['[data-act="prep"]', '[data-act="desk"]'];
     p.on("pageerror", (e) => problems.push(`[${name}] 脚本报错：${e.message}`));
     await p.goto(base + "/");
     await p.waitForTimeout(1500);
+    // 刚达成的成就会先弹庆祝层（示意数据里有练英语记录就会弹“聊满 10 分钟”），挡住点击：先一个个点掉
+    for (let i = 0; i < 10 && await p.$('[data-act="celebrate-done"]'); i++) {
+      await p.click('[data-act="celebrate-done"]').catch(() => {});
+      await p.waitForTimeout(400);
+    }
     const visit = async (label) => {
       await p.waitForFunction(() => !document.querySelector("#page .loading"), null, { timeout: 15000 }).catch(() => problems.push(`[${name}] ${label} 一直在加载`));
       const len = await p.evaluate(() => document.querySelector("#page").innerText.trim().length);
@@ -107,6 +112,20 @@ const OVERLAYS = ['[data-act="prep"]', '[data-act="desk"]'];
         if (shots) await p.screenshot({ path: `${shots}/${name}-prep-parked.png` });
         if (await p.$('#overlay [data-act="preptab"][data-tab="parked"] .navdot')) problems.push(`[${name}] 看过“先放着”红点还在`);
       }
+      await p.keyboard.press("Escape");
+      await p.waitForTimeout(400);
+    }
+    // 按预计工作量定档（方案 A）：“日历 · 改计划”顶上有估档清单，每件待办旁有档位下拉
+    const planBtn = await p.$('[data-act="plan"]');
+    if (!planBtn) problems.push(`[${name}] 首页没有“加 · 编辑”`);
+    else {
+      await planBtn.click();
+      await p.waitForTimeout(800);
+      if (!(await p.$("#overlay .szreview"))) problems.push(`[${name}] 计划页没有估档清单`);
+      if (!(await p.$("#overlay .item .szpick"))) problems.push(`[${name}] 计划页的待办旁没有档位`);
+      const wide = await p.evaluate(() => { const o = document.querySelector("#overlay .sheet"); return o && o.scrollWidth > o.clientWidth + 2; });
+      if (wide) problems.push(`[${name}] 计划页横向溢出`);
+      if (shots) await p.screenshot({ path: `${shots}/${name}-plan-sizes.png` });
       await p.keyboard.press("Escape");
       await p.waitForTimeout(400);
     }

@@ -208,7 +208,7 @@ def process(store, router, limit: int = 40) -> dict:
             data = {**data, "todo": None}  # 有确定时间的活动进日程就够了，不另建待办；要提前准备的（截止在活动之前）才留（送别活动是日程，要什么待办）
         if data.get("attention") and data.get("todo") and data["todo"].get("title"):
             from . import naming
-            task_id = db.add_task(naming.title(data["todo"]["title"]), due=data["todo"].get("due"))  # 标题式（ui-spec 第 5 节）
+            task_id = taskrules.add(db, naming.title(data["todo"]["title"]), due=data["todo"].get("due"))  # 标题式（ui-spec 第 5 节）
             db.conn.execute("UPDATE tasks SET owner = 'mia', source_type = 'email', source_ref = ?, status = 'open' WHERE id = ?",
                             (f"mail:{r['msg_key']}", task_id))
         e = data.get("event")

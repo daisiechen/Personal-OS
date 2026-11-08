@@ -1,6 +1,6 @@
 """工作台“我”页（记忆对齐第三步，稿：docs/design/memory-alignment.md 第 9 节）。
 
-页面主体：对得上的比例和每周趋势 → 使用者小卡（小伴、主页助手在前，其余按用得多少）→ 纠错单（跟着点开的卡变）。
+页面主体：对得上的比例和每周趋势 → 使用者小卡（小伴、Days在前，其余按用得多少）→ 纠错单（跟着点开的卡变）。
 右上角三个弹窗：待你定（红点数字）、问一问、全部记忆。
 
 记忆分两种：长期（她一般是怎样的，带有效期：一直 / 从某天起 / 到某天 / 某个条件下）和那一次（某天发生了什么，记成事件）。
@@ -11,8 +11,9 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from . import lifebase, memusers, upgrades
+from . import lifebase, memusers, tx, upgrades
 from .clock import her_today
+from . import clock
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS pending (
@@ -22,14 +23,15 @@ CREATE TABLE IF NOT EXISTS pending (
 CREATE TABLE IF NOT EXISTS confirmations (id INTEGER PRIMARY KEY, at TEXT NOT NULL, source TEXT NOT NULL, fact_id INTEGER, note TEXT);
 CREATE TABLE IF NOT EXISTS ask_log (id INTEGER PRIMARY KEY, at TEXT NOT NULL, question TEXT NOT NULL, answers TEXT NOT NULL, verdict TEXT);
 """
-PENDING_COLS = (("asked_at", "TEXT"), ("origin", "TEXT"), ("dim", "TEXT"))  # origin = gap：1.7 补缺口挑的题  # 小伴 在聊天里问过的时间：问过的三天内不再问（两套“问她”合一）
+PENDING_COLS = (("asked_at", "TEXT"), ("origin", "TEXT"), ("dim", "TEXT"), ("payload", "TEXT"))  # origin = gap：1.7 补缺口挑的题  # 小伴 在聊天里问过的时间：问过的三天内不再问（两套“问她”合一）
 QUESTION_DAYS = 14  # 画像出的确认问题，她两周没理就过期（不算错也不算对）
 ASK_GAP_DAYS = 3
 SNAP_COLS = "valid_from, valid_to, superseded_by, status, locked, confidence, until, until_cond, last_confirmed_at"
 ONE_OFF = re.compile(r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}日|\d{1,2}-\d{1,2} ?(早上|上午|中午|下午|晚上|凌晨)")
+ASK_EXPIRED_DAYS = 14  # 到期两周以内的才在待你定里问一句还算不算数
 CONFIRM_USES = 3  # 被用到这么多次、她还没确认过的，进“待你定”
 ANSWER = ("你在替{who}回答 Mia 问的一个关于她自己的问题，用来检查{who}心里的她对不对。只按下面“记得的”回答，"
-          "一两句话；记得的里没有就说“我不知道”。不要编。\n\n记得的：\n{memory}")
+          "一两句话（问某天做了什么的可以三四句，按时间串起来，日记没写就说一声）；记得的里没有就说“我不知道”。不要编。\n\n记得的：\n{memory}")
 ASK_TWIN = "这个我问问她，回头告诉你"  # 和 onto_query.ASK_REPLY 同一句
 COMPARE = ("下面是对同一个问题的两个回答。它们说的是同一件事、只是详略不同，还是互相矛盾？只输出 JSON："
            '{"conflict": true 或 false, "why": "一句话"}')
@@ -42,6 +44,8 @@ def _now() -> str:
 def ensure(db):
     from . import memsearch
     memusers.ensure(db)
+    if not tx.once(db, "mepage"):  # 建表、加列每个连接只做一次（我页加载还是慢）
+        return
     memsearch.ensure(db)  # 算“用过几次”要 retrieval_log
     db.conn.executescript(SCHEMA)
     have = {r[1] for r in db.conn.execute("PRAGMA table_info(pending)")}
@@ -98,6 +102,22 @@ def _uses(db, fid, days: int = 30) -> tuple:
     rows = db.conn.execute("SELECT user FROM retrieval_log WHERE at >= ? AND keys LIKE ? AND COALESCE(user, '') != 'system'",
                            (since, f'%"fact:{fid}"%')).fetchall()
     return len(rows), sorted({r["user"] for r in rows if r["user"]})
+
+
+def _use_counts(db, days: int = 30) -> dict:
+    """每条记忆被用过几次，一次读完：{fact_id: 次数}。全部记忆一页一万多条，一条条查要 7 秒。
+    和 _uses 同一个算法：一次检索里出现过就算一次，系统自己维护的不算。"""
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    out = {}
+    for r in db.conn.execute("SELECT keys FROM retrieval_log WHERE at >= ? AND keys LIKE '%\"fact:%' AND COALESCE(user, '') != 'system'", (since,)):
+        try:
+            keys = set(json.loads(r["keys"] or "[]"))
+        except ValueError:
+            continue
+        for k in keys:
+            if isinstance(k, str) and k.startswith("fact:") and k[5:].isdigit():
+                out[int(k[5:])] = out.get(int(k[5:]), 0) + 1
+    return out
 
 
 def _option(db, f) -> dict:
@@ -171,6 +191,8 @@ def refresh(db, today: date = None, city: str = None) -> dict:
             continue
         expired = lifebase.fact_state(f, today) == "expired" or (  # “到期”只按 lifebase 一处判（决定 10）
             city and (f.get("until_cond") or "").startswith("city:") and f["until_cond"][5:].lower() != city.lower())
+        if expired and f.get("until") and f["until"] < (today - timedelta(days=ASK_EXPIRED_DAYS)).isoformat():
+            continue  # 早就过去的（按说法里的日子算到期的旧事）不问她，照到期处理
         if expired:
             n, users = _uses(db, f["id"])
             db.conn.execute("INSERT INTO pending (kind, type, question, options, fact_ids, users, uses, created_at) VALUES ('expire', 'long', ?, ?, ?, ?, ?, ?)",
@@ -245,13 +267,62 @@ def _resolve_disclose(db, r, action: str, text: str = "") -> dict:
     return {"ok": True, "msg": msg}
 
 
+def structure_seen(db) -> set:
+    """提议过的规矩 / 在做的事 / 住处来自哪些说法（不管她点没点），不重复提（ethan/structure.py）。"""
+    ensure(db)
+    out = set()
+    for r in db.conn.execute("SELECT fact_ids FROM pending WHERE kind = 'structure'"):
+        out.update(json.loads(r["fact_ids"] or "[]"))
+    return out
+
+
+def add_structure(db, p: dict) -> bool:
+    """进待你定一条：“这是你的规矩吗”“你现在在做这件事吗”“你住在这吗”。她点对才写进去（structure.apply）。"""
+    from . import structure
+    ensure(db)
+    label = structure.TYPES[p["type"]]
+    q = f"记成你的{label}？{p['text']}"
+    if db.conn.execute("SELECT 1 FROM pending WHERE kind = 'structure' AND question LIKE ?", (q + "%",)).fetchone():
+        return False  # 同一句已经问过（11-07 第一次整理出了三条“住在深圳”）
+    extra = (f"（管：{p['scope']}）" if p["type"] == "rule" else
+             f"（{p.get('start') or '?'} → {p.get('end') or '还没定'}）" if p["type"] == "situation" else "")
+    db.conn.execute("INSERT INTO pending (kind, type, question, options, fact_ids, created_at, payload) VALUES ('structure', 'long', ?, ?, ?, ?, ?)",
+                    (f"记成你的{label}？{p['text']}{extra}", json.dumps([{"text": p["text"], "src": f"你说过：{p['src']}"}], ensure_ascii=False),
+                     json.dumps([p["fact"]]), _now(), json.dumps(p, ensure_ascii=False)))
+    db.conn.commit()
+    return True
+
+
+def _resolve_structure(db, r, action: str, text: str = "", since: str = None, until: str = None) -> dict:
+    from . import structure
+    payload = json.loads(r["payload"] or "{}")
+    if action == "no":
+        db.conn.execute("UPDATE pending SET status = 'resolved', resolved_at = ?, resolution = 'no' WHERE id = ?", (_now(), r["id"]))
+        db.conn.commit()
+        return {"ok": True, "msg": "好，不记"}
+    if action not in ("yes", "own") or (action == "own" and not (text or "").strip()):
+        return {"ok": False, "msg": "点对，或者改一句再用"}
+    got = structure.apply(db, payload, text if action == "own" else None, since, until)
+    db.conn.execute("UPDATE pending SET status = 'resolved', resolved_at = ?, resolution = ? WHERE id = ?", (_now(), got[:200], r["id"]))
+    db.conn.commit()
+    return {"ok": True, "msg": f"记下了：{got}"}
+
+
 def pending_items(db) -> list:
     ensure(db)
     rows = db.conn.execute("SELECT * FROM pending WHERE status = 'open' ORDER BY uses DESC, id").fetchall()
     names = {k: v["name"] for k, v in memusers.USERS.items()}
     return [{"id": r["id"], "kind": r["kind"], "type": r["type"], "question": r["question"], "options": json.loads(r["options"]),
              "users": [names.get(u, u) for u in json.loads(r["users"])], "uses": r["uses"],
-             "gap": (r["origin"] if "origin" in r.keys() else None) == "gap"} for r in rows]
+             "gap": (r["origin"] if "origin" in r.keys() else None) == "gap", **_dates(r)} for r in rows]
+
+
+def _dates(r) -> dict:
+    """规矩 / 在做的事整理出来的起止日，待你定里先填上。"""
+    if r["kind"] != "structure" or not r["payload"]:
+        return {}
+    p = json.loads(r["payload"])
+    return {"since": p.get("start"), "until": p.get("end")}
 
 
 def pending_count(db) -> int:
@@ -261,6 +332,11 @@ def pending_count(db) -> int:
         return db.conn.execute("SELECT COUNT(*) FROM pending WHERE status = 'open' AND COALESCE(origin, '') != 'gap'").fetchone()[0]
     except Exception:
         return 0
+
+
+def _snap(db, fids) -> dict:
+    """撤销用的快照：这几条现在的有效期、状态、锁。"""
+    return {str(fid): dict(db.conn.execute(f"SELECT {SNAP_COLS} FROM facts WHERE id = ?", (fid,)).fetchone() or {}) for fid in fids}
 
 
 def _confirm(db, fid, source: str, note: str = ""):
@@ -285,13 +361,15 @@ def resolve(db, pid: int, action: str, pick: int = None, text: str = "", type_: 
     if r["kind"] == "style":  # 写作规范草稿：逐条对 / 不对 / 改（ethan/style.py，“提前做”），pick 是规则编号
         from . import style
         return style.resolve(db, r, action, pick, text)
+    if r["kind"] == "structure":  # 规矩 / 在做的事 / 住处（ethan/structure.py）：点对才写进去
+        return _resolve_structure(db, r, action, text, since, until)
     if r["kind"] == "skill":  # 新 skill 草稿 / 提议开 skill（ethan/skills.py）：批准才生效
         from . import skills
         return skills.resolve(db, r, action, text)
     opts, fids = json.loads(r["options"]), json.loads(r["fact_ids"])
     today = her_today().isoformat()
     confirm_from = db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM confirmations").fetchone()[0]
-    snap = {str(fid): dict(db.conn.execute(f"SELECT {SNAP_COLS} FROM facts WHERE id = ?", (fid,)).fetchone() or {}) for fid in fids}
+    snap = _snap(db, fids)
     before_max = db.conn.execute("SELECT COALESCE(MAX(id), 0) FROM facts").fetchone()[0]
     if action == "pick":
         chosen = fids[int(pick)]
@@ -359,9 +437,12 @@ def resolve(db, pid: int, action: str, pick: int = None, text: str = "", type_: 
     else:
         return {"ok": False, "msg": "不认识的操作"}
     created = [x["id"] for x in db.conn.execute("SELECT id FROM facts WHERE id > ?", (before_max,))]
+    # 撤销只撤这次自己的：记下操作后的样子和这次写的确认编号（Codex 评审 11-07 第 2 条：原来按“某个编号之后的全删”，会删到别的操作的确认）
+    confirms = [x[0] for x in db.conn.execute("SELECT id FROM confirmations WHERE id > ?", (confirm_from,))]
     db.conn.execute("UPDATE pending SET status = 'done', resolved_at = ?, resolution = ? WHERE id = ?",
                     (_now(), json.dumps({"action": action, "pick": pick, "text": text, "type": type_, "since": since, "until": until,
-                                         "snap": snap, "created": created, "confirm_from": confirm_from}, ensure_ascii=False), int(pid)))
+                                         "snap": snap, "after": _snap(db, fids), "created": created, "confirms": confirms},
+                                        ensure_ascii=False), int(pid)))
     db.conn.commit()
     return {"ok": True, "msg": msg, "undo": {"action": "me.reopen", "id": int(pid)}}
 
@@ -373,46 +454,68 @@ def reopen(db, pid: int) -> dict:
     if r is None:
         return {"ok": False, "msg": "撤销不了"}
     res = json.loads(r["resolution"] or "{}")
+    after = res.get("after")  # 旧记录没有：只按“删掉的、停用的不动”挡
+    kept = 0
     for fid, row in (res.get("snap") or {}).items():
-        if row:
-            db.conn.execute(f"UPDATE facts SET {', '.join(c + ' = ?' for c in row)} WHERE id = ?", (*row.values(), int(fid)))
+        # 删除优先于撤销、后来又改过的不动，都由 lifebase.undo_fact 判（Codex 评审 11-07 第 2 条）
+        if row and not lifebase.undo_fact(db, int(fid), row, (after or {}).get(fid) if after is not None else None):
+            kept += 1
     for fid in res.get("created") or []:
-        lifebase.invalidate(db, fid, force=True)  # 撤销时新建的那几条作废（作废只走 lifebase 一个入口）
-    if res.get("confirm_from"):
-        db.conn.execute("DELETE FROM confirmations WHERE id > ?", (res["confirm_from"],))
+        lifebase.invalidate(db, fid, force=True)  # 撤销时新建的那几条作废（作废只走 lifebase 一个入口；删掉的不动）
+    if "confirms" in res:
+        ids = [int(i) for i in res["confirms"]]
+        db.conn.execute(f"DELETE FROM confirmations WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids)
+    elif res.get("confirm_from"):  # 旧记录只有起点：只删这件待你定那一刻写的，别的操作写的留着
+        db.conn.execute("DELETE FROM confirmations WHERE id > ? AND source = 'pending' AND at <= ?", (res["confirm_from"], r["resolved_at"]))
     db.conn.execute("UPDATE pending SET status = 'open', resolved_at = NULL, resolution = NULL WHERE id = ?", (int(pid),))
     db.conn.commit()
-    return {"ok": True, "msg": "撤销了，回到待你定"}
+    return {"ok": True, "msg": "撤销了，回到待你定" + (f"（{kept} 条后来删过或改过，保持现在的样子）" if kept else "")}
 
 
 # ---------- 问一问 ----------
 def ask(db, router, question: str) -> dict:
-    """同一个问题，小伴 和主页助手各会怎么答（只是问问，不发给任何人）。"""
+    """同一个问题，小伴 和Days各会怎么答（只是问问，不发给任何人）。"""
     from . import memsearch
     ensure(db)
     question = (question or "").strip()[:200]
     if not question:
         return {"ok": False, "msg": "问一句"}
     memsearch.refresh(db)
+    from . import askroute, onto_query
     jobs = []
-    asked = []  # 主页助手 按对外开关（ontology-plan 3.3）：“问我”的那几类只知道要先问她，不给内容
-    for user, who in (("ethan", "小伴"), ("twin", "主页助手（她主页上的 AI，只能用对外开关里“可以说”的那部分）")):
-        found = (memsearch.search(db, [question], "chat", user="ethan") if user == "ethan"
-                 else memsearch.search(db, [question], "public", user="twin", asked=asked))
+    asked = []  # Days 按对外开关（ontology-plan 3.3）：“问我”的那几类只知道要先问她，不给内容
+    # 和聊天一样按题分流（11-06：问一问“我昨天干嘛去了”只走了兜底检索，答“我不知道”）：命中能力题的，题函数的结果放在最前
+    routed = askroute.route(db, question, user="ethan")
+    via = f"q{routed['q']}" if routed else None
+    day_ask = onto_query.day_question(question)  # 她哪天做了什么、去了哪是行程：对外一律“不方便说”，不查也不问模型
+    for user, who in (("ethan", "小伴"), ("twin", "Days（她主页上的 AI，只能用对外开关里“可以说”的那部分）")):
+        if user == "twin" and day_ask:
+            onto_query.day_summary(db, "twin", day_ask[2])  # 只留一笔使用记录（没权限），不给内容
+            found = []
+        else:
+            found = (memsearch.search(db, [question], "chat", user="ethan", via=via) if user == "ethan"
+                     else memsearch.search(db, [question], "public", user="twin", asked=asked))
         jobs.append((user, who, found))
     ask_names = sorted({lifebase.CATEGORY_NAMES.get(a["category"], "") for a in asked} - {""})
 
     def memory(j):
         text = memsearch.lines(j[2]) or "（没有）"
+        if j[0] == "ethan" and routed:
+            text = "按题查到的（以这个为准）：\n" + askroute.prompt_text(routed) + "\n\n自由检索到的：\n" + text
         if j[0] == "twin" and ask_names:
             text += f"\n（还有“{'、'.join(ask_names)}”这类的，要先问她才能说：被问到时就说“{ASK_TWIN}”）"
         return text
+
+    def answer(j):
+        if j[0] == "twin" and day_ask:
+            return onto_query.REFUSE
+        return router.complete(ANSWER.format(who=j[1], memory=memory(j)), [{"role": "user", "content": question}], purpose="me-ask").text.strip()
     from concurrent.futures import ThreadPoolExecutor  # 两个一起问，省一半时间
     with ThreadPoolExecutor(2) as pool:
-        texts = list(pool.map(lambda j: router.complete(ANSWER.format(who=j[1], memory=memory(j)),
-                                                         [{"role": "user", "content": question}], purpose="me-ask").text.strip(), jobs))
+        texts = list(pool.map(answer, jobs))
     out = [{"user": user, "name": memusers.USERS[user]["name"], "answer": text[:400], "keys": [f["key"] for f in found][:5],
-            "sources": [f"{f['label']}{'｜' + f['at'] if f['at'] else ''}：{f['text'][:60]}" for f in found[:2]],
+            "sources": ([f"按题查（第 {routed['q']} 题 {routed['name']}）"] if user == "ethan" and routed else [])
+                       + [f"{f['label']}{'｜' + f['at'] if f['at'] else ''}：{f['text'][:60]}" for f in found[:2]],
             **({"ask": ask_names} if user == "twin" and ask_names else {})}
            for (user, who, found), text in zip(jobs, texts)]
     cur = db.conn.execute("INSERT INTO ask_log (at, question, answers) VALUES (?, ?, ?)", (_now(), question, json.dumps(out, ensure_ascii=False)))
@@ -523,7 +626,7 @@ def page(db, today: date = None) -> dict:
     ensure(db)
     from . import memeval
     today = today or her_today()
-    monday = today - timedelta(days=today.weekday())
+    monday = clock.week_start(today)
     weeks = []
     for k in range(4, -1, -1):
         start = monday - timedelta(weeks=k)
@@ -618,6 +721,7 @@ def all_memory(db, q: str = "", dim: str = "", history: bool = False, limit: int
     from . import memsearch
     near = {int(k.split(":")[1]) for k, _ in memsearch.similar_keys(db, q, top=60, prefix="fact:")} if q else set()  # 按意思也算（语义检索开着时）
     today = her_today()
+    used = _use_counts(db, 3650)
     for f in rows:
         f = dict(f)
         state = lifebase.fact_state(f, today)  # 默认列现在的和到期的（标“到期了”，决定 10）；历史里列其余的（lifebase.MEM_VIEWS）
@@ -630,7 +734,7 @@ def all_memory(db, q: str = "", dim: str = "", history: bool = False, limit: int
             continue
         if prop and (f.get("prop") or "") != (prop if prop != "-" else ""):  # 星图往下钻：只看这个方面里的这一项（“-” 是没细分的）
             continue
-        n, _ = _uses(db, f["id"], 3650)
+        n = used.get(f["id"], 0)
         out.append({"id": f["id"], "text": f["statement"], "dim": f["dimension"], "dim_name": lifebase.DIM_NAMES.get(f["dimension"], f["dimension"]),
                     "locked": bool(f["locked"]), "mine": _hers(f), "from": (f["valid_from"] or f["recorded_at"] or "")[:10],
                     "to": (f["valid_to"] or "")[:10], "until": f.get("until"), "uses": n, "status": f["status"],
@@ -947,7 +1051,7 @@ def gap_week(db, today: date = None) -> dict:
     ensure(db)
     db.conn.executescript(GAP_SCHEMA)
     day = today or her_today()
-    monday = (day - timedelta(days=day.weekday())).isoformat()
+    monday = clock.week_start(day).isoformat()
     asked = db.conn.execute("SELECT COUNT(*) FROM pending WHERE origin = 'gap' AND asked_at >= ?", (monday,)).fetchone()[0]
     answered = db.conn.execute("SELECT COUNT(*) FROM pending WHERE origin = 'gap' AND status = 'done' AND resolved_at >= ?", (monday,)).fetchone()[0]
     found = 0  # 以前“旧记录里有就不问”，11-04 改成照样问，这个数不再有意义
@@ -1015,13 +1119,15 @@ def metrics(db, today: date = None) -> dict:
         kind = f["kind"] if "kind" in cols else "fact"
         compose[kind or "fact"] = compose.get(kind or "fact", 0) + 1
         said[said_bucket(sk)] += 1
-    for r in db.conn.execute("SELECT keys FROM retrieval_log WHERE at >= ? AND COALESCE(user, '') != 'system'", (week,)):
-        hit = set()
-        for k in json.loads(r["keys"] or "[]"):
-            if k.startswith("fact:"):
-                f = db.conn.execute("SELECT dimension FROM facts WHERE id = ?", (int(k[5:]),)).fetchone()
-                if f and f[0] in dims:
-                    hit.add(f[0])
+    logs = [[int(k[5:]) for k in json.loads(r["keys"] or "[]") if k.startswith("fact:") and k[5:].isdigit()]
+            for r in db.conn.execute("SELECT keys FROM retrieval_log WHERE at >= ? AND COALESCE(user, '') != 'system'", (week,))]
+    dim_of = {}  # 这周用到的记忆各属于哪个方面：一次查完，不再一条一条查（我页加载还是慢）
+    wanted = sorted({i for ids in logs for i in ids})
+    for i in range(0, len(wanted), 500):
+        part = wanted[i:i + 500]
+        dim_of.update(db.conn.execute(f"SELECT id, dimension FROM facts WHERE id IN ({','.join('?' * len(part))})", part).fetchall())
+    for ids in logs:
+        hit = {dim_of[i] for i in ids if dim_of.get(i) in dims}
         for dname in hit:  # 每次查询算一次，不按命中几条算
             dims[dname]["used"] += 1
     try:
@@ -1199,7 +1305,7 @@ def suggestions(db, dims: list, layers: dict) -> list:
         out.append((due + layers.get("outdated", 0) * 2, {"who": "你", "weak": "更新弱", "what": f"{due} 条好久没确认了，在“待你定”里过一遍",
                                                           "watch": "到期待确认的条数"}))
     try:
-        for s in lifebase.stale_sources(db):
+        for s in lifebase.stale_sources(db, cached=True):
             out.append((3, {"who": "你", "weak": "输入渠道", "what": s, "watch": "这个来源的最近一条"}))
     except Exception:
         pass
@@ -1254,7 +1360,7 @@ def manage(db) -> dict:
         users = json.loads(d.get("to_users") or "[]")
         state = ("撤回了" if d.get("revoked_at") else "说过了（这次的）" if d.get("once") and d.get("used_at")
                  else "到期了" if d.get("until") and d["until"] < now[:10] else "有效")
-        discl.append({"id": d["id"], "text": d["text"], "quote": d["quote"], "to": "、".join({"twin": "主页助手", "site": "主页"}.get(u, u) for u in users),
+        discl.append({"id": d["id"], "text": d["text"], "quote": d["quote"], "to": "、".join({"twin": "Days", "site": "主页"}.get(u, u) for u in users),
                       "once": bool(d.get("once")), "to_whom": d.get("to_whom") or "", "until": d.get("until") or "",
                       "renew_at": (d.get("renew_at") or "")[:10], "state": state})
     for d in lifebase.disclosures(db, mode="deny"):  # 逐条挡住的

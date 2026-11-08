@@ -4,7 +4,7 @@
 约在我的日历上，是我跟伊森做每周的复盘……他可以给我一个列表……然后每周最后一个周日晚上是，除了当日的复盘，还要做当月的复盘，
 每季度的最后一个晚上还要加上这个季度的复盘。不过这个月度和季度的复盘不用单独约日程，就复用这个日程就好了。”
 之前定的：“复盘只在聊天里聊吧，工作台上只看结果，就是汇总和草稿。”“季度”= 赛季，最后一个周日（她确认）；
-原来周日 20:00 的周报并进来，周常“财务复盘”“周日复盘”复盘做完自动打卡。
+原来周日 20:00 的周报并进来，周常“每周复盘”（原“财务复盘”，11-07 并进来）复盘做完自动打卡。
 
 怎么运作：
 - 苹果日历“小伴 计划”里一个每周日 21:00–22:00 的重复日程「和 小伴 周复盘」（ensure_event，只写一次）。
@@ -12,21 +12,22 @@
 - 到点 小伴 主动发开场（ethan/proactive.py 调 opener）：这周（/ 这个月 / 这个赛季）的数，加一张 3–8 题的单子。
   她在聊天里答，一次答完或一题一题答都行；小伴 追问、列出要改的、她点头才改。
 - 聊完 小伴 在回复末尾写 [复盘记录 小结 | 要点；要点 | 调整；调整]，记进 reviews 表，工作台赛季页“复盘记录”里看；
-  周常“财务复盘”“周日复盘”自动打卡。
+  周常“每周复盘”（原“财务复盘”，11-07 并进来）自动打卡。
 """
 
 import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
-from zoneinfo import ZoneInfo
+
+from . import clock
 
 TITLE = "和 小伴 周复盘"
 UID = "ethan-weekly-review"
 START, MINUTES = time(21, 0), 60
 WINDOW = timedelta(minutes=90)  # 到点后这么久内都能开场（主动消息每 10 分钟查一次）
 OPEN_FOR = timedelta(days=3)  # 开场后几天内她回的都算这次复盘
-HABITS = ("财务复盘", "周日复盘")
-LONDON = ZoneInfo("Europe/London")
+HABITS = ("每周复盘", "周日复盘", "财务复盘")  # 财务复盘并进每周复盘（迁移 20261107_merge_finance_review 改名），老名字留着兼容
+LONDON = clock.LOCAL  # 名字沿用，实际是她的时区（clock，ETHAN_TZ，默认伦敦；11-06 去掉写死）
 SCHEMA = """CREATE TABLE IF NOT EXISTS reviews (
     id INTEGER PRIMARY KEY, day TEXT NOT NULL UNIQUE, layers TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open',
     opened_at TEXT NOT NULL, summary TEXT, points TEXT, changes TEXT, done_at TEXT)"""
@@ -56,13 +57,14 @@ def layers(day: date, season_end: date) -> list:
 
 
 def event_ics(first: date) -> str:
-    """每周日 21:00–22:00（本地时间，夏令时自动跟着走）的重复日程，开始前 10 分钟提醒。"""
+    """每周日 21:00–22:00（她的时区，夏令时自动跟着走）的重复日程，开始前 10 分钟提醒。"""
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    tz = clock.tz_name()
     d = first.strftime("%Y%m%d")
     end = (datetime.combine(first, START) + timedelta(minutes=MINUTES)).strftime("%H%M%S")
     return "\r\n".join([
         "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//小伴//Mias OS//ZH", "BEGIN:VEVENT", f"UID:{UID}", f"DTSTAMP:{stamp}",
-        f"DTSTART;TZID=Europe/London:{d}T{START.strftime('%H%M%S')}", f"DTEND;TZID=Europe/London:{d}T{end}",
+        f"DTSTART;TZID={tz}:{d}T{START.strftime('%H%M%S')}", f"DTEND;TZID={tz}:{d}T{end}",
         "RRULE:FREQ=WEEKLY;BYDAY=SU", f"SUMMARY:{TITLE}",
         "DESCRIPTION:小伴 到点来找你。这周的数他先算好，再给你一张单子，在聊天里回就行。每月最后一个周日加月度复盘，赛季最后一个周日加赛季复盘。",
         "BEGIN:VALARM", "ACTION:DISPLAY", f"DESCRIPTION:{TITLE}", "TRIGGER:-PT10M", "END:VALARM",
@@ -75,7 +77,7 @@ def ensure_event(calendar, settings, today: date) -> bool:
         return False
     import urllib.parse
     cal = calendar.ethan_calendar()
-    first = today + timedelta(days=(6 - today.weekday()) % 7)
+    first = clock.week_end(today)  # 这周日（今天是周日就是今天）
     calendar.request("PUT", urllib.parse.urljoin(cal, f"{UID}.ics"), event_ics(first).encode("utf-8"), ctype="text/calendar")
     settings.set("review_event", UID)
     return True
@@ -152,7 +154,7 @@ def _split(part: str) -> list:
 
 
 def note(db, text: str, today: date) -> list:
-    """从 小伴 的话里记下复盘结果；周常“财务复盘”“周日复盘”顺手打卡。返回记下的那次复盘（{"day", "layers", …}）。"""
+    """从 小伴 的话里记下复盘结果；周常“每周复盘”（原“财务复盘”，11-07 并进来）顺手打卡。返回记下的那次复盘（{"day", "layers", …}）。"""
     hits = MARK.findall(text)
     if not hits:
         return []
@@ -204,7 +206,7 @@ def chat_text(cur: dict) -> str:
             "答完以后，把要改的列出来（挪哪个截止日、改哪项频次、加减哪件事），一件一句，等她点头才动手（用你平时的标记改待办）；"
             "下周最重要的三件定下来，加 [下周重点 定 第一件 | 第二件 | 第三件]。"
             "最后收尾那条回复的末尾加 [复盘记录 一句话小结 | 要点；要点；要点 | 定下的调整；调整]（没有调整写“无”），"
-            "工作台的复盘记录就是这一条，周常“财务复盘”“周日复盘”会自动打卡。她说今天先到这儿，也照样收尾写上。")
+            "工作台的复盘记录就是这一条，周常“每周复盘”（原“财务复盘”，11-07 并进来）会自动打卡。她说今天先到这儿，也照样收尾写上。")
 
 
 # ---------- 开场 ----------
@@ -273,7 +275,8 @@ def opener_prompt(persona: str, store, settings, day: date, lays: list) -> str:
         upgrades.collect(store.db, day)
     except Exception:
         pass
-    asks = ["这周最满意的一件事", "卡住或没做成的一件，你觉得原因是什么", "下周最重要的三件事", "有没有想改的目标、频次或截止日"]
+    asks = ["这周最满意的一件事", "卡住或没做成的一件，你觉得原因是什么", "这周的钱：花在哪了、有没有超预算、下周要留意什么",  # 财务复盘并进来
+            "下周最重要的三件事", "有没有想改的目标、频次或截止日"]
     if "month" in lays:
         try:
             facts["这个月"] = _month_facts(store.db, day)

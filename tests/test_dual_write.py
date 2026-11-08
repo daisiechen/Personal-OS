@@ -1,5 +1,6 @@
 """迁移第 2 步：新旧双写（docs/design/ontology-structure.md 9.2 节）。不管哪条路径写 facts，同一个事务里同步一条说法；对账逐条比。"""
 
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -37,6 +38,39 @@ class DualWriteTest(unittest.TestCase):
         src = [r[0] for r in self.db.conn.execute("SELECT evidence_id FROM statement_sources WHERE statement_id = ?", (s["id"],))]
         self.assertEqual(src, [self.ev])
         self.assertEqual(lifebase.reconcile_statements(self.db), [])
+
+    def _bring_back_v4(self):
+        """像 11-06 那样：部署 v5 时还跑着的旧进程把 v4 建回来，两版一起触发。"""
+        sql = lifebase.MIRROR_SQL.replace("_v5", "_v4")
+        self.db.conn.executescript(sql)
+
+    def test_stale_trigger_reported_and_dropped_on_ensure(self):
+        self._bring_back_v4()
+        f = lifebase.add_fact(self.db, "rhythms", "周末睡懒觉", [self.ev])
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM fact_map WHERE fact_id = ?", (f,)).fetchone()[0], 2)
+        problems = lifebase.integrity_problems(self.db)
+        self.assertTrue(any("旧版双写触发器还在" in p for p in problems))
+        self.assertTrue(any(f"事实 #{f} 和说法" in p and "出处" in p for p in problems))
+        self.db._tx_once = set()  # 新连接
+        lifebase.ensure(self.db)
+        self.assertEqual(lifebase.stale_mirror_triggers(self.db), [])
+        g = lifebase.add_fact(self.db, "rhythms", "周末去公园", [self.ev])
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM fact_map WHERE fact_id = ?", (g,)).fetchone()[0], 1)
+
+    def test_migration_removes_duplicate_statements(self):
+        self._bring_back_v4()
+        f = lifebase.add_fact(self.db, "rhythms", "周末睡懒觉", [self.ev])
+        keep = self.db.conn.execute("SELECT MIN(statement_id) FROM fact_map WHERE fact_id = ?", (f,)).fetchone()[0]
+        spec = importlib.util.spec_from_file_location("m", Path(__file__).resolve().parents[1] / "migrations/20261106_dedupe_mirror.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.db._tx_once = set()
+        msg = mod.run(self.store)
+        self.assertIn("删了多写的说法 1 条", msg)
+        self.assertEqual([r[0] for r in self.db.conn.execute("SELECT statement_id FROM fact_map WHERE fact_id = ?", (f,))], [keep])
+        self.assertEqual([r[0] for r in self.db.conn.execute("SELECT evidence_id FROM statement_sources WHERE statement_id = ?", (keep,))], [self.ev])
+        self.assertEqual(lifebase.integrity_problems(self.db), [])
+        self.assertIn("删了多写的说法 0 条", mod.run(self.store))  # 能重复跑
 
     def test_changes_from_any_module_follow(self):
         f = lifebase.add_fact(self.db, "rhythms", "周末睡懒觉", [self.ev])
@@ -122,3 +156,38 @@ class DualWriteTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 加的）：不带作者的数据改动和调研文档，相关测试跳过
+    import inspect
+    import unittest as _u
+    keep = _u.TestSuite()
+
+    def walk(suite):
+        for t in suite:
+            if isinstance(t, _u.TestSuite):
+                walk(t)
+                continue
+            try:
+                src = inspect.getsource(getattr(t, t._testMethodName))
+            except (OSError, TypeError, AttributeError):
+                src = ""
+            try:
+                setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
+            except (OSError, TypeError):
+                setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
+            if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
+                continue
+            keep.addTest(t)
+    walk(tests)
+    return keep

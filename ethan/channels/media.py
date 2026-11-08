@@ -102,8 +102,12 @@ class WhisperTranscriber:
         if self._model is None:
             from faster_whisper import WhisperModel  # 只在服务器上安装
             self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
-        segments, _ = self._model.transcribe(str(path), language="zh", vad_filter=True,
-                                             initial_prompt="以下是普通话的句子。")
+        # 先认是哪种语言（室友 Emma 说英文，语音转文字全转成了中文）。英文照英文转；
+        # 中文再用普通话提示转一遍（出简体、带标点）。transcribe 返回的是生成器，第一遍没往下读，只花了认语言的时间
+        segments, info = self._model.transcribe(str(path), vad_filter=True)
+        if (info.language or "zh") in ("zh", "yue"):
+            segments, _ = self._model.transcribe(str(path), language="zh", vad_filter=True,
+                                                 initial_prompt="以下是普通话的句子。")
         return "".join(s.text for s in segments).strip()
 
 

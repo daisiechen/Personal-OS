@@ -110,11 +110,12 @@ class WeekReviewTest(unittest.TestCase):
         self.assertEqual(ch.sent[-1][0].splitlines()[0], "到点啦，我们开会～")
         self.assertIn("周复盘", self.backend.seen[-1])
         self.assertIn("这周最满意的一件事", self.backend.seen[-1])
+        self.assertIn("这周的钱", self.backend.seen[-1])  # 财务复盘并进每周复盘
         self.assertNotIn("这个月最大的变化", self.backend.seen[-1])
         self.assertIn("复盘记录 一句话小结", weekreview.chat_text(weekreview.current(self.db)))
         self.assertNotIn("复盘开场", tick(self.ethan, ch, now=now.replace(minute=15)))  # 开过一次就不再开
         # 她答完，小伴 收尾
-        fin = quests.habit_by_title(self.db, "财务复盘") or {"id": quests.add_habit(self.db, "财务复盘", "weekly")}
+        fin = quests.habit_by_title(self.db, "每周复盘") or {"id": quests.add_habit(self.db, "每周复盘", "weekly")}
         text = "好，今天就到这儿～[复盘记录 训练稳住了，工作超时 | 训练 5 次；工作 52 小时 | 周三起 21 点收工；签证周四催]"
         self.assertEqual(parse_reply(text)["bubbles"], ["好，今天就到这儿～"])
         self.ethan.note_records(text)

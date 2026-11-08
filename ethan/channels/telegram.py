@@ -160,7 +160,8 @@ class TelegramChannel:
             return None
         added = parse_add(text)
         if added:
-            self.ethan.store.db.add_task(added[0], due=added[1])
+            from .. import taskrules
+            taskrules.add(self.ethan.store.db, added[0], due=added[1])
             self.send_todo(chat_id)
             return None
         if is_overview_request(text):

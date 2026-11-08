@@ -12,6 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from . import quests, territory
+from . import clock
 
 SCHEMA = "CREATE TABLE IF NOT EXISTS war_weeks (week TEXT PRIMARY KEY, data TEXT NOT NULL, frozen_at TEXT NOT NULL);"
 
@@ -20,8 +21,7 @@ def ensure(db):
     db.conn.executescript(SCHEMA)
 
 
-def monday(d: date) -> date:
-    return d - timedelta(days=d.weekday())
+monday = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def _ethan_weekly(root: Path, start: date, end: date) -> str:
@@ -53,7 +53,7 @@ def compute_week(db, root: Path, start: date, upto: date, bosses=None) -> dict:
     full = sum(1 for i in range((day - start).days + 1) if quests.full_day(db, start + timedelta(days=i)))
     return {"week": start.isoformat(), "end": end.isoformat(), "territories": terrs, "points": pts, "full_days": full,
             "days": (day - start).days + 1,
-            "bosses": [{k: b.get(k) for k in ("name", "main", "frac", "line", "status")} for b in (bosses or [])],
+            "bosses": [{k: b.get(k) for k in ("name", "main", "frac", "prog", "line", "status")} for b in (bosses or [])],
             "ethan": _ethan_weekly(root, start, end)}
 
 

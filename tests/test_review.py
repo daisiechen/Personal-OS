@@ -66,6 +66,14 @@ class ReviewTest(unittest.TestCase):
         page = self.wb.settings_page()
         names = [c["name"] for c in page["connections"]]
         self.assertIn("Monzo", names)
+        # 设置里没有 Codex 回报。Claude、Codex 分开显示，各看各的最近一次
+        import json
+        (self.wb.store.root / "claude-hooks.json").write_text(json.dumps({
+            "codex:s1": {"updated_at": "2026-11-06T17:55:54+00:00", "state": "completed"},
+            "abc-claude": {"updated_at": "2026-11-07T00:42:32+00:00", "state": "working"}}), encoding="utf-8")
+        health = {h["name"]: h for h in self.wb.settings_page()["health"]}
+        self.assertIn("2026-11-06 17:55", health["Codex 回报"]["detail"])
+        self.assertIn("2026-11-07 00:42", health["Claude 会话报到"]["detail"])
         self.assertTrue(page["prefs"]["proactive"])
         self.assertTrue(self.wb.act("settings.set", {"proactive": False})["ok"])
         self.assertFalse(self.wb.settings_page()["prefs"]["proactive"])

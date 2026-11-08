@@ -27,6 +27,7 @@
 
 import hashlib
 import json
+import sqlite3
 import os
 import re
 from datetime import date, datetime, timezone
@@ -179,9 +180,13 @@ def digest_transcript(store, router, ev: dict, today: date = None, only=None) ->
     bits = _header(first)
     session, agent = bits.get("会话", "别的会话"), bits.get("agent", "")
     day = date.fromisoformat((ev["occurred_at"] or "")[:10]) if DAY.fullmatch((ev["occurred_at"] or "")[:10]) else (today or her_today())
-    facts, failed = [], []
+    from .bgwork import QuotaBlocked
+    facts, failed, paused = [], [], False
     for n, piece in enumerate(_pieces(body)):
         if (only is not None and n not in only) or not parse_transcript(piece):
+            continue
+        if paused:  # 这一轮到时限 / 额度用完了：剩下的段原样留给下一轮
+            failed.append(n)
             continue
         try:
             data = extract_transcript(router, db, piece, session, f"ev:{ev['id']}:{n}")
@@ -189,6 +194,8 @@ def digest_transcript(store, router, ev: dict, today: date = None, only=None) ->
             data = None
             db.conn.rollback()
             print(f"[interviews] ev {ev['id']} 第 {n} 段模型出错：{type(e).__name__} {str(e)[:120]}", flush=True)
+            # 到时限、额度满是让路，不是这份对话有问题：不算试过一次（11-07 体检：6 份对话因为“到时限了”试满 3 次被放弃）
+            paused = paused or isinstance(e, QuotaBlocked)
         if data is None:
             failed.append(n)
             continue
@@ -199,6 +206,8 @@ def digest_transcript(store, router, ev: dict, today: date = None, only=None) ->
     result.update(lifebase.write_said_facts(db, ev["id"], others, session, day.isoformat(), PROPS))
     if failed:
         result["failed_pieces"] = failed
+    if paused:
+        result["paused"] = True
     return result
 
 
@@ -569,7 +578,8 @@ def digest(store, router, today: date = None, limit: int = None, skip=None, stop
         except Exception as e:  # 模型出错（额度满、超时）之类：这一份记一次没成
             db.conn.rollback()
             from .bgwork import QuotaBlocked
-            if isinstance(e, QuotaBlocked):  # 在用付费额度 / 额度用完：整轮停，这份不算试过
+            locked = isinstance(e, sqlite3.OperationalError) and "locked" in str(e)  # 库被每晚整理占着：也是让路，不算试过（11-08 体检）
+            if isinstance(e, QuotaBlocked) or locked:  # 在用付费额度 / 额度用完：整轮停，这份不算试过
                 if skip is not None:
                     skip.discard(ev["id"])
                 break
@@ -618,9 +628,10 @@ def _done(db, ev_id: int, result: dict):
     """记一次：成了 ok = 1；没成 ok = 0、tries + 1（到 MAX_TRIES 就不再试）。"""
     ensure_digest(db)
     ok = 0 if failed(result) else 1
-    db.conn.execute("INSERT INTO interview_digest (evidence_id, at, result, ok, tries) VALUES (?, ?, ?, ?, 1) "
+    step = 0 if result.get("paused") else 1  # 让路（到时限、额度满）没整理完的不算试过
+    db.conn.execute("INSERT INTO interview_digest (evidence_id, at, result, ok, tries) VALUES (?, ?, ?, ?, ?) "
                     "ON CONFLICT(evidence_id) DO UPDATE SET at = excluded.at, result = excluded.result, ok = excluded.ok, "
-                    "tries = interview_digest.tries + 1", (ev_id, _now(), json.dumps(result, ensure_ascii=False), ok))
+                    "tries = interview_digest.tries + ?", (ev_id, _now(), json.dumps(result, ensure_ascii=False), ok, step, step))
     db.conn.commit()
 
 
@@ -711,6 +722,7 @@ def main():
             router = patient(build_router(args.data, 50.0), store)
             from .bgwork import stop_or_blocked
             stop = stop_or_blocked(args.data, deadline(args.max_minutes))
+            router.stop = stop
             print(json.dumps(retry_locked(lambda: digest_all(store, router, stop=stop, beat=lambda n: heartbeat(args.data, n))),
                              ensure_ascii=False), flush=True)
         finally:

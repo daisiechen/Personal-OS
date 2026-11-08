@@ -30,6 +30,35 @@ class FinanceTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def test_apple_pay_shortcut(self):
+        """Revolut 没接，最近的消费没记进来。快捷指令每次 Apple Pay 付款发过来；Monzo、招行卡已有来源，不重复记。"""
+        inbox = Inbox(self.store, {"grok": "g", "cloud": "c"})
+        post = lambda d: inbox.handle("/cloud/spend", {"Authorization": "Bearer c"}, json.dumps(d, ensure_ascii=False).encode(), NOW)[1]
+        r = post({"kind": "applepay", "card": "Revolut Visa", "merchant": "Pret A Manger", "amount": "£4.85"})
+        self.assertEqual((r["amount"], r["currency"], r["source"]), (-4.85, "GBP", "revolut"))
+        self.assertTrue(post({"kind": "applepay", "card": "Revolut Visa", "merchant": "Pret A Manger", "amount": "£4.85"})["dup"])
+        self.assertTrue(post({"card": "Monzo", "merchant": "Tesco", "amount": "£10"})["skipped"])
+        self.assertTrue(post({"card": "招商银行信用卡", "merchant": "Tesco", "amount": "£10"})["skipped"])
+        self.assertEqual(post({"card": "Revolut", "merchant": "Café", "amount": "12,30 €"})["currency"], "EUR")
+        self.assertEqual(post({"card": "Amex", "merchant": "Uber", "amount": "23.10"})["source"], "applepay")
+        self.assertFalse(post({"card": "Revolut", "merchant": "x", "amount": "免费"})["parsed"])
+        n = self.db.conn.execute("SELECT COUNT(*) FROM transactions WHERE source IN ('revolut', 'applepay') AND amount < 0").fetchone()[0]
+        self.assertEqual(n, 3)
+
+    def test_apple_pay_and_email_count_once(self):
+        """Apple Pay 记的和邮件记的去重。Apple Pay 先到、邮件后到：留邮件那条；邮件先到：Apple Pay 不记。Revolut 不动。"""
+        ap = lambda d: finance.record_applepay(self.db, d, NOW)
+        ap({"card": "Visa ••1234", "merchant": "Tesco", "amount": "£10.95"})
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM transactions WHERE source = 'applepay'").fetchone()[0], 1)
+        finance.add(self.db, "cmb", NOW + timedelta(hours=10), -10.95, "GBP", merchant="TESCO STORES MAI")  # 第二天的每日信用管家
+        rows = self.db.conn.execute("SELECT source FROM transactions WHERE ABS(amount + 10.95) < 0.01").fetchall()
+        self.assertEqual([r[0] for r in rows], ["cmb"])
+        finance.add(self.db, "monzo", NOW, -4.2, "GBP", merchant="Pret")
+        self.assertTrue(ap({"card": "Visa", "merchant": "Pret A Manger", "amount": "£4.20"})["dup"])
+        ap({"card": "Revolut", "merchant": "Boots", "amount": "£7.00"})
+        finance.add(self.db, "cmb", NOW, -7.0, "GBP", merchant="BOOTS")
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM transactions WHERE source = 'revolut'").fetchone()[0], 1)
+
     def test_cmb_sms_recorded_once_and_feeds_health_line(self):
         inbox = Inbox(self.store, {"grok": "g", "cloud": "c"})
         sms = f"【招商银行】您账户1234于{MONDAY.month}月{MONDAY.day}日12:30在【瑞幸咖啡】快捷支付扣款人民币29.90元"
@@ -39,6 +68,12 @@ class FinanceTest(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0], 1)
         self.assertEqual(inbox.handle("/cloud/spend", {}, b'{"text": "x"}', NOW)[0], 401)
         self.assertFalse(finance.record_cmb(self.db, "您的验证码是 1234", NOW)["parsed"])  # 认不出也留着
+        # 同一笔在合并通知和单发通知里各出现一次（11-03 境外汇款手续费记了两次）：只记一次
+        combo = "您账户6851于11月03日20:47境外汇款费用支出人民币291.91 您账户6851于11月03日20:47通过手机银行已提交境外汇款"
+        n0 = self.db.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+        finance.record_cmb(self.db, combo, NOW, "95555")
+        self.assertTrue(finance.record_cmb(self.db, "您账户6851于11月03日20:47境外汇款费用支出人民币291.91", NOW, "95555").get("dup"))
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM transactions").fetchone()[0], n0 + 1)
         bocom = finance.record_cmb(self.db, f"【交通银行】您尾号5678的卡于{MONDAY.month}月{MONDAY.day}日18:02消费12.00元，余额100.00元", NOW, "95559")
         self.assertEqual((bocom["bank"], bocom["amount"]), ("bocom", -12.0))
         self.assertEqual(finance.record_cmb(self.db, "招商银行信用卡：您尾号0001消费人民币8.00元", NOW)["bank"], "cmb")
@@ -151,18 +186,35 @@ class FinanceTest(unittest.TestCase):
         back = finance.record_cmb(self.db, f"您账户0000于{bj.month}月{bj.day}日10:08在支付宝-盒马退款20.00元", evening, "95555@message.cmbchina.com")
         self.assertEqual((back["amount"], back["merchant"]), (20.0, "支付宝-盒马"))  # 商户不带“退款20.00元”
 
+    def test_refund_counts_back_on_original_day(self):
+        """退款冲回原消费那一周；对不上原消费的不算；同一笔退款两条通知只记一次；收入不算花销。"""
+        from datetime import timedelta
+        old = NOW - timedelta(days=20)
+        finance.add(self.db, "cmb", old, -2155.2, "CNY", merchant="携程旅行网")
+        finance.add(self.db, "cmb", NOW, 2155.2, "CNY", merchant="程支付-携程旅行网", category="refund")
+        self.assertFalse(finance.add(self.db, "cmb", NOW, 2155.2, "CNY", merchant=None, category="refund", ext_id="mail:x"))  # 邮件又来一次
+        finance.add(self.db, "cmb", NOW, 933.0, "CNY", merchant="程支付-携程旅行网", category="refund")  # 原消费不在记录里
+        finance.add(self.db, "cmb", NOW, 5000.0, "CNY", merchant="工资")  # 收入
+        today = NOW.date()
+        self.assertEqual(finance.spend_between(self.db, today, today), {})  # 本周不被退款冲低
+        old_day = finance.london_day(old)
+        self.assertEqual(finance.spend_between(self.db, old_day, old_day).get("CNY", 0), 0)  # 原消费那天冲平
+        r = next(x for x in finance.recent(self.db) if x["amount"] == 2155.2)
+        self.assertEqual((r["count_day"], r["refund_merchant"]), (old_day.isoformat(), "携程旅行网"))
+        self.assertIsNone(next(x for x in finance.recent(self.db) if x["amount"] == 933.0)["refund_of"])
+
     def test_mark_transaction_not_counted(self):
         from ethan.core.router import Settings
         from ethan.workbench.api import Workbench
         finance.record_cmb(self.db, f"您账户0000于{MONDAY.month}月{MONDAY.day}日10:00在瑞幸快捷支付30.00元", NOW)
         finance.record_cmb(self.db, f"您账户0000于{MONDAY.month}月{MONDAY.day}日11:00收到测试退款100.00元", NOW)
-        self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": -70.0})  # 测试那笔让花销变成负的
+        self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 30.0})  # 11-07 起对不上原消费的退款不算花销
         wb = Workbench(self.store, Settings(self.root / "settings.json"))
         tid = next(x["id"] for x in finance.recent(self.db) if x["amount"] == 100)
         r = wb.act("money.ignore", {"id": tid, "on": 1})
         self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 30.0})
         self.assertTrue(wb.act(r["undo"]["action"], {k: v for k, v in r["undo"].items() if k != "action"})["ok"])
-        self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": -70.0})
+        self.assertEqual(finance.month_spend(self.db, MONDAY), {"CNY": 30.0})  # 算回来了也还是对不上原消费的退款，不算
 
 if __name__ == "__main__":
     unittest.main()

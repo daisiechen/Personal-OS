@@ -11,4 +11,4 @@ WorkingDirectory=/home/ethan/Personal-OS
 EnvironmentFile=/home/ethan/.config/ethan/ethan.env
 Environment=PATH=/home/ethan/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/usr/bin/python3 -m ethan.jobs --data /home/ethan/data --name memory -- /usr/bin/python3 -m ethan.nightly --data /home/ethan/data
-TimeoutStartSec=15min
+TimeoutStartSec=60min

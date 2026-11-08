@@ -67,6 +67,19 @@ class BgWorkTest(unittest.TestCase):
         self.assertEqual(p.complete("s", []), "ok")
         self.assertTrue(sleeps and all(s == bgwork.CHECK for s in sleeps))
 
+    def test_respects_round_deadline_while_yielding(self):
+        """11-06：让路时一歇好几小时，30 分钟的时限没管住、还占着位置，后面的整理一直起不来。到时限就让出来。"""
+        sleeps = []
+        p = bgwork.PatientRouter(Router(Backend(fails=99)), store(), sleep=sleeps.append, now=lambda: NOW)
+        p.stop = lambda: len(sleeps) >= 1  # 歇过一回就到时限
+        with self.assertRaises(bgwork.QuotaBlocked):
+            p.complete("s", [])
+        self.assertEqual(len(sleeps), 1)  # 没有接着歇满 12 回
+        p2 = bgwork.PatientRouter(Router(Backend(0)), store(1), sleep=sleeps.append, now=lambda: NOW)
+        p2.stop = lambda: True  # 她在聊、而这一轮已经到时限：不歇，直接让出来
+        with self.assertRaises(bgwork.QuotaBlocked):
+            p2.complete("s", [])
+
     def test_priority_private_before_group_recent_first(self):
         evs = [{"id": 1, "text": "〔会话：微信群 · 读书会〕", "occurred_at": "2026-11-01"},
                {"id": 2, "text": "〔会话：微信 · 小王〕", "occurred_at": "2025-01-01"},

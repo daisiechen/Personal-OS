@@ -138,6 +138,8 @@ source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -na
 
 会打出：会话数（`chats`）、新消息总数（`new`）、她说的条数（`her`）、每个会话的条数（`per_chat`，`send` 是会不会交给 小伴）。
 `her` 是 0 或者结果里有“--self-id … 找不到”，说明第 6 步的 id 不对，别往下走。
+还有一行 `labels`（11-06 加）：“读到 N 个标签、M 个联系人有标签”就是她在微信里给联系人打的标签读到了，关系页会按标签分组；
+“没读到微信标签”不影响导出，关系页照旧按重要程度分（把这一行原样发给开发会话，好查是哪个字段对不上）。
 
 ### 8. 导出全部历史并交给 小伴
 
@@ -151,6 +153,7 @@ source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -na
 - 只想交某几个会话：末尾加 `--chats "小王,读书会"`；群默认只交她说过话的，全都要加 `--all`；也想导文件传输助手加 `--filehelper`。
 - 只导出不交：把 `--send` 换成 `--export`。
 - `--send` 时顺带把私聊统计交给服务器建人物卡（工作台“关系”页，design/relations.md）；某些人不想建卡：末尾加 `--people-skip "张三,某某"`（名字里含就跳过），装每天自动跑时也带上。
+- 统计里顺带交她在微信里给每个人打的标签（只交标签名，去掉联系方式），关系页按标签分组。
 
 ### 9. 装每天自动跑（11-06 起每天，原来每周日）
 
@@ -176,6 +179,7 @@ launchctl start com.ethan.wechatexport; sleep 60; tail -30 ~/.config/ethan/wecha
 | 钥匙 | 工具生成的 `keys.json`：`{"keys": {"message/message_0.db": {"enc_key": "64 位十六进制"}}}`；也认按盐值（库文件头 16 字节）、绝对路径登记的。每个库必须正好一把；文件必须是 600。 |
 | 会话 | `session/session.db` 的 `SessionTable.username`；名字从 `contact/contact.db` 的 `contact`（备注 > 昵称 > 微信号）。去掉公众号 `gh_`、服务号和系统号（`weixin`、`brandsessionholder` 等）、折叠入口；文件传输助手要 `--filehelper`。 |
 | 消息 | `message/message_<n>.db` 里的 `Msg_<md5(username)>`：`local_id`、`server_id`、`local_type`（低 32 位种类、高 32 位子类）、`create_time`、`real_sender_id`（`Name2Id` 的 rowid）、`message_content`（`28 b5 2f fd` 开头是 zstd，用 python3.14 自带的解）。群里别人的正文前带 `<username>:\n`。文字照写；图片、语音、视频、表情、位置、名片、通话、链接、文件、红包、转账等写 `[图片]` 这类占位；引用回复取回复的那句。 |
+| 微信标签（11-06） | `contact/contact.db`：标签名在 `contact_label`（`label_id_`、`label_name_`、`sort_order_`）；联系人身上的标签在 `contact.extra_buffer`（protobuf）顶层第 30 号字段，逗号隔开的标签编号（如 `1,5`）。出处：开源的 r266-tech/wx-cli、pandorafuture/wx-cli 都这样读，没在她的库上核过。表名、列名按候选名探测（也认 3.x 的 `ContactLabel` / `LabelIDList` 直接列）；读不到返回“没读到”，不报错、统计里不带 `labels`（服务器原来的标签不动）。`Reader.labels` / `read_labels`，测试 `tests/test_wechat_labels.py`。 |
 | 文件 | `~/wechat-export/<会话名>.jsonl`，一行一条 `{"time", "who", "is_her", "text", "type", "sender", "db", "local_id", "server_id"}`；同名会话加微信号哈希。 |
 | 增量 | `~/.config/ethan/wechatexport-state.json`：每个会话每个库最后的 `local_id`、库的盐值、最后的 `create_time`（库被重建了按时间接着导）、已交到第几行。 |
 | 交给 小伴 | 整段对话，两边都交：一天一段，开头〔日期〕，一行一句标说话人【她】/【备注名或群成员名】；单条超过 2000 字截断，图片语音这类只有占位的不交；电话邮箱住址用 `docquotes.redact` 去掉。会话名“微信 · <会话名>”，场合“她的微信聊天（导出）”，经 `cloud.CloudClient.interview` 交（`format: "transcript"`），一批最多 12000 字，同一会话按顺序；一批成功才前进，失败的下次接着交。私聊都交；群只交她说过话的群、她说过话的那几天（`--chats` 只交点名的，`--all` 所有群所有天）。服务器收到就在后台一次整理完（不等每晚）。钥匙读 `ETHAN_CLOUD_TOKEN` 或 `~/.claude/settings.json`（同 agentexport）；没钥匙只生成交接文件到 `~/.config/ethan/wechatexport-out/`（用 `python3 -m ethan.cloud interview --file` 交，服务器自己认出是整段对话）。 |
@@ -183,5 +187,6 @@ launchctl start com.ethan.wechatexport; sleep 60; tail -30 ~/.config/ethan/wecha
 ## 三、还没做 / 待核实
 
 - macOS 26.6 上取钥匙能不能成（那个工具没测过）。
+- 微信标签的位置（`extra_buffer` 第 30 号字段）来自开源工具，等她第一次 `--dry-run` 看 `labels` 那行核实。
 - 群成员显示名只用联系人表的备注 / 昵称，没读群昵称（`chat_room.ext_buffer`），不在联系人表里的成员显示微信号。
 - “人”和“关系”从这里补（1.9 的验收第 3 题）要等第一次交完、服务器整理后再看。

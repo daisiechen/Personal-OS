@@ -212,7 +212,7 @@ class InboxAgentTest(unittest.TestCase):
         self.assertEqual(agents.load_sessions(self.store.root)["sessions"][0]["title"], "DemoApp")
 
 
-class LiveWorkTest(unittest.TestCase):
+class LiveWorkBase(unittest.TestCase):
     """团队页漏活、失败怎么判：她叫停的算放弃不扣分；小伴 派给 Grok 还没回的算在干。"""
 
     def setUp(self):
@@ -225,6 +225,8 @@ class LiveWorkTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+
+class LiveWorkTest(LiveWorkBase):
     def test_drop_is_not_failure(self):
         tid = agents.add(self.db, "codex", "DemoApp 首页", size=3)
         self.assertEqual(agents.drop(self.db, tid)["status"], "dropped")
@@ -264,7 +266,7 @@ class LiveWorkTest(unittest.TestCase):
         self.assertEqual([x["title"] for x in agents.grok_live(self.root)["running"]], ["查芬兰机票", "找芬兰观光团"])
 
 
-class StaleCodexTest(LiveWorkTest):
+class StaleCodexTest(LiveWorkBase):
     def test_running_too_long_becomes_failed(self):
         tid = agents.add(self.db, "codex", "做到一半断了", size=2)
         old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(timespec="seconds")
@@ -289,7 +291,7 @@ class SelfStartedExpiryTest(unittest.TestCase):
             store.close()
 
 
-class JudgeReviewTest(LiveWorkTest):
+class JudgeReviewTest(LiveWorkBase):
     def test_misreport_and_fail_from_review(self):
         """“待你审查”里有些是误报：能选误报（流转到下一步）或失败。"""
         from datetime import datetime, timedelta, timezone
@@ -317,7 +319,7 @@ class JudgeReviewTest(LiveWorkTest):
         agents.record_report(self.root, {"agent": "claude", "id": "s1", "title": "开发会话", "state": "review_ready"}, later)
         self.assertEqual([s["key"] for s in agents.load_sessions(self.root, later)["sessions"]], ["claude:s1"])
 
-class ArchiveTest(LiveWorkTest):
+class ArchiveTest(LiveWorkBase):
     def test_archive_failed_and_review(self):
         """失败的 7 天后去哪、能不能直接归档：失败的照算失败收进归档，等审查的不审了算放弃再归档。"""
         from ethan.core.router import Settings

@@ -245,9 +245,12 @@ def whereabouts_now(db, user: str, today: date = None) -> dict:
     ontology.ensure(db)
     me = ontology.self_id(db)
     now_sql, now_args = lifebase.mem_where("now", "statements", day)
+    gone_sql, gone_args = lifebase.mem_where("situation_gone", "statements", day)
     doing = []
     for s in db.conn.execute("SELECT DISTINCT r.situation_id, o.name FROM situation_roles r JOIN objects o ON o.id = r.situation_id "
                              "WHERE r.object_id = ? AND o.status = 'active'", (me,)):
+        if db.conn.execute(f"SELECT 1 FROM statements WHERE subject_id = ? AND {gone_sql}", (s["situation_id"], *gone_args)).fetchone():
+            continue  # 起止有她删掉的来源：整个情境不答（Codex 评审 11-07 第 3 条）
         ends = {p: [x for x in db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND property = ? AND {now_sql}",
                                                (s["situation_id"], p, *now_args))] for p in ("situation_start", "situation_end")}
         start = [x["value_text"] for x in ends["situation_start"]]
@@ -311,7 +314,7 @@ def weekly_spend(db, user: str, today: date = None, weeks: int = 4) -> dict:
     finance.ensure(db)
 
     def week(end: date) -> dict:
-        start = end - timedelta(days=end.weekday())
+        start = clock.week_start(end)
         spent = finance.spend_between(db, start, end)
         days = db.conn.execute("SELECT COUNT(DISTINCT day) FROM transactions WHERE day >= ? AND day <= ? "
                                "AND COALESCE(category, '') NOT IN ('unparsed', 'ignored')", (start.isoformat(), end.isoformat())).fetchone()[0]
@@ -468,7 +471,7 @@ def _hit(text: str, words: str, need: float = 0.5) -> bool:
 
 
 def _private_only(db, fn, user):
-    """对外的（主页助手、主页）一律没权限；放行返回 None。"""
+    """对外的（Days、主页）一律没权限；放行返回 None。"""
     blocked = _gate(db, user)
     if blocked:
         return _out(db, fn, user, blocked)
@@ -494,12 +497,34 @@ def _rows(db, sql, args=()):
         return []  # 表还没建（那个模块没用过）：当成没有记录
 
 
-def _monday(day: date) -> date:
-    from datetime import timedelta
-    return day - timedelta(days=day.weekday())
+_monday = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 # ---------- 第 2 题：她上次说到某件事是什么时候、原话、当时什么场合 ----------
+def _her_lines(source: str, text: str):
+    """这条原始记录里她说的话，最近的在前。整段对话（一行一句标【她】/【某某】，微信、Grok、Codex 的交接，一份常有上万字）
+    只取她的那几轮逐轮比：原来整份一起比，长对话几乎什么话题都“命中”，最近 3 条全被它占满、又只截前 300 字，
+    真正说到这件事的那句排不进来（11-07 正式评估“知识更新”F 4/15 对 R 13/15，服务器只读诊断查到）；别人说的那几行也不算她的原话。
+    按说话轮次切：不以【某某】开头的行是上一轮的续行（导出时保留了消息里的换行，Codex 评审 11-07）。
+    普通聊天（source = chat，一条一句“mia：…”）照旧整条比，里面引用了带【她】的文字也不当整段对话。"""
+    if source != "chat" and re.search(r"^【她】", text, re.M) and not re.search(r"^答：", text, re.M):
+        turns, who = [], None
+        for line in text.splitlines():
+            m = re.match(r"^【([^】]+)】(.*)$", line)
+            if m:
+                who = m.group(1)
+                turns.append([who, m.group(2).strip()])
+            elif re.match(r"^〔[^〕]*〕\s*$", line):
+                who = None  # 新的一天
+            elif who is not None and line.strip():
+                turns[-1][1] += "\n" + line.strip()
+        for who, said in reversed(turns):
+            if who == "她" and said:
+                yield said
+        return
+    yield text.split("：", 1)[1] if source == "chat" and "：" in text[:10] else text
+
+
 def last_said(db, user: str, topic: str, limit: int = 3) -> dict:
     """只看她自己说的、写的原始记录（删掉的不算），最近的在前；自述整理成说法时记了语境（玩笑、气话、场合）的一起给。"""
     no = _private_only(db, "last_said", user)
@@ -514,8 +539,8 @@ def last_said(db, user: str, topic: str, limit: int = 3) -> dict:
         text = r["text"] or ""
         if r["source"] == "chat" and text.startswith("ethan："):
             continue  # 聊天里 小伴 说的不算她说的
-        quote = text.split("：", 1)[1] if r["source"] == "chat" and "：" in text[:10] else text
-        if not _hit(quote, topic):
+        quote = next((q for q in _her_lines(r["source"], text) if _hit(q, topic)), None)
+        if quote is None:
             continue
         items.append({"evidence": r["id"], "quote": quote[:300], "at": r["occurred_at"], "source": r["source"], "context": None})
         if len(items) >= limit:
@@ -544,9 +569,7 @@ def person(db, user: str, name: str) -> dict:
     name = (name or "").strip()
     if not name:
         return _out(db, "person", user, "unknown", note="没说是谁")
-    cards = _rows(db, "SELECT * FROM people WHERE name = ? OR name LIKE ? ORDER BY name = ? DESC, id", (name, f"%{name}%", name))
-    exact = [c for c in cards if c["name"] == name]
-    cards = exact or cards
+    cards = _find_people(db, name)
     ontology.ensure(db)
     day = lifebase_today().isoformat()
     items = []
@@ -564,13 +587,66 @@ def person(db, user: str, name: str) -> dict:
                       "notes": (c.get("notes") or "")[:300], "last_contact": c.get("last_contact"), **card,
                       "relation": [x for x in says if x["property"] == "relation_to_her"],
                       "statements": [x for x in says if x["property"] != "relation_to_her"][:10],
+                      "mentions": _mentions(db, user, day, {name, _short_name(c["name"])}),
                       "latest": last[0] if last else None})
-    if not items:
+    if not items:  # 没有人物卡、但她说起过的人（王宇航：“她拉老同事王宇航一起做 KingSail”，11-07 评估试跑）
+        said = _mentions(db, user, day, {name})
+        if said:
+            return _out(db, "person", user, "answer", [{"person": None, "name": name, "mentions": said}], "没有人物卡，下面是她说起过的")
         return _out(db, "person", user, "unknown", note="人物卡里没有这个人")
     if len(items) > 1:
         return _out(db, "person", user, "disputed", items, "同名（或名字相近）的有好几位，先问她是哪位")
     disputed = any(x["review"] == "disputed" for x in items[0]["relation"] + items[0]["statements"])
     return _out(db, "person", user, "disputed" if disputed else "answer", items)
+
+
+_NICK = re.compile(r"(?:叫他|叫她|称他|称她|称呼他|称呼她|称呼|喊他|喊她|备注)[“\"「]?([\u4e00-\u9fffA-Za-z]{1,8})[”\"」]?")
+
+
+def _short_name(n: str) -> str:
+    """“科比💤 1123” → “科比”：去掉表情、数字和后面的备注，留最前面那段名字。"""
+    m = re.match(r"[\u4e00-\u9fffA-Za-z·.]+", (n or "").strip())
+    return m.group(0) if m else (n or "")
+
+
+def _find_people(db, name: str) -> list:
+    """按她叫的名字找人物卡（11-07 评估试跑：“鹏哥”“科比”认不出）：卡名、微信名一样的最先；
+    再看去掉表情和数字的短名、关系 / 备注里写的小名（“叫他鹏哥”）、合并时记下的别名；都没有才按名字包含找。"""
+    rows = _rows(db, "SELECT * FROM people")
+    exact = [c for c in rows if name in (c["name"], c.get("wx_name"))]
+    if exact:
+        return exact
+    nick = [c for c in rows if _short_name(c["name"]) == name
+            or name in _NICK.findall(f"{c.get('relation') or ''} {c.get('notes') or ''}")]
+    try:  # 合并卡时旧名字记成了对象的别名（relations.merge → lifebase.repoint_person）
+        ids = {int(r[0].split(":", 1)[1]) for r in db.conn.execute(
+            "SELECT r.ref FROM aliases a JOIN object_refs r ON r.object_id = a.object_id WHERE a.alias = ? AND r.ref LIKE 'person:%'", (name,))}
+        nick += [c for c in rows if c["id"] in ids and c not in nick]
+    except Exception:
+        pass
+    if nick:
+        return nick
+    return [c for c in rows if len(name) >= 2 and name in c["name"]]
+
+
+def _mentions(db, user: str, day: str, names: set) -> list:
+    """她说过的话里提到这个人的（关于她自己的说法，比如“她与科比分工调研”），最多 8 条；按这个使用者能看的筛。"""
+    names = {n for n in names if n and len(n) >= 2}
+    if not names:
+        return []
+    now_sql, now_args = lifebase.mem_where("now", "statements", day)
+    self_obj = db.conn.execute("SELECT object_id FROM object_refs WHERE ref = 'self'").fetchone()
+    if not self_obj:
+        return []
+    like = " OR ".join("value_text LIKE ?" for _ in names)
+    out = []
+    for s in db.conn.execute(f"SELECT * FROM statements WHERE subject_id = ? AND ({like}) AND {now_sql} ORDER BY recorded_at DESC LIMIT 30",
+                             (self_obj[0], *[f"%{n}%" for n in names], *now_args)):
+        if _visible(user, s, db):
+            out.append(_item(db, s))
+        if len(out) >= 8:
+            break
+    return out
 
 
 def _card_extra(c: dict) -> dict:
@@ -959,10 +1035,13 @@ def public_offer(db, user: str, topic: str = None, recipient: str = None) -> dic
 
 
 def public_answer(db, user: str, question: str, recipient: str = None) -> dict:
-    """对外使用者（主页助手、主页、合作方 agent）回答访客的统一入口：按问题分到第 16 / 15 / 14 题；
+    """对外使用者（Days、主页、合作方 agent）回答访客的统一入口：按问题分到第 16 / 15 / 14 题；
     要先问她的，在“待你定”里生成一条（谁问的、问了什么、拟答），回答“我问问她”。返回题的结果 + reply（能直接说的话）+ pending。"""
     import re
     q = (question or "").strip()[:200]
+    if day_question(q):  # 她哪天做了什么、去了哪（第 29 题）：行程一律不对外，回“不方便说”，不生成“问我”
+        got = day_summary(db, user, day_question(q)[2])
+        return {**got, "items": [], "reply": REFUSE, "pending": None}
     if re.search(OFFER_WORDS, q):
         got = public_offer(db, user, q, recipient)
     elif any(re.search(pat, q) for _, pat, _ in SENSITIVE_TOPICS):
@@ -1223,6 +1302,192 @@ def said_not_todo(db, user: str, today: date = None, days: int = 7) -> dict:
     return _out(db, "said_not_todo", user, "answer", items, "只列出来，不自动建待办")
 
 
+# ---------- 第 29 题：某天 / 某段时间她做了什么（原候选 D；一问“我昨天干嘛去了”，小伴 答“我不知道”） ----------
+# 问法里要有“哪天”（clock.day_range 认得出）和“做了什么 / 去哪”这类，才算这道题（ethan/askroute.py 分流、对外的一律“不方便说”）
+DAY_ASK = r"干嘛|干啥|干什么|干了(什么|啥|些什么)|做了(什么|啥|些什么|哪些)|做什么|忙(了)?(什么|啥)|去(了)?哪|在哪|怎么过的|过得怎么样|都干了|干嘛去了|去干嘛"
+DAY_MAX = 14  # 一次最多汇总几天（“这个月”只给最近 14 天，写明）
+
+
+def day_question(text: str, today: date = None):
+    """这句是不是在问“某天她做了什么 / 在哪”：是就返回 (开始, 结束, 原话里说日子的那几个字)，不是返回 None。"""
+    import re
+    if not text or not re.search(DAY_ASK, text):
+        return None
+    return clock.day_range(text, today or lifebase_today())
+
+
+def _local_day(at) -> str:
+    """存的时间（UTC 或带时区的 ISO）落在她那边的哪一天。"""
+    try:
+        t = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return str(at or "")[:10]
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.astimezone(clock.LOCAL).date().isoformat()
+
+
+def _diary_part(db, d: str):
+    """那天的日记：她写的 / 她改过的为准；系统写的标“小伴 记的”。没有返回 None。"""
+    from . import diary
+    try:
+        r = diary.get(db, d)
+    except Exception:
+        return None
+    if not r or not (r.get("body") or "").strip():
+        return None
+    who = diary.who_wrote(r)
+    return {"part": "日记", "who": who, "said_by": "her_words" if r.get("source") in diary.HER else "system",
+            "text": " ".join(r["body"].split())}
+
+
+def _day_parts(db, day: date, full: bool = True) -> list:
+    """一天的各项记录（行为记录、日程、日记），每项一个 {"part", "value", ...}；没有的不放。full=False 时每项写短一点（汇总好几天用）。"""
+    from datetime import timedelta
+    d = day.isoformat()
+    parts = []
+    dia = _diary_part(db, d)
+    if dia:
+        text = dia["text"] if full else dia["text"][:120] + ("…" if len(dia["text"]) > 120 else "")
+        parts.append({"part": "日记", "value": f"日记（{dia['who']}）：{text}", "said_by": dia["said_by"], "from": "diary"})
+    try:
+        from . import places_log
+        trips = places_log.trips(db, day, day)
+        if trips:
+            parts.append({"part": "出门", "from": "iPhone 定位", "value": "出门和到家：" + "；".join(
+                f"{a:%H:%M} 出门" + (f"，{b:%H:%M} 到家" + ("（第二天）" if b.date() > day else "") if b else "，没记到回家") for a, b in trips)})
+    except Exception:
+        pass
+    try:
+        from . import workaholic
+        s = workaholic.day_stats(db, day)
+        if s["hours"]:
+            parts.append({"part": "工作时长", "from": "电脑记录", "value": f"电脑上工作了约 {s['hours']} 小时"
+                          + (f"，晚上 9 点后 {s['late']} 小时" if s["late"] else "") + (f"，最长一段 {s['stretch']} 小时" if full and s["stretch"] else "")})
+    except Exception:
+        pass
+    evs = []
+    try:
+        plan = db.latest_plan(d) if hasattr(db, "latest_plan") else None
+        evs = [f"{i['start']}{'–' + i['end'] if i.get('end') else ''} {i['title']}" + (f"（{i['place']}）" if i.get("place") else "")
+               for i in (plan or {}).get("items", []) if i.get("kind") == "event" and i.get("start")]
+    except Exception:
+        pass
+    try:
+        from . import events as fev
+        evs += [f"{b[0]}–{b[1]} {b[2]}" + (f"（{b[3]['location']}）" if b[3].get("location") else "") for b in fev.for_day(db, day)]
+    except Exception:
+        pass
+    if evs:
+        parts.append({"part": "日程", "from": "日历和计划", "value": "日程（排了的不一定去了，以出门记录和她说的为准）：" + "；".join(dict.fromkeys(evs))})
+    try:
+        from . import taskrules
+        done = [t["title"] for t in taskrules.done_that_day(db, day)]
+        if done:
+            parts.append({"part": "做完的待办", "from": "待办", "value": "做完的待办：" + "、".join(done[:12 if full else 5])
+                          + (f" 等 {len(done)} 件" if len(done) > (12 if full else 5) else "")})
+    except Exception:
+        pass
+    checks = _rows(db, "SELECT reason FROM points WHERE day = ? AND delta > 0 AND COALESCE(ref, '') NOT LIKE 'task:%' ORDER BY at", (d,))
+    if checks:
+        parts.append({"part": "打卡", "from": "打卡记录", "value": "打卡：" + "、".join(r["reason"] for r in checks[:10])})
+    try:
+        from . import finance
+        spent = finance.spend_between(db, day, day)
+        if spent:
+            top = _rows(db, "SELECT merchant, amount, currency FROM transactions WHERE day = ? AND amount < 0 "
+                            "AND COALESCE(category, '') NOT IN ('transfers', 'savings', 'unparsed', 'ignored') ORDER BY amount LIMIT 3", (d,))
+            parts.append({"part": "花销", "from": "银行流水", "value": "花销：" + "、".join(f"{v:g} {c}" for c, v in spent.items())
+                          + ("（最大的：" + "、".join(f"{r['merchant'] or '某笔'} {-r['amount']:g} {r['currency']}" for r in top) + "）" if full and top else "")})
+    except Exception:
+        pass
+    met = _rows(db, "SELECT kind, who FROM life_log WHERE day = ? AND kind IN ('meet', 'new_friend', 'contact')", (d,))
+    if met:
+        parts.append({"part": "见了谁", "from": "社交记录", "value": "见了谁 / 联系了谁：" + "、".join(
+            f"{r['who']}（{ {'meet': '见面', 'new_friend': '新认识', 'contact': '联系'}.get(r['kind'], r['kind'])}）" for r in met)})
+    if full:  # 她那天在聊天里说的（只取她说的，删掉的不算）；时间按她的时区算哪天
+        lo, hi = (day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat()
+        said = [r for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'chat' AND deleted_at IS NULL "
+                                     "AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at", (lo, hi))
+                if (r["text"] or "").startswith("mia：") and _local_day(r["occurred_at"]) == d]
+        if said:
+            lines = []
+            for r in said[-12:]:
+                at = str(r["occurred_at"])
+                hm = ""
+                try:
+                    t = datetime.fromisoformat(at.replace("Z", "+00:00"))
+                    hm = (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(clock.LOCAL).strftime("%H:%M") + " "
+                except ValueError:
+                    pass
+                lines.append(hm + " ".join(r["text"][len("mia："):].split())[:120])
+            parts.append({"part": "聊天里说的", "from": "聊天", "said_by": "her_words", "value": "她那天在聊天里说的：" + " / ".join(lines)})
+    return parts
+
+
+def day_her_words(db, user: str, day: date, limit: int = 300) -> dict:
+    """某天她在聊天里说的原话（evidence 里 source = 'chat'、以“mia：”开头的；小伴 说的、删掉的不算），按时间先后。
+    哪天按她的时区算。昨日卡（cards）用它挑有画面感的几句给导演（晚同意“加”）。对外的一律没权限。"""
+    no = _private_only(db, "day_her_words", user)
+    if no:
+        return no
+    d = day.isoformat()
+    lo, hi = (day - timedelta(days=1)).isoformat(), (day + timedelta(days=2)).isoformat()
+    rows = [r for r in _rows(db, "SELECT id, occurred_at, text FROM evidence WHERE source = 'chat' AND deleted_at IS NULL "
+                                 "AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at, id", (lo, hi))
+            if (r["text"] or "").startswith("mia：") and _local_day(r["occurred_at"]) == d]
+    items = [{"evidence": r["id"], "at": str(r["occurred_at"]), "value": " ".join(r["text"][len("mia："):].split()),
+              "said_by": "her_words"} for r in rows[-limit:]]
+    return _out(db, "day_her_words", user, "answer" if items else "unknown", items)
+
+
+def day_summary(db, user: str, when: str = None, today: date = None) -> dict:
+    """某天 / 某段时间她做了什么：日记（她写的、她改过的为准；系统写的标“小伴 记的”）、出门和到家、电脑上的工作时长、日程、
+    做完的待办（ethan/taskrules.py）、打卡、花销、见了谁、那天她在聊天里说的。“哪天”按她的时区解析（clock.day_range）。
+    行程是私事：对外的（Days、主页、合作方）一律没权限（调用方看到和“没有”一样，回“不方便说”）。
+    日记没写的照样用行为记录答，写明“那天的日记还没写”；什么都没有就是不知道（不等于那天没做事）。"""
+    no = _private_only(db, "day_summary", user)
+    if no:
+        return no
+    from datetime import timedelta
+    now = today or lifebase_today()
+    got = clock.day_range(when or "", now) if when else (now - timedelta(days=1), now - timedelta(days=1), "昨天")
+    if not got:
+        return _out(db, "day_summary", user, "unknown", note=f"没认出“{when}”是哪天")
+    start, end, said = got
+    if start > now:
+        return _out(db, "day_summary", user, "unknown", note=f"{said}（{start.isoformat()}）还没到")
+    end = min(end, now)
+    days = (end - start).days + 1
+    cut = ""
+    if days > DAY_MAX:
+        start, cut = end - timedelta(days=DAY_MAX - 1), f"只汇总了最近 {DAY_MAX} 天"
+    one = start == end
+    items, no_diary = [], []
+    d = end
+    while d >= start:  # 新的在前
+        parts = _day_parts(db, d, full=one)
+        wd = "一二三四五六日"[d.weekday()]
+        if not any(p["part"] == "日记" for p in parts) and d < now:
+            no_diary.append(d)
+        for p in parts:
+            items.append({**p, "day": d.isoformat(), "value": (p["value"] if one else f"{d.month}/{d.day} 周{wd} " + p["value"])})
+        d -= timedelta(days=1)
+    span = start.isoformat() if one else f"{start.isoformat()} 到 {end.isoformat()}"
+    notes = [f"问的是{said}（{span}）"]
+    if no_diary:
+        notes.append(("那天" if one else "、".join(f"{x.month}/{x.day}" for x in no_diary) + " ") + "的日记还没写，按行为记录答")
+    if any(p.get("said_by") == "system" for p in items):
+        notes.append("标“小伴 记的”日记是系统写的初稿，她没改过，不当她的原话")
+    if one and start == now:
+        notes.append("今天还没过完")
+    if cut:
+        notes.append(cut)
+    if not items:
+        return _out(db, "day_summary", user, "unknown", note="；".join(notes) + "；这段时间没有任何记录（不等于没做事）")
+    return _out(db, "day_summary", user, "answer", items, "；".join(notes))
+
+
 # ---------- 写作规范（ontology.md 3.2，“提前做”；docs/design/style-and-skills.md） ----------
 STYLE_CHAT_PER_DAY = 6  # 聊天原话抽样：每天最多几句、一共最多几句（不全量）
 STYLE_CHAT_MIN = 6  # 太短的（“好”“嗯嗯”）不要
@@ -1327,10 +1592,10 @@ def style_materials(db, user: str, chat_limit: int = 80) -> dict:
 STYLE_BAD = re.compile(r"写得不好|不像我|不是我的(语气|口吻|说法)|我不会这么(说|写)|别这么写|不要这么写|太(啰嗦|肉麻|鸡汤|书面|正式|官方)|生硬|别扭|矫情")
 
 
-def writing_style(db, user: str, audience: str = None) -> dict:
+def writing_style(db, user: str, audience: str = None, scene: str = None) -> dict:
     """她**确认过**的写作规范（说法 property = writing_style，review = accepted）；草稿、她说不对的都不给。
     audience（friend 朋友 / elder 长辈 / work 工作）：只给通用的和这一类的。
-    对外的（主页助手）只给规则本身，不给出处原句（原句里是她写过的内容），也不按对外开关挡——规范只管怎么说，不涉及内容权限。"""
+    对外的（Days）只给规则本身，不给出处原句（原句里是她写过的内容），也不按对外开关挡——规范只管怎么说，不涉及内容权限。"""
     blocked = _gate(db, user)
     if blocked:
         return _out(db, "writing_style", user, blocked)
@@ -1345,6 +1610,9 @@ def writing_style(db, user: str, audience: str = None) -> dict:
             continue
         aud = (m or {}).get("audience") or "all"
         if audience and aud not in ("all", audience):
+            continue
+        sc = (m or {}).get("scene") or "all"  # 用在哪：只给通用的和这个场景的
+        if scene and sc not in ("all", scene):
             continue
         if outside and lifebase.CONTACT.search(r["value_text"] or ""):
             continue
@@ -1363,8 +1631,9 @@ QUESTIONS = {1: "whereabouts_now", 2: "last_said", 3: "person", 4: "preferences"
              7: "record_gaps", 8: "milestone_ontime", 9: "fixed_schedule", 10: "season_results", 11: "hypothesis_case",
              12: "prep_requirements", 13: "authorization", 14: "public_say", 15: "public_sensitive", 16: "public_offer",
              17: "provenance", 18: "changes", 19: "still_there", 22: "decisions_for", 23: "change_log", 24: "contradictions",
-             25: "issue_brief", 26: "weekly_spend", 27: "history", 28: "said_not_todo"}
-FIRST_VERSION = tuple(QUESTIONS)  # 首版要求的题（1–19、22–28）
+             25: "issue_brief", 26: "weekly_spend", 27: "history", 28: "said_not_todo",
+             29: "day_summary"}  # 第 29 题：原候选 D，“我昨天干嘛去了”答不上后收
+FIRST_VERSION = tuple(q for q in QUESTIONS if q <= 28)  # 首版要求的题（1–19、22–28）
 QUESTION_OF = {fn: q for q, fn in QUESTIONS.items()}
 
 

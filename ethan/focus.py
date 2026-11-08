@@ -8,13 +8,13 @@
 import json
 import re
 from datetime import date, datetime, timedelta, timezone
+from . import clock
 
 MARK = re.compile(r"\[下周重点\s+(定\s+)?([^\]]+)\]")
 SCHEMA = "CREATE TABLE IF NOT EXISTS week_focus (week TEXT PRIMARY KEY, items TEXT NOT NULL, status TEXT NOT NULL, at TEXT NOT NULL)"
 
 
-def _monday(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+_monday = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def _items(body: str) -> list:

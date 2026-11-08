@@ -1,10 +1,10 @@
 """收件台：工作台上“今日邮件和留言”。
 
-列出要她处理的：需要她亲自看的邮件（ethan/mail.py 判的），和主页留言里要她回的、主页助手能回的（ethan/publicsite.py 傍晚分好档的）。
+列出要她处理的：需要她亲自看的邮件（ethan/mail.py 判的），和主页留言里要她回的、Days能回的（ethan/publicsite.py 傍晚分好档的）。
 每条三个按钮，外加一句交代：
 - 记成待办：进她的待办（已经自动进了待办的不重复建）。
 - 起草回复：邮件由 小伴 在后台起草（她看、能改，点“发送”才用她的邮箱发出去，替她发消息必须她本人点）；
-  主页留言交给主页助手起草（主页中转来拉，草稿回到这里），她点“发送”后中转从 hi@example.com 发；只留了微信 / LinkedIn 的她复制去发。
+  主页留言交给Days起草（主页中转来拉，草稿回到这里），她点“发送”后中转从 hi@example.com 发；只留了微信 / LinkedIn 的她复制去发。
 - 不用管：收起来。同一个发件人她连着两次点“不用管”，以后它的来信就不再算需要她看的（她的习惯，代码记，不靠猜）。
 运行（工作台点“起草回复”后自动在后台跑）：python3 -m ethan.desk --data <数据目录> --draft <邮件编号>
 """
@@ -56,28 +56,28 @@ def sender_addr(sender: str) -> str:
 
 
 # ---------- “等你处理”：唯一判断（docs/design/mail-desk.md，6） ----------
-# 决定 6：主页留言里“主页助手 能回 / 不用回”的不算红点；小伴 正在起草的算“等你”。
+# 决定 6：主页留言里“Days 能回 / 不用回”的不算红点；小伴 正在起草的算“等你”。
 # 红点、首页按钮、页面标签、傍晚汇总、巡检都从这里取，别处不再自己写 desk_state 条件（tests/test_desk_rules.py 守着）。
 WAIT = (
     "hidden",       # 不上收件台：还没分好类、不要她看的邮件、不是要回的留言档、超过 7 天的“知道一下”
     "done",         # 处理完了：不用管、收起、发出去且不是今天
     "todo",         # 记成待办了（之后在待办里跟）
-    "handed",       # 留言交给 主页助手 起草、第一稿还没回来
+    "handed",       # 留言交给 Days 起草、第一稿还没回来
     "sending",      # 正在发
     "sent_today",   # 今天发出去的
     "drafting",     # 小伴 正在起草
     "draft_ready",  # 草稿好了，等她看、点发送
     "needs_her",    # 要她亲自看 / 回
-    "can_skip",     # 主页留言“主页助手能回或不用回”
+    "can_skip",     # 主页留言“Days能回或不用回”
     "fyi",          # 邮件“知道一下”
 )
-LABEL = {"needs_her": "等你看", "drafting": "小伴 在起草", "draft_ready": "草稿好了", "can_skip": "主页助手能回或不用回",
-         "fyi": "知道一下", "sending": "正在发", "sent_today": "今天发了", "todo": "记成待办了", "handed": "主页助手 在起草"}
+LABEL = {"needs_her": "等你看", "drafting": "小伴 在起草", "draft_ready": "草稿好了", "can_skip": "Days能回或不用回",
+         "fyi": "知道一下", "sending": "正在发", "sent_today": "今天发了", "todo": "记成待办了", "handed": "Days 在起草"}
 # 每个地方自己的特殊规则：有名字、有原因
 RULES = {
     "drafting_waits": "小伴 正在起草的也算“等你”：草稿出来就要你看（6）",
-    "site_skip_no_badge": "主页留言里“主页助手能回或不用回”的列出来，但不算红点（6），和邮件“知道一下”一样",
-    "handed_hidden": "留言交给 主页助手、第一稿还没回来的先不给她看，等“留言 + 草稿”齐了",
+    "site_skip_no_badge": "主页留言里“Days能回或不用回”的列出来，但不算红点（6），和邮件“知道一下”一样",
+    "handed_hidden": "留言交给 Days、第一稿还没回来的先不给她看，等“留言 + 草稿”齐了",
     "sent_today_stays": "今天发出去的留到今天结束，能再记个待办跟进；“今天”按她的时区（clock）",
     "fyi_7days": "邮件“知道一下”只列最近 7 天的",
     "digest_task_open": "傍晚汇总：关联的待办勾掉了就不再说（交行账单）；记成待办还没勾的照样说",
@@ -210,7 +210,7 @@ def items(db, now: datetime = None) -> list:
             out.append({**base, "who": f"写给 {r['to_addr']}", "title": r["subject"], "why": "小伴 起草的新邮件，你看过选邮箱点发送才发",
                         "text": "", "zh": None, "is_zh": True, "at": r["created_at"], "draft": r["draft"], "draft_zh": r["draft_zh"],
                         "draft_is_zh": has_cjk(r["draft"] or ""), "to": r["to_addr"], "account": r["account"], "error": r["error"]})
-    # 草稿写好的在最前，其次要她本人处理的，“主页助手能回”和“知道一下”放后面，今天已发出的垫底；同一档里新的在前
+    # 草稿写好的在最前，其次要她本人处理的，“Days能回”和“知道一下”放后面，今天已发出的垫底；同一档里新的在前
     rank = {"draft_ready": 0, "needs_her": 1, "drafting": 1, "can_skip": 2, "fyi": 2, "sending": 3, "sent_today": 3}
     out.sort(key=lambda x: x["at"] or "", reverse=True)
     return sorted(out, key=lambda x: rank.get(x["wait"], 1))
@@ -263,7 +263,8 @@ def todo(db, kind, rid, note: str = "") -> dict:
                  else f"回复 {r['name'] or '访客'}（主页留言）：{r['summary'] or r['message'][:24]}")
         if note:
             title += f"（{note}）"
-        tid = db.add_task(title[:200])
+        from . import taskrules
+        tid = taskrules.add(db, title[:200])
         db.conn.execute("UPDATE tasks SET owner = 'mia', source_type = ?, source_ref = ?, status = 'open' WHERE id = ?",
                         ({"mail": "email", "out": "chat"}.get(kind, "visitor"), f"{kind}:{rid}", tid))
     # 已经发出去的回复再点“记成待办”：是记个跟进，这条照样留在“已发送”
@@ -296,14 +297,30 @@ def ignore(db, kind, rid, note: str = "") -> dict:
     if kind == "mail":
         note_pref(db, sender_addr(r["sender"]), "ignore")
     db.conn.commit()
-    return {"ok": True}
+    dropped = drop_tasks_from(db, kind, r)
+    return {"ok": True, **({"msg": f"从它来的 {dropped} 件待办也收进“你说算了的”"} if dropped else {})}
+
+
+def source_refs(kind, r) -> set:
+    """一条邮件 / 留言 / 新邮件建出来的待办，source_ref 可能是 “mail:编号”（收件台点“记成待办”）或 “mail:msg_key”（邮件分类时自动建）。"""
+    refs = {f"{kind}:{_g(r, 'id')}"}
+    if kind == "mail" and _g(r, "msg_key"):
+        refs.add(f"mail:{_g(r, 'msg_key')}")
+    return refs
+
+
+def drop_tasks_from(db, kind, r) -> int:
+    """她对来源点了“不用管”：从它来的、还没做的待办按“她说算了”处理。
+    走任务规则的唯一写入口，能在“其他 → 你说算了的”里恢复。"""
+    from . import taskrules
+    return taskrules.drop_from_source(db, source_refs(kind, r), [_g(r, "task_id")])
 
 
 def ask_draft(db, kind, rid, note: str = "", kick=None) -> dict:
-    """邮件：后台让 小伴 起草；留言：记成给主页助手的回复请求。"""
+    """邮件：后台让 小伴 起草；留言：记成给Days的回复请求。"""
     ensure(db)
     r = _row(db, kind, rid)
-    if kind == "visitor":  # 主页助手起草（主页中转来拉，publicsite.py），她在这里看过、点发送才发
+    if kind == "visitor":  # Days起草（主页中转来拉，publicsite.py），她在这里看过、点发送才发
         return publicsite.request_reply(db, rid, note)
     if kind == "out":  # 新邮件按她的交代重写
         db.conn.execute("UPDATE outbox SET desk_state = 'drafting', desk_note = ? WHERE id = ?", (note or None, int(rid)))
@@ -465,7 +482,34 @@ def strip_outbox(text: str) -> str:
     return WRITE_MARK.sub("", text)
 
 
-def _smtp(acc: dict, to: str, subject: str, text: str, reply_to: str = None, smtp_factory=None):
+def _msg_id(kind: str, rid: int, text: str) -> str:
+    import hashlib
+    return f"<ethan-{kind}-{int(rid)}-{hashlib.sha1(text.encode()).hexdigest()[:10]}@example.com>"
+
+
+def _claim(db, table: str, rid: int):
+    """发之前先占住：标成“正在发”，已经在发或发过的不再发（Codex 评审 11-07 第 7 条：连点两次、超时重试会发两封）。
+    占到了返回原来的状态（发不出去时退回），没占到返回 None。"""
+    r = db.conn.execute(f"SELECT desk_state FROM {table} WHERE id = ?", (int(rid),)).fetchone()
+    prev = r[0] if r else None
+    n = db.conn.execute(f"UPDATE {table} SET desk_state = 'sending' WHERE id = ? AND COALESCE(desk_state, '') NOT IN ('sending', 'sent')",
+                        (int(rid),)).rowcount
+    db.conn.commit()
+    return (prev or "open") if n else None
+
+
+def _release(db, table: str, rid: int, prev: str, e: Exception) -> str:
+    """没发成：退回原来的状态，说清楚。超时这类“结果不知道”的提醒她先去已发送里看一眼，别直接重发。"""
+    db.conn.execute(f"UPDATE {table} SET desk_state = ? WHERE id = ?", (prev, int(rid)))
+    db.conn.commit()
+    # 超时、连着连着断了：信可能已经到对方那里了。登录不上、地址被拒、连不上服务器这类是确定没发出去
+    unknown = isinstance(e, (TimeoutError, smtplib.SMTPServerDisconnected)) or (
+        isinstance(e, OSError) and not isinstance(e, (smtplib.SMTPException, ConnectionRefusedError)))
+    why = f"{type(e).__name__} {str(e)[:120]}"
+    return (f"不确定发没发出去（{why}）：先去这个邮箱的“已发送”里看一眼，没有再重发" if unknown else f"没发出去：{why}")
+
+
+def _smtp(acc: dict, to: str, subject: str, text: str, reply_to: str = None, smtp_factory=None, msg_id: str = None):
     host, port = SMTP[acc["host"]]
     msg = EmailMessage()
     msg["From"] = formataddr(("Mia Lin", acc["user"]))
@@ -474,7 +518,7 @@ def _smtp(acc: dict, to: str, subject: str, text: str, reply_to: str = None, smt
     if reply_to:
         msg["In-Reply-To"] = reply_to
         msg["References"] = reply_to
-    msg["Message-ID"] = make_msgid()
+    msg["Message-ID"] = msg_id or make_msgid()  # 同一封同一内容固定一个编号：真重发了，对方邮箱也认得出是同一封
     msg.set_content(text)
     factory = smtp_factory or (smtplib.SMTP_SSL if port == 465 else smtplib.SMTP)
     with factory(host, port, timeout=30) as s:
@@ -500,12 +544,14 @@ def send_new(db, oid: int, text: str, account: str, to: str = None, subject: str
     acc = next((a for a in accounts if a["name"] == account), None)
     if acc is None or acc["host"] not in SMTP:
         return {"ok": False, "msg": "这个邮箱还不能从服务器发信，复制草稿去邮件 App 里发吧"}
+    prev = _claim(db, "outbox", oid)
+    if prev is None:
+        return {"ok": False, "msg": "这封已经发过了，或者正在发"}
     try:
-        _smtp(acc, to, subject, text, smtp_factory=smtp_factory)
+        _smtp(acc, to, subject, text, smtp_factory=smtp_factory, msg_id=_msg_id("out", oid, text))
     except Exception as e:
         db.conn.execute("UPDATE outbox SET error = ? WHERE id = ?", (f"{type(e).__name__} {str(e)[:120]}", oid))
-        db.conn.commit()
-        return {"ok": False, "msg": f"没发出去：{type(e).__name__} {str(e)[:120]}"}
+        return {"ok": False, "msg": _release(db, "outbox", oid, prev, e)}
     db.conn.execute("UPDATE outbox SET desk_state = 'sent', draft_zh = CASE WHEN draft = ? THEN draft_zh END, draft = ?, to_addr = ?, subject = ?, "
                     "account = ?, sent_at = ?, error = NULL WHERE id = ?", (text, text, to, subject, account, _now(), oid))
     db.conn.commit()
@@ -538,11 +584,14 @@ def send(db, rid: int, text: str, accounts=None, smtp_factory=None, kind: str = 
     if acc is None or acc["host"] not in SMTP:
         return {"ok": False, "msg": "这个邮箱还不能从服务器发信，复制草稿去邮件 App 里发吧"}
     subj = r["subject"] or ""
+    prev = _claim(db, "mail_items", rid)
+    if prev is None:
+        return {"ok": False, "msg": "这封已经回过了，或者正在发"}
     try:
         _smtp(acc, r["sender"], subj if subj.lower().startswith("re:") else f"Re: {subj}", text,
-              reply_to="<" + r["msg_key"][len("msgid:"):] + ">", smtp_factory=smtp_factory)
+              reply_to="<" + r["msg_key"][len("msgid:"):] + ">", smtp_factory=smtp_factory, msg_id=_msg_id("mail", rid, text))
     except Exception as e:
-        return {"ok": False, "msg": f"没发出去：{type(e).__name__} {str(e)[:120]}"}
+        return {"ok": False, "msg": _release(db, "mail_items", rid, prev, e)}
     db.conn.execute("UPDATE mail_items SET desk_state = 'sent', draft_zh = CASE WHEN draft = ? THEN draft_zh END, draft = ?, sent_at = ? WHERE id = ?",
                     (text, text, _now(), rid))
     db.conn.commit()

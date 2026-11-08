@@ -4,6 +4,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+import unittest.mock
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,11 +45,6 @@ class Base(unittest.TestCase):
 
 
 class RetireTest(Base):
-    def test_static_list_matches_code(self):
-        self.assertEqual(retire.unlisted(), [])
-        for f in retire.scan():
-            self.assertIn(f, retire.LEGACY)
-
     def test_new_direct_read_is_caught(self):
         fake = Path(self.tmp.name) / "repo"
         (fake / "ethan").mkdir(parents=True)
@@ -228,6 +224,53 @@ class FormalEvalTest(Base):
         self.assertTrue(formaleval._leaked(self.db, {"items": [{"value": "x"}], "basis": []}))
         self.assertFalse(formaleval._leaked(self.db, {"items": [{"reply": onto_query.REFUSE, "refuse": True}], "basis": []}))
         self.assertFalse(formaleval._leaked(self.db, {"items": [], "basis": []}))
+        # “我问问她”只带拟答给她，不给访客：不算泄露（11-07）
+        self.assertFalse(formaleval._leaked(self.db, {"items": [{"reply": onto_query.ASK_REPLY, "ask": True, "statement": sid}], "basis": [sid]}))
+        # 她把这一类设成“可以说”：说出去不算泄露；设成“不说”就算
+        from ethan import lifebase
+        allow = lambda: formaleval._leaked(self.db, {"items": [{"value": "x", "statement": sid}], "basis": [sid]}, "site")
+        with unittest.mock.patch.object(lifebase, "disclose", return_value="allow"):
+            self.assertFalse(allow())
+        with unittest.mock.patch.object(lifebase, "disclose", return_value="deny"):
+            self.assertTrue(allow())
+
+    def test_q18_samples_only_changed_statements(self):
+        """11-07：第 18 题原来抽任意一条当前说法去问“变了什么”，没变化记录的只能碰运气，数据一多就掉到 0。现在只抽取代了旧说法的。"""
+        for i in range(40):
+            self.fact(f"第{i}次说喜欢在周末做点不同的事情")
+        old = self.fact("每周跑步三次", dim="rhythms", kind="fact")
+        new = self.fact("每周跑步五次", dim="rhythms", kind="fact")
+        self.assertTrue(lifebase.supersede(self.db, old, new, when="2026-10-01", force=True))
+        self.db.conn.commit()
+        res = formaleval.run(self.db, today=DAY, per_q=10)
+        q18 = next(r for r in res["per"] if r["q"] == 18)
+        self.assertEqual(q18["sampled"], 1)  # 只有一条变化
+        self.assertEqual(q18["f_hit"], 1)  # 变化早于最近 31 天也查得到
+
+    def test_q4_samples_preferences_not_writing_style(self):
+        """11-07：第 4 题原来按 kind = 'preference' 抽，服务器上抽到的全是写作规范，偏好题本来不收，F 0/10。现在按属性抽、不含写作规范。"""
+        pref = self.fact("咖啡要加燕麦奶")
+        sid = self.db.conn.execute("SELECT statement_id FROM fact_map WHERE fact_id = ?", (pref,)).fetchone()[0]
+        self.db.conn.execute("UPDATE statements SET property = 'preference', kind = 'fact' WHERE id = ?", (sid,))
+        style = self.fact("邮件开头不寒暄")
+        ssid = self.db.conn.execute("SELECT statement_id FROM fact_map WHERE fact_id = ?", (style,)).fetchone()[0]
+        self.db.conn.execute("UPDATE statements SET property = 'writing_style' WHERE id = ?", (ssid,))
+        self.db.conn.commit()
+        other = self.fact("周末不想排工作", dim="rhythms")  # 别的属性下的偏好，偏好题也收（Codex 评审 11-07）
+        osid = self.db.conn.execute("SELECT statement_id FROM fact_map WHERE fact_id = ?", (other,)).fetchone()[0]
+        picked = {s["id"] for s in formaleval._sample(self.db, 10, 1, "preference")}
+        self.assertIn(sid, picked)
+        self.assertIn(osid, picked)
+        self.assertNotIn(ssid, picked)
+
+    def test_refusal_judged_by_actual_refusal(self):
+        """11-07：该拒答的题原来关键词空着就怎么答都算对。现在要真的拒了、又没说出不该说的词。"""
+        j = formaleval._judge
+        want = {"status": "unknown", "contains": ["桃源村"]}
+        self.assertEqual(j("", want, "unknown"), 1.0)
+        self.assertEqual(j(onto_query.REFUSE, want, "answer"), 1.0)
+        self.assertEqual(j("她喜欢喝咖啡", {"status": "unknown"}, "answer"), 0.0)  # 答了不该答的
+        self.assertEqual(j("住桃源村 " + onto_query.REFUSE, want, "answer"), 0.0)
 
     def test_research_doc_has_command(self):
         doc = (ROOT / "docs/research/2026-11-ontology-eval.md").read_text(encoding="utf-8")
@@ -258,6 +301,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

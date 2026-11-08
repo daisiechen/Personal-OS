@@ -16,7 +16,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .clock import her_today
+from .clock import her_today, tz_name
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS cal_tidy (id INTEGER PRIMARY KEY, href TEXT NOT NULL, uid TEXT, day TEXT, before_ics TEXT NOT NULL,
     after_ics TEXT, title_before TEXT, title_after TEXT, at TEXT NOT NULL, undone_at TEXT)"""
@@ -131,8 +131,9 @@ def rewrite(ics: str, ev: dict, got: dict) -> str:
     if not ev["recurring"] and day and got.get("start") and got.get("end") and re.fullmatch(r"\d{2}:\d{2}", got["start"]) \
             and re.fullmatch(r"\d{2}:\d{2}", got["end"]) and got["end"] > got["start"]:
         d = day.replace("-", "")
-        new_start = f"DTSTART;TZID=Europe/London:{d}T{got['start'].replace(':', '')}00"
-        new_end = f"DTEND;TZID=Europe/London:{d}T{got['end'].replace(':', '')}00"
+        tz = tz_name()  # 她的时区（11-06 去掉写死的伦敦）
+        new_start = f"DTSTART;TZID={tz}:{d}T{got['start'].replace(':', '')}00"
+        new_end = f"DTEND;TZID={tz}:{d}T{got['end'].replace(':', '')}00"
     lines, out, cur, depth, done = unfold(ics), [], None, 0, False
     for line in lines:
         if line == "BEGIN:VEVENT":

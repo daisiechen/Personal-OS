@@ -90,7 +90,9 @@ def body(db, start, day):
 
 
 def study(db, start, day):
-    n = _habit(db, "英语陪练（Grok）", start, day)
+    from . import english  # 和健康线、学习页的图同一个口径：有练习记录的天 ∪ 打卡的天
+    days = english.practice_days(db, start, day)
+    n = None if days is None else len(days)
     out = [_item("英语陪练", 50, None if n is None else _ratio(n, standards.full("english", start, day)), f"{n} 次" if n is not None else "没有开", standards.window_label("english"))]
     n = territory.cognitive_days(db, start, day)
     if n is not None:
@@ -151,15 +153,38 @@ def _goal_pace(db, goal, m, start, day):
     return _ratio(gained, expected), f"{name} +{gained:g}（应 +{expected:.1f}）"
 
 
+def _milestone_pace(db, goal, day):
+    """没有量化指标的事业目标按里程碑是否按期算（“你没有指标，那么这个领域的整体数值你是怎么算的呢？……
+    至少给指定一个指标，哪怕你是把里程碑按进度算呢？”）：到今天该完成的里程碑（截止日 ≤ 今天）完成了几个；
+    一个都还没到期就算按期（100）。没拆里程碑的不算。"""
+    try:
+        ms = [dict(r) for r in db.conn.execute("SELECT title, due, status FROM milestones WHERE goal_id = ? ORDER BY seq, id", (goal["id"],))]
+    except Exception:
+        return None
+    if not ms:
+        return None
+    d = day.isoformat()
+    due = [m for m in ms if m["due"] and m["due"] <= d]
+    done = [m for m in due if m["status"] == "done"]
+    late = [m for m in due if m["status"] != "done"]
+    nxt = next((m for m in ms if m["status"] != "done"), None)
+    name = goal["title"]
+    if not due:
+        return 100.0, f"{name} 里程碑按期（还没有到期的" + (f"，下一个 {nxt['due'][5:]} 到期）" if nxt and nxt["due"] else "）")
+    return _ratio(len(done), len(due)), (f"{name} 到期的里程碑完成 {len(done)}/{len(due)}"
+                                        + (f"，过期没做完：{late[0]['title'][:16]}" if late else ""))
+
+
 def career(db, start, day):
     paces = []
     for g in db.conn.execute("SELECT * FROM goals WHERE status = 'active' AND domain = '事业'"):
         m = db.metric(g["id"])
-        p = _goal_pace(db, dict(g), m, start, day) if m else None
+        p = _goal_pace(db, dict(g), m, start, day) if m else _milestone_pace(db, dict(g), day)
         if p:
             paces.append(p)
     out = [_item("主要目标推进", 50, round(sum(p[0] for p in paces) / len(paces), 1) if paces else None,
-                 "；".join(p[1] for p in paces) or "没有带量化指标的事业目标", "按截止日均摊到这 30 天")]
+                 "；".join(p[1] for p in paces) or "事业目标还没有指标，也没拆里程碑",
+                 "有量化指标的按截止日均摊到这 30 天；没有的看到期的里程碑完成了几个")]
     if worktime.has_data(db):
         days = [worktime.hours(db, start + timedelta(days=i)) for i in range((day - start).days + 1)]
         worked = [h for h in days if h > 0]
@@ -182,7 +207,10 @@ def money(db, start, day):
         paced_cap = cap * day.day / 30
         ratio = total / paced_cap if paced_cap else 0
         score = 100.0 if ratio <= 1 else max(0.0, round(100 - (ratio - 1) * 200, 1))
-        out.append(_item("花销控制", 60, score, f"本月按天折算 {ratio:.0%} 预算", "不超预算，每超 10% 扣 20 分"))
+        sym = {"GBP": "£", "CNY": "¥", "EUR": "€"}.get(cur, cur + " ")
+        # 写清花了多少、到今天该用多少预算
+        out.append(_item("花销控制", 60, score, f"本月到今天花了 {sym}{total:,.2f}，按天算到今天的预算 {sym}{paced_cap:,.2f}（用了 {ratio:.0%}）",
+                         "不超过按天算到今天的预算（每月预算 ÷ 30 × 今天几号）；每超 10% 扣 20 分"))
     else:
         out.append(_item("花销控制", 60, None, "没有预算或没有记账来源", "不超预算"))
     s, text = _ontime(db, "money", start, day)
@@ -240,12 +268,17 @@ def _earliest(db):
     return date.fromisoformat(min(days)[:10]) if days else None
 
 
-def compute(db, day: date, trend: bool = True) -> list:
+def window(db, day: date) -> tuple:
+    """算分看的那一段：最近 30 天；系统开始记录不满 30 天就从第一条记录算起。"""
     lifelog.ensure(db)
     start = day - timedelta(days=WINDOW - 1)
     first = _earliest(db)
-    if first and first > start:
-        start = first
+    return (first if first and first > start else start), day
+
+
+def compute(db, day: date, trend: bool = True) -> list:
+    start, _ = window(db, day)
+    first = _earliest(db)
     out = []
     for key in ORDER:
         items = PARTS[key](db, start, day)
@@ -278,6 +311,26 @@ def history(db, key: str = None, since: date = None) -> list:
         q += " AND day >= ?"
         args.append(since.isoformat())
     return [dict(r) for r in db.conn.execute(q + " ORDER BY day, key", args)]
+
+
+def trail(db, key: str, since: date, day: date, now=None) -> list:
+    """一块领域从 since 到 day 每天的分数 [{"day", "v"}]：之前的日子用每晚快照，今天这一点现算。
+    赛季页的分数柱（开季那条线）和领域页的分数、走势都从这里取，只算这一处（社交记了一笔，赛季页没更新过来）。
+    now：已经现算好的今天的分数（省得再算一遍），不传就现算。"""
+    db.conn.execute(SNAP_SQL)
+    out = [{"day": r["day"], "v": round(r["score"])} for r in db.conn.execute(
+        "SELECT day, score FROM attribute_daily WHERE key = ? AND day >= ? AND day < ? AND score IS NOT NULL ORDER BY day",
+        (key, since.isoformat(), day.isoformat()))]
+    if now is None:
+        now = score_of(PARTS[key](db, *window(db, day)))
+    if now is not None:
+        out.append({"day": day.isoformat(), "v": round(now)})
+    return out
+
+
+def first_of(tr: list, day: date):
+    """开季那天的分数：trail 里最早一张快照；只有今天现算的那一点（开季以来还没存过快照）就是没有，不拿今天冒充开季。"""
+    return tr[0]["v"] if tr and tr[0]["day"] < day.isoformat() else None
 
 
 def main():

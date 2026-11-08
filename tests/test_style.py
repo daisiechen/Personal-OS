@@ -130,8 +130,10 @@ class ConfirmFlowTest(StyleBase):
         self.assertIn("不用“哈哈”", block)
         self.assertNotIn("句子短", block)  # 另一条还没定
         self.assertIn("她确认过的写作规范（", diary.with_style(self.db, diary.PROMPT))
+        self.assertTrue(mepage.resolve(self.db, p[0]["id"], "scene", pick=rid[SHORT["rule"]], text="all")["ok"])  # 改成通用（加的“用在哪”）
         self.assertTrue(mepage.resolve(self.db, p[0]["id"], "own", pick=rid[SHORT["rule"]], text="句子要短")["ok"])
         self.assertIn("句子要短", style.style_block(self.db, "mail"))
+        self.assertNotIn("不用“哈哈”", style.style_block(self.db, "mail"))  # 从日记归纳的只用在日记
         self.assertFalse([x for x in mepage.pending_items(self.db) if x["kind"] == "style"])  # 全定完就关掉
         # 确认的是她的偏好、锁住
         w = onto_query.writing_style(self.db, "mail")
@@ -195,6 +197,9 @@ class ReadersTest(StyleBase):
 
     def test_dais_gets_rules_without_quotes(self):
         self._confirm()
+        self.assertEqual(style.style_block(self.db, "twin", quotes=False), "")  # 从日记归纳的不给 Days 回留言
+        self.db.conn.execute("UPDATE style_rules SET scene = 'all'")
+        self.db.conn.commit()
         w = onto_query.writing_style(self.db, "twin")
         self.assertEqual(w["status"], "answer")
         self.assertNotIn("quotes", w["items"][0])
@@ -206,6 +211,8 @@ class ReadersTest(StyleBase):
 
     def test_injected_into_diary_mail_and_card(self):
         self._confirm()
+        self.db.conn.execute("UPDATE style_rules SET scene = 'all'")  # 她把这条改成通用
+        self.db.conn.commit()
         m = Model(text="今天挺满的。")
         from datetime import date, datetime, timezone
         self.store.raw.append("telegram", "mia", "今天去跑步了", at=datetime(2026, 11, 4, 9, tzinfo=timezone.utc))
@@ -222,7 +229,7 @@ class SkillsTest(StyleBase):
     def test_draft_goes_to_candidates_and_approval_activates(self):
         self.assertEqual(skills.prompt_for(self.db, "mail_reply"), "")
         p = skills.draft_skill(self.db, "mail_reply")
-        self.assertEqual(p, self.root / "skills" / "candidates" / "mail_reply.md")
+        self.assertEqual(p.resolve(), (self.root / "skills" / "candidates" / "mail_reply.md").resolve())
         text = p.read_text(encoding="utf-8")
         for part in ("## 1. 通用方法", "## 2. 她的做法", "## 3. 能做到哪一步", "只能起草"):
             self.assertIn(part, text)
@@ -424,9 +431,9 @@ class StyleReviseTest(StyleBase):
         p = [x for x in mepage.pending_items(self.db) if x["kind"] == "style"][0]
         self.assertIn("修订 1 条", p["question"])
         self.assertEqual(p["options"][0]["revises"]["text"], GOOD["rule"])
-        self.assertIn("不用“哈哈”", style.style_block(self.db, "mail"))  # 她点对之前还按原来的
+        self.assertIn("不用“哈哈”", style.style_block(self.db, "diary"))  # 她点对之前还按原来的
         self.assertTrue(mepage.resolve(self.db, p["id"], "yes", pick=drafts[0]["id"])["ok"])
-        block = style.style_block(self.db, "mail")
+        block = style.style_block(self.db, "diary")
         self.assertIn("开心时会用“哈哈”", block)
         self.assertNotIn("不用“哈哈”", block)
         old = [r for r in style.rules(self.db, "replaced") if r["id"] == self.rid][0]
@@ -437,7 +444,7 @@ class StyleReviseTest(StyleBase):
         self._round([("2026-11-06", "哈哈今天好开心。见到小林了。"), ("2026-11-07", "哈哈又下雨。没出门。")])
         self._round([("2026-11-08", "哈哈搞定了。去吃饭。")])
         style.reject(self.db, style.rules(self.db, "draft")[0]["id"])
-        self.assertIn("不用“哈哈”", style.style_block(self.db, "mail"))
+        self.assertIn("不用“哈哈”", style.style_block(self.db, "diary"))
         self.assertEqual([r["id"] for r in style.rules(self.db, "confirmed")], [self.rid])
 
     def test_same_as_confirmed_is_not_a_signal(self):
@@ -520,3 +527,14 @@ class NoSelfLearningTest(StyleBase):
         self.assertIn("我带 deck", mails)  # 她自己写的照收
         pairs = [(i.get("before"), i["text"]) for i in items if i["ref"].startswith("mailpair:")]
         self.assertTrue(any("周五聊" in t for _, t in pairs))  # 她改过的收改前→改后
+
+
+class StyleSceneTest(unittest.TestCase):
+    """"""
+
+    def test_scene_from_sources(self):
+        self.assertEqual(style.scene_of([{"ref": "sent:1"}, {"ref": "mailpair:x:y"}]), "mail")
+        self.assertEqual(style.scene_of([{"ref": "pair:3"}, {"ref": "diary:2026-11-01"}]), "diary")
+        self.assertEqual(style.scene_of([{"ref": "chat:1"}]), "chat")
+        self.assertEqual(style.scene_of([{"ref": "sent:1"}, {"ref": "chat:2"}]), "all")
+        self.assertEqual(style.USER_SCENE["twin"], "site")

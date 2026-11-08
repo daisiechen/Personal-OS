@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from . import lifebase, locks, memusers, tx
 
-DEFAULT_EVERY = {3: 14, 2: 30, 1: 90}  # 她定的默认提醒间隔：3 级 14 天、2 级 30 天、1 级 90 天
+DEFAULT_EVERY = {3: 30, 2: 90}  # 没列的（★、没星）默认永不提醒。默认提醒间隔（改：“就这么改”）：★★★ 30 天、★★ 90 天、★ 不按时间提醒（812 人一颗星，90 天一轮时“该联系”有 889 人）；生日、没回的照样提醒
 PER_NIGHT = 8  # 每晚整理里最多几个人（夜里任务有 15 分钟上限）；统计一到会另起后台把所有人一次整理完（kick_all）
 MAX_TEXT = 16000  # 一个人最多给模型看多少字的交接记录（最近的优先）
 SOON_DAYS = 7  # 生日和重要日子提前几天提醒
@@ -30,14 +30,22 @@ STAT_KEYS = ("last", "n90", "n365", "total", "her_share", "her_starts", "rounds"
 COLUMNS = (("wx_key", "TEXT"), ("wx_name", "TEXT"), ("relation", "TEXT"), ("importance", "INTEGER"), ("topics", "TEXT"),
            ("source", "TEXT"), ("recent", "TEXT"), ("open_loops", "TEXT"), ("loops_done", "TEXT"), ("dates", "TEXT"),
            ("draft", "TEXT"), ("frequency", "TEXT"), ("stats", "TEXT"), ("stats_at", "TEXT"), ("organized_at", "TEXT"),
-           ("source_ids", "TEXT"))
+           ("source_ids", "TEXT"), ("wx_labels", "TEXT"),
+           # 推荐见谁用（ethan/meetrec.py）：常住城市、身份标签（投资人、创业者……）、随口约过的（“改天约饭”）
+           ("city", "TEXT"), ("roles", "TEXT"), ("want_meet", "TEXT"),
+           ("dates_done", "TEXT"))  # 生日和重要日子她点了“办完了”的（某年某天:什么事），那一次不再列
 # 整理从聊天记录里写出来的字段：遗忘某份记录时这些清空等重做（她锁住的不动，Codex 评审 11-05 第 9 条）
 ORGANIZED = ("relation", "how_met", "circle", "topics", "recent", "draft", "dates", "open_loops", "birthday")
+# 她改过的这几项只当参考、不锁死（“我改过的东西只是冷启动用的，不应该是以后都不再变了，系统要根据我跟他们的交往来随时调整，
+# 只不过要参考我改过的那些备注”）：每次整理把她写的连同备注交给模型参考，聊天里看得出变了就跟着改。生日、重要程度、提醒间隔、分组、名字是她的设置，照旧不动
+REFERENCE_FIELDS = ("relation", "how_met", "circle", "topics", "recent", "draft", "dates", "open_loops")
+LOOPS_SINCE = "2026-01-01"  # 更早的没了结的事默认算了结
 MAX_DONE = 5000  # 她了结过的事最多记多少个编号（只记编号，不截到 50：截掉的会被下次整理加回来）
 # 她能在卡上改的字段（改了锁住）；数字统计不让改（每次导出覆盖）
 EDITABLE = {"name": 30, "circle": 20, "relation": 60, "how_met": 200, "notes": 500, "birthday": 5, "recent": 300,
-            "topics": 200, "draft": 200, "importance": 1, "contact_every_days": 4}
-CIRCLES = ("家人", "挚友", "朋友", "同学", "同事", "合作", "老师", "其他")
+            "topics": 200, "draft": 200, "importance": 1, "contact_every_days": 4, "wx_labels": 220, "city": 20, "roles": 100}
+MAX_LABELS = 10  # 一个人最多几个微信标签（关系页按她微信里给每个人的标签分组）
+CIRCLES = ("家人", "挚友", "朋友", "同学", "同事", "合作", "老师", "服务", "其他")  # 服务：中介、客服、导游、代理这类（加“中介”，同天改名“服务”）；“不重要”是重要程度，用没星
 
 # 客服、中介、商家这类默认跳过
 SERVICE = re.compile(r"客服|中介|商家|商城|旗舰店|专营|店铺|小店|酒店|管家|签证|代办|代理|房产|地产|租房|公寓|物业|置业|"
@@ -57,7 +65,8 @@ CARD_SCHEMA = {"type": "object", "required": ["relation", "topics", "recent", "d
     "open_loops": {"type": "array", "maxItems": 6, "items": {"type": "object", "required": ["kind", "date", "text", "quote"], "properties": {
         "kind": {"type": "string", "enum": ["she_promised", "they_asked"]}, "date": {"type": "string"},
         "text": {"type": "string", "maxLength": 80}, "quote": {"type": "string", "maxLength": 200}}}},
-    "draft": {"type": "string", "maxLength": 200}}}
+    "draft": {"type": "string", "maxLength": 200},
+    "city": {"type": "string", "maxLength": 20}, "roles": {"type": "array", "maxItems": 5, "items": {"type": "string", "maxLength": 10}}}}
 
 
 def _now() -> str:
@@ -136,6 +145,12 @@ def upsert(db, name: str, source: str = "", **fields):
     if not name:
         return None
     row = db.conn.execute("SELECT id, wx_key FROM people WHERE name = ?", (name,)).fetchone()
+    if row is None:  # 合并掉的名字（在关系页合并的）：记到留下的那张卡上，不再新建
+        into = merged_into(db, name)
+        if into:
+            row = db.conn.execute("SELECT id, name, wx_key FROM people WHERE id = ?", (into,)).fetchone()
+            if row is not None:
+                name = row["name"]
     if row is None and _deleted(db, "", name):
         return None
     if row is None and source:
@@ -165,9 +180,23 @@ def _clean_stats(p: dict) -> dict:
     return st
 
 
+def clean_labels(v) -> list:
+    """微信标签 → 去重的标签名列表（每个最多 20 字，最多 MAX_LABELS 个）；字符串按逗号、顿号拆。"""
+    if isinstance(v, str):
+        v = re.split(r"[，、;；]", v)
+    if not isinstance(v, list):
+        return []
+    out = []
+    for x in v:
+        x = " ".join(str(x or "").split())[:20]
+        if x and x not in out:
+            out.append(x)
+    return out[:MAX_LABELS]
+
+
 def ingest_stats(db, payload: dict, now: datetime = None) -> tuple:
-    """收她 Mac 交来的统计。正文 {"people": [{"key", "name", "last", "n90", "n365", "total", "her_share", "her_starts", "rounds", "groups"}]}。
-    只覆盖数字字段；名字、关系圈、重要程度她改过的不动。"""
+    """收她 Mac 交来的统计。正文 {"people": [{"key", "name", "last", "n90", "n365", "total", "her_share", "her_starts", "rounds", "groups",
+    "labels"}]}。只覆盖数字字段和微信标签（labels，走 upsert：她改过分组就不动）；名字、关系圈、重要程度她改过的不动。"""
     ensure(db)
     items = payload.get("people") if isinstance(payload, dict) else None
     if not isinstance(items, list):
@@ -205,6 +234,8 @@ def ingest_stats(db, payload: dict, now: datetime = None) -> tuple:
             fields["circle"] = "家人"
         sets = ", ".join(f"{k} = ?" for k in fields)
         db.conn.execute(f"UPDATE people SET {sets}, updated_at = ? WHERE id = ?", (*fields.values(), at, pid))
+        if "labels" in p:  # 微信标签：来源数据，每次跟着微信走；她在工作台改过分组（锁）就不动。没带这个字段的旧版导出不动
+            upsert(db, row["name"], wx_labels=json.dumps(clean_labels(p.get("labels")), ensure_ascii=False))
     db.conn.commit()
     return 200, got
 
@@ -296,7 +327,7 @@ def _check(data: dict, text: str) -> list:
     return errs
 
 
-def card_from_text(router, db, name: str, st: dict, text: str, ref: str = "") -> dict:
+def card_from_text(router, db, name: str, st: dict, text: str, ref: str = "", hers: dict = None) -> dict:
     """一个人的交接记录 → 人物卡草稿（校验过的 dict；两次都不合格返回 None）。题集 tests/evals/person_card.jsonl 用的也是这个。"""
     from . import llm
     version, system = llm.load_prompt("person_card")
@@ -305,38 +336,93 @@ def card_from_text(router, db, name: str, st: dict, text: str, ref: str = "") ->
     if block:
         system += "\n\n写 draft 时照着她的写作规范（按对方是朋友、长辈还是工作上的人选口吻）：\n" + block
     head = (f"这个人：{name}\n统计：最近一次联系 {st.get('last') or '不知道'}；最近 90 天 {st.get('n90', 0)} 条、一年 {st.get('n365', 0)} 条；"
-            f"她说的占 {round(100 * float(st.get('her_share') or 0))}%；共同群：{'、'.join(st.get('groups') or []) or '没有'}\n\n聊天记录：\n")
+            f"她说的占 {round(100 * float(st.get('her_share') or 0))}%；共同群：{'、'.join(st.get('groups') or []) or '没有'}\n"
+            + (("她自己在卡上写过（参考：聊天里没看出变化就照她写的；看得出变了就按聊天改）：\n"
+                + "\n".join(f"- {HER_LABEL.get(k, k)}：{v}" for k, v in hers.items()) + "\n") if hers else "")
+            + "\n聊天记录：\n")
     return llm.structured(router, db, "person_card", system, head + text, CARD_SCHEMA, check=lambda d: _check(d, text),
                           version=version, input_ref=ref, purpose="relations-card")
 
 
-def _apply_card(db, row, data: dict, today: date, source_ids=()) -> list:
+HER_LABEL = {"relation": "关系", "how_met": "怎么认识的", "circle": "关系圈", "topics": "常聊的话题", "recent": "近况", "notes": "她的备注"}
+
+
+def her_edit(db, pid: int, field: str):
+    """她在卡上改这一项时写的原值和时间（manual_locks 里记着）：(值, 时间)；没改过返回 (None, None)。"""
+    r = db.conn.execute("SELECT value, at FROM manual_locks WHERE obj = ? AND field = ? AND released_at IS NULL ORDER BY id DESC LIMIT 1",
+                        (f"person:{pid}", field)).fetchone()
+    if r is None:
+        return None, None
+    try:
+        v = json.loads(r["value"]) if r["value"] is not None else None
+    except ValueError:
+        v = r["value"]
+    return v, r["at"]
+
+
+def hers_for(db, row) -> dict:
+    """她在卡上改过的描述类内容（她写的原值，不是后来整理出的）和她的备注，整理时交给模型参考。"""
+    locks.ensure(db)
+    out = {}
+    for k in ("relation", "how_met", "circle", "topics", "recent"):
+        v, _ = her_edit(db, row["id"], k)
+        if v:
+            v = _j(v, []) if k == "topics" and isinstance(v, str) and v.startswith("[") else v
+            out[k] = "、".join(v) if isinstance(v, list) else str(v)
+    if row["notes"]:
+        out["notes"] = row["notes"]
+    return out
+
+
+def _apply_card(db, row, data: dict, today: date, source_ids=(), started: str = None) -> list:
     """模型整理的结果写进卡：她改过的字段（锁）不动。返回写了哪些字段。
     查锁和写在一个事务里（拿写锁后重读这张卡）：她这时在卡上改，要么等这次写完，要么这次看到她的锁（Codex 评审 11-05）。"""
     with tx.atomic(db):
         row = db.conn.execute("SELECT * FROM people WHERE id = ?", (row["id"],)).fetchone()
-        return _apply_card_now(db, row, data, today, source_ids) if row is not None else []
+        return _apply_card_now(db, row, data, today, source_ids, started) if row is not None else []
 
 
-def _apply_card_now(db, row, data: dict, today: date, source_ids=()) -> list:
+def _apply_card_now(db, row, data: dict, today: date, source_ids=(), started: str = None) -> list:
     pid, wrote = row["id"], []
     done = _done_keys(row)
     dates = [d for d in data.get("dates") or [] if _day(d.get("date"))]  # 不存在的日子（02-30）丢掉这一项，不让清单整个报错
     birthday = next((d["date"][-5:] for d in dates if "生日" in d.get("what", "")), None)
     loops = [x for x in data.get("open_loops") or [] if YMD.match(x.get("date") or "") and _day(x["date"])
-             and not _is_done(x, done) and x["date"] <= today.isoformat()]
+             and not _is_done(x, done) and LOOPS_SINCE <= x["date"] <= today.isoformat()]
+    from . import meetrec
+    casual = [x for x in loops if meetrec.is_casual(x)]  # 随口约的不进待履约，记成“想见”
+    loops = [x for x in loops if not meetrec.is_casual(x)]
+    later = [x for x in loops if x.get("kind") == "she_promised" and CONDITIONAL.search(x.get("text") or "")]
+    if later:  # 要等某件事之后才兑现的（“回国后拜访”），直接进等着办，不进待履约
+        from . import followups
+        loops = [x for x in loops if x not in later]
+        for x in later:
+            wait = "check:back_in_china" if BACK_HOME.search(x["text"]) else f"date:{(today + timedelta(days=DEFER_DAYS)).isoformat()}"
+            followups.add(db, f"兑现给{row['name']}的：{x['text']}"[:200], wait, for_her=True, owner="她", source=f"person:{pid}")
+    if casual:
+        want = _j(row["want_meet"], []) if "want_meet" in row.keys() else []
+        have = {w.get("text") for w in want}
+        want += [{"text": x["text"], "quote": x.get("quote") or "", "date": x["date"]} for x in casual if x["text"] not in have]
+        db.conn.execute("UPDATE people SET want_meet = ? WHERE id = ?", (json.dumps(want[-10:], ensure_ascii=False), pid))
+    for k in ("city", "roles"):  # 聊天里看得出才写；她改过（锁）不动，原来有的不覆盖
+        v = data.get(k)
+        if v and not (row[k] if k in row.keys() else None) and not locks.locked(db, "person", pid, k):
+            db.conn.execute(f"UPDATE people SET {k} = ? WHERE id = ?", (json.dumps(v, ensure_ascii=False) if k == "roles" else str(v)[:20], pid))
     fields = {"relation": data.get("relation") or None, "how_met": data.get("how_met") or None,
               "topics": json.dumps([t for t in data.get("topics") or [] if t.strip()], ensure_ascii=False),
               "recent": data.get("recent") or None, "draft": data.get("draft") or None,
               "dates": json.dumps(dates, ensure_ascii=False),
               "open_loops": json.dumps(loops, ensure_ascii=False)}
-    if data.get("circle") and not row["circle"]:
-        fields["circle"] = data["circle"]
+    if data.get("circle") and (not row["circle"] or locks.locked(db, "person", pid, "circle")):
+        fields["circle"] = data["circle"]  # 她选过的关系圈已经交给模型参考了，模型给的就是参考过她的
     if birthday and MMDD.match(birthday):
         fields["birthday"] = birthday
     for k, v in fields.items():
         if locks.locked(db, "person", pid, k):
-            continue
+            # 她改过的描述类：整理开始前就改了的，模型已经参考过，照写；整理开始以后才改的（或者不知道整理什么时候开始的），不覆盖她
+            _, at = her_edit(db, pid, k)
+            if k not in REFERENCE_FIELDS or not started or (at or "") > started:
+                continue
         if v is None and row[k]:  # 这次没提到的不清掉以前整理的
             continue
         db.conn.execute(f"UPDATE people SET {k} = ? WHERE id = ?", (v, pid))
@@ -362,6 +448,10 @@ def forget_evidence(db, evidence_ids) -> list:
         if not used & gone:
             continue
         sets = {k: ("[]" if k in ("topics", "dates", "open_loops") else None) for k in ORGANIZED if (f"person:{r['id']}", k) not in held}
+        for k in REFERENCE_FIELDS:  # 她改过的描述类：整理时可能已经按删掉的记录改过，恢复成她写的原值（11-07 起这几项不锁死）
+            if (f"person:{r['id']}", k) in held:
+                v, _ = her_edit(db, r["id"], k)
+                sets[k] = json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v
         sets.update(source_ids=json.dumps(sorted(used - gone)), organized_at=None)
         db.conn.execute(f"UPDATE people SET {', '.join(k + ' = ?' for k in sets)} WHERE id = ?", (*sets.values(), r["id"]))
         out.append(r["id"])
@@ -413,22 +503,26 @@ def organize(db, router, today: date, limit: int = PER_NIGHT, stop=None) -> dict
         if not text.strip():
             got["skipped"] += 1
             continue
-        data = card_from_text(router, db, r["name"], _j(r["stats"], {}), text, f"person:{r['id']}")
+        started = _now()
+        data = card_from_text(router, db, r["name"], _j(r["stats"], {}), text, f"person:{r['id']}", hers=hers_for(db, r))
         if data is None:
             got["failed"] += 1
             continue
         row = db.conn.execute("SELECT * FROM people WHERE id = ?", (r["id"],)).fetchone()
-        _apply_card(db, row, data, today, ids)
+        _apply_card(db, row, data, today, ids, started)
         got["done"] += 1
         got["names"].append(r["name"])
     return got
 
 
 # ---------- 社交管理 ----------
+NEVER = 0  # contact_every_days = 0：她选了“永不”提醒（11-07）
+
+
 def interval(p: dict) -> int:
-    """提醒间隔：她设过的（contact_every_days）优先，没设按重要程度的默认。"""
-    if p.get("contact_every_days"):
-        return int(p["contact_every_days"])
+    """提醒间隔：她设过的（contact_every_days）优先，0 是“永不”提醒（返回 None）；没设按重要程度的默认。"""
+    if p.get("contact_every_days") is not None:
+        return int(p["contact_every_days"]) or None
     return DEFAULT_EVERY.get(int(p["importance"])) if p.get("importance") else None
 
 
@@ -458,7 +552,7 @@ def _next_day(d: str, today: date):
 
 
 def allowed(db, user: str) -> bool:
-    """人物卡全是她的私密社交信息：对外的（合作方、公开两档，主页助手、主页）一律不给；记忆暂停中只给她本人和系统维护
+    """人物卡全是她的私密社交信息：对外的（合作方、公开两档，Days、主页）一律不给；记忆暂停中只给她本人和系统维护
     （同 onto_query._gate、portrait.chat_text；Codex 评审 11-05）。"""
     who = memusers.check(user)
     if memusers.external(user):
@@ -467,10 +561,10 @@ def allowed(db, user: str) -> bool:
 
 
 def due(db, today: date, user: str = "relations") -> dict:
-    """三张清单：该联系了、生日和重要日子（提前 7 天）、待回复（对方问了她没回，7 天内）。"""
-    contact, days, reply = [], [], []
+    """清单：该联系了、待履约（有没了结的事的人）、生日和重要日子（提前 7 天）；待回复（对方问了她没回，7 天内）给 小伴 聊天用。"""
+    contact, days, reply, loops = [], [], [], []
     if not allowed(db, user):
-        return {"contact": contact, "days": days, "reply": reply}
+        return {"contact": contact, "days": days, "reply": reply, "loops": loops}
     ensure(db)
     for r in db.conn.execute("SELECT * FROM people ORDER BY id"):
         p = dict(r)
@@ -485,10 +579,17 @@ def due(db, today: date, user: str = "relations") -> dict:
                                 "topic": _topic(p), "draft": p["draft"] or ""})
         marks = [{"date": p["birthday"], "what": "生日"}] if p["birthday"] else []
         marks += [d for d in _j(p["dates"], []) if not (p["birthday"] and "生日" in d.get("what", ""))]
+        done_days = set(_j(p.get("dates_done"), []))
         for m in marks:
             x = _next_day(str(m.get("date") or ""), today)
+            if x and f"{x.isoformat()}:{m.get('what') or ''}" in done_days:  # 这一次她点过“办完了”
+                continue
             if x and (x - today).days <= SOON_DAYS:
                 days.append({"id": p["id"], "name": p["name"], "date": x.isoformat(), "in": (x - today).days, "what": m.get("what") or ""})
+        open_ = [x for x in _j(p["open_loops"], []) if x.get("text")]
+        if open_:  # 待履约：不限 7 天、不分谁欠谁
+            last = max(open_, key=lambda x: str(x.get("date") or ""))
+            loops.append({"id": p["id"], "name": p["name"], "n": len(open_), "text": last["text"], "date": str(last.get("date") or "")})
         for x in _j(p["open_loops"], []):
             if x.get("kind") != "they_asked" or not YMD.match(x.get("date") or "") or not _day(x["date"]):
                 continue
@@ -498,7 +599,8 @@ def due(db, today: date, user: str = "relations") -> dict:
     contact.sort(key=lambda x: (-x["importance"], -x["days"] / x["every"]))
     days.sort(key=lambda x: x["in"])
     reply.sort(key=lambda x: x["ago"])
-    return {"contact": contact, "days": days, "reply": reply}
+    loops.sort(key=lambda x: x["date"], reverse=True)
+    return {"contact": contact, "days": days, "reply": reply, "loops": loops}
 
 
 def contact_status(db, today: date, user: str) -> dict:
@@ -528,6 +630,12 @@ def chat_hint(db, today: date, n: int = 2) -> str:
     lines = [f"- {x['name']}：{x['what']}，{'就是今天' if x['in'] == 0 else str(x['in']) + ' 天后'}" for x in d["days"][:n]]
     lines += [f"- {x['name']} {x['ago']} 天前问她：{x['text']}（她还没回）" for x in d["reply"][:n]]
     lines += [f"- {x['name']}：{x['days']} 天没联系了{'，' + x['topic'] if x['topic'] else ''}" for x in d["contact"][:n]]
+    try:  # 推荐见谁（按她在哪、接下来做什么，ethan/meetrec.py）排在最前：有行程时最该提
+        from . import meetrec
+        meet = meetrec.chat_lines(db, today)
+        lines = ([meet] if meet else []) + lines
+    except Exception:
+        pass
     return "\n".join(lines[:n])
 
 
@@ -545,10 +653,11 @@ def _card(p: dict, today: date, locked=()) -> dict:
     return {"id": pid, "name": p["name"], "circle": p.get("circle") or "", "relation": p.get("relation") or "",
             "how_met": p.get("how_met") or "", "notes": p.get("notes") or "", "birthday": p.get("birthday") or "",
             "recent": p.get("recent") or "", "topics": _j(p.get("topics"), []), "draft": p.get("draft") or "",
-            "importance": p.get("importance") or 0, "every": every, "every_set": bool(p.get("contact_every_days")),
+            "importance": p.get("importance") or 0, "every": every, "every_set": p.get("contact_every_days") is not None, "never": p.get("contact_every_days") == NEVER,
             "last_contact": p.get("last_contact") or "", "days": gap, "overdue": bool(every and gap is not None and gap >= every),
             "frequency": p.get("frequency") or "", "stats": st, "dates": _j(p.get("dates"), []),
-            "open_loops": _j(p.get("open_loops"), []), "source": p.get("source") or "", "organized": bool(p.get("organized_at")),
+            "open_loops": _j(p.get("open_loops"), []), "labels": _j(p.get("wx_labels"), []),
+            "city": p.get("city") or "", "roles": _j(p.get("roles"), []), "want_meet": _j(p.get("want_meet"), []), "source": p.get("source") or "", "organized": bool(p.get("organized_at")),
             "locked": sorted(locked)}
 
 
@@ -563,8 +672,14 @@ def page(db, today: date, user: str = "me_page") -> dict:
     people = [_card(dict(r), today, held.get(f"person:{r['id']}", ()))
               for r in db.conn.execute("SELECT * FROM people ORDER BY importance IS NULL, importance DESC, "
                                        "last_contact IS NULL, last_contact DESC, name")]
+    from . import meetrec
+    try:
+        meet = meetrec.suggest(db, today)
+    except Exception as e:
+        print(f"[relations] 推荐见谁没算出来：{type(e).__name__} {e}", flush=True)
+        meet = []
     return {"due": due(db, today, user), "people": people, "defaults": DEFAULT_EVERY, "circles": list(CIRCLES),
-            "deleted": deleted_people(db)}
+            "deleted": deleted_people(db), "merge": merge_suggestions(db), "meet": meet}
 
 
 def set_field(db, pid: int, field: str, value) -> dict:
@@ -578,14 +693,17 @@ def set_field(db, pid: int, field: str, value) -> dict:
     v = value
     if field == "importance":
         v = int(value)
-        if v not in (1, 2, 3):
-            return {"ok": False, "msg": "重要程度是 1–3"}
+        if v not in (0, 1, 2, 3):  # 0 = 没星（加）：不按重要程度提醒
+            return {"ok": False, "msg": "重要程度是 0–3"}
     elif field == "contact_every_days":
-        v = int(value) if str(value).strip() else None
-        if v is not None and not 1 <= v <= 3650:
-            return {"ok": False, "msg": "提醒间隔是 1–3650 天"}
-    elif field == "topics":
-        v = json.dumps([t.strip() for t in re.split(r"[，、;；]", str(value or "")) if t.strip()][:6], ensure_ascii=False)
+        # 空 = 按重要程度的默认；never / 0 = 永不提醒
+        v = NEVER if str(value).strip().lower() in ("never", "0") else int(value) if str(value).strip() else None
+        if v not in (None, NEVER) and not 1 <= v <= 3650:
+            return {"ok": False, "msg": "提醒间隔是 1–3650 天，或者选“永不”"}
+    elif field == "wx_labels":  # 分组（默认是微信标签）：她改了就锁住，以后微信那边的标签不再覆盖
+        v = json.dumps(clean_labels(str(value or "")), ensure_ascii=False)
+    elif field in ("topics", "roles"):
+        v = json.dumps([t.strip()[:10] for t in re.split(r"[，、;；]", str(value or "")) if t.strip()][:6], ensure_ascii=False)
     else:
         v = " ".join(str(value or "").split())[:EDITABLE[field]] or None
         if field == "birthday" and v and not MMDD.match(v):
@@ -600,7 +718,9 @@ def set_field(db, pid: int, field: str, value) -> dict:
     with tx.atomic(db):  # 写值和锁一个事务：整理在中间插进来也看得到锁（Codex 评审 11-05）
         db.conn.execute(f"UPDATE people SET {field} = ?, updated_at = ? WHERE id = ?", (v, _now(), pid))
         locks.lock(db, "person", pid, field, value, title=row["name"])
-    return {"ok": True, "msg": "改好了，以后自动整理不动这一项", "log": f"关系：{row['name']} 改了 {field}"}
+    # 描述类只当参考（REFERENCE_FIELDS）：提示不能再说“不动”
+    msg = "改好了，以后整理会参考你写的，再按你们后来的聊天调整" if field in REFERENCE_FIELDS else "改好了，以后自动整理不会改这一项"
+    return {"ok": True, "msg": msg, "log": f"关系：{row['name']} 改了 {field}"}
 
 
 def loop_done(db, pid: int, text: str) -> dict:
@@ -618,6 +738,44 @@ def loop_done(db, pid: int, text: str) -> dict:
                     (json.dumps(loops, ensure_ascii=False), json.dumps(list(dict.fromkeys(done))), _now(), pid))
     db.conn.commit()
     return {"ok": True, "msg": "了结了", "log": f"关系：{row['name']} 了结一件事"}
+
+
+# 要等某件事之后才能兑现的（“回国后去拜访”“BP 做好后发给他”）：不是现在要做的，挪进等着办
+CONDITIONAL = re.compile(r"回国|回去后|回来后|回深圳|回北京|元旦|之后|以后|做好后|理顺后|雏形后|有了.{0,8}后|等.{1,10}再|随时")  # 随时：开放式的“随时可以聊”，等对方来（指罗尤春那件）
+BACK_HOME = re.compile(r"回国|回去后|回来后|回深圳|回北京|元旦")
+DEFER_DAYS = 30
+
+
+def defer_loop(db, pid: int, text: str, today: date) -> dict:
+    """没了结的事“先放着”：挪进等着办（等她办的）。说了回国的等她回国，其余 30 天后再变成她的待办。"""
+    from . import followups
+    ensure(db)
+    row = db.conn.execute("SELECT * FROM people WHERE id = ?", (pid,)).fetchone()
+    if row is None:
+        return {"ok": False, "msg": "这张卡不在了"}
+    hit = next((x for x in _j(row["open_loops"], []) if x.get("text") == text), None)
+    if hit is None:
+        return {"ok": False, "msg": "这件已经不在了"}
+    wait = "check:back_in_china" if BACK_HOME.search(text) else f"date:{(today + timedelta(days=DEFER_DAYS)).isoformat()}"
+    fid = followups.add(db, f"兑现给{row['name']}的：{text}"[:200], wait, for_her=True, owner="她", source=f"person:{pid}")
+    loop_done(db, pid, text)
+    when = "你回国后" if wait.startswith("check") else f"{DEFER_DAYS} 天后"
+    return {"ok": True, "msg": f"先放着了，{when}变成你的待办（待你定最下面“以后再办”里看得到）", "log": f"关系：{row['name']} 一件事挪进等着办 #{fid}"}
+
+
+def date_done(db, pid: int, day: str, what: str) -> dict:
+    """生日和重要日子她点了“办完了”：这一次不再列，明年照常提醒。"""
+    ensure(db)
+    row = db.conn.execute("SELECT * FROM people WHERE id = ?", (pid,)).fetchone()
+    if row is None:
+        return {"ok": False, "msg": "这张卡不在了"}
+    done = _j(row["dates_done"], [])
+    key = f"{day}:{what or ''}"
+    if key not in done:
+        done = (done + [key])[-50:]
+        db.conn.execute("UPDATE people SET dates_done = ? WHERE id = ?", (json.dumps(done, ensure_ascii=False), pid))
+        db.conn.commit()
+    return {"ok": True, "msg": "好，这次办完了，明年再提醒", "log": f"关系：{row['name']} {what}办完了"}
 
 
 def delete(db, pid: int) -> dict:
@@ -639,6 +797,123 @@ def delete(db, pid: int) -> dict:
 
 
 ALIAS = "alias:"  # 删卡时按微信名字另记的那把删除锁，note 写主锁是哪个
+
+
+# ---------- 合并两张卡（“关系里面有一部分还没分，应该是我跟 小伴 聊天过程当中出现的……哪些可以跟现有的联系人合并，
+# 然后你给我一个合并的入口”）----------
+FILL = ("circle", "birthday", "how_met", "notes", "relation", "contact_every_days", "recent", "frequency")
+LISTS = ("topics", "dates", "open_loops", "loops_done")
+KIN = {"妈妈": ("妈妈", "母亲", "母上"), "爸爸": ("爸爸", "父亲", "父上"), "妹妹": ("妹妹",), "姐姐": ("姐姐",), "弟弟": ("弟弟",),
+       "哥哥": ("哥哥",), "老公": ("老公", "丈夫"), "男朋友": ("男朋友", "男友"), "女朋友": ("女朋友", "女友")}
+
+
+def merged_into(db, name: str):
+    """这个名字合并到了哪张卡（编号），没合并过返回 None。"""
+    locks.ensure(db)
+    r = db.conn.execute("SELECT value FROM manual_locks WHERE obj = ? AND field = 'merged' AND released_at IS NULL ORDER BY id DESC LIMIT 1",
+                        ("person:name:" + name,)).fetchone()
+    v = _j(r["value"], {}) if r else {}
+    return v.get("into") if isinstance(v, dict) else None
+
+
+def merge(db, keep: int, drop: int) -> dict:
+    """把 drop 这张卡并进 keep：keep 空着的字段用 drop 的补上（她改过、锁住的不动），清单类合在一起，重要程度取高的、最近联系取晚的；
+    关于这个人的记忆（旧 facts 的主语、说法的主语和对象）改指 keep；drop 的名字记成别名，以后聊天里再提到也记到 keep 上。"""
+    ensure(db)
+    if keep == drop:
+        return {"ok": False, "msg": "是同一张卡"}
+    k = db.conn.execute("SELECT * FROM people WHERE id = ?", (keep,)).fetchone()
+    d = db.conn.execute("SELECT * FROM people WHERE id = ?", (drop,)).fetchone()
+    if k is None or d is None:
+        return {"ok": False, "msg": "有一张卡已经不在了"}
+    k, d = dict(k), dict(d)
+    sets = {}
+    for f in FILL:
+        if k.get(f) in (None, "") and d.get(f) not in (None, ""):
+            sets[f] = d[f]
+    for f in LISTS:
+        a, b = _j(k.get(f), []), _j(d.get(f), [])
+        if isinstance(a, list) and isinstance(b, list) and b:
+            sets[f] = json.dumps(a + [x for x in b if x not in a], ensure_ascii=False)
+    if (d.get("importance") or 0) > (k.get("importance") or 0):
+        sets["importance"] = d["importance"]
+    if d.get("last_contact") and str(d["last_contact"]) > str(k.get("last_contact") or ""):
+        sets["last_contact"] = d["last_contact"]
+    sets = {f: v for f, v in sets.items() if not locks.locked(db, "person", keep, f)}
+    with tx.atomic(db):
+        if sets:
+            db.conn.execute(f"UPDATE people SET {', '.join(f + ' = ?' for f in sets)}, updated_at = ? WHERE id = ?",
+                            (*sets.values(), _now(), keep))
+        for f in FILL + LISTS + ("importance", "name"):  # drop 上她锁过的字段：值已经补过去了，锁跟过去
+            if locks.locked(db, "person", drop, f) and not locks.locked(db, "person", keep, f) and f in sets:
+                db.conn.execute("UPDATE manual_locks SET obj = ? WHERE obj = ? AND field = ? AND released_at IS NULL",
+                                (f"person:{keep}", f"person:{drop}", f))
+        db.conn.execute("UPDATE manual_locks SET released_at = ? WHERE obj = ? AND released_at IS NULL", (_now(), f"person:{drop}"))
+        lifebase.repoint_person(db, drop, keep, d["name"])  # 关于这个人的记忆改指留下的那张卡（记忆表只有 lifebase 能写）
+        try:
+            db.conn.execute("UPDATE meetups SET person_id = ? WHERE person_id = ?", (keep, drop))
+        except Exception:
+            pass
+        locks.lock(db, "person", "name:" + d["name"], "merged", value={"into": keep, "card": {f: d[f] for f in d if f != "id"}},
+                   title=d["name"], note=f"并进 #{keep} {k['name']}")
+        db.conn.execute("DELETE FROM people WHERE id = ?", (drop,))
+    return {"ok": True, "msg": f"把「{d['name']}」并进了「{k['name']}」，以后聊天里提到「{d['name']}」也记到这张卡上",
+            "log": f"关系：{d['name']} 并进 {k['name']}"}
+
+
+def _kin(name: str):
+    """名字本身就是亲属称呼（“妈妈”“母上大人”）→ 哪一种；不是返回 None。"""
+    return next((k for k, words in KIN.items() if any(w in (name or "") for w in words)), None)
+
+
+def _her_kin(relation: str):
+    """关系里写的是她自己的亲属（“她妈妈”“她的妹妹”）→ 哪一种。“朱天宇的妈妈”“叫她‘姐姐’的妹妹”这种别人家的不算。"""
+    rel = relation or ""
+    return next((k for k, words in KIN.items() if any(re.search(rf"(?:^|[^叫喊称])她的?(?:亲)?{w}", rel) for w in words)), None)
+
+
+def _pair_ref(drop: int, keep: int) -> str:
+    return f"notsame:{drop}:{keep}"
+
+
+def not_same(db, drop: int, keep: int) -> dict:
+    """她在“可能是同一个人”里点了“不是同一个人”：这一对以后不再提。"""
+    names = {r["id"]: r["name"] for r in db.conn.execute("SELECT id, name FROM people WHERE id IN (?, ?)", (drop, keep))}
+    locks.lock(db, "person", _pair_ref(drop, keep), "dismissed", title=f"{names.get(drop, drop)} ≠ {names.get(keep, keep)}")
+    return {"ok": True, "msg": f"好，{names.get(drop, '')} 和 {names.get(keep, '')} 不是同一个人，以后不再提"}
+
+
+def merge_suggestions(db, limit: int = 12) -> list:
+    """可能是同一个人：只拿她和 小伴 聊天里冒出来、不在她微信里的卡（没有微信指纹），去对微信导入的卡（的范围）——
+    名字一样或互相包含；或者都指她自己的同一个亲属（“妈妈”对“母上大人”、关系写着“她妈妈”的）。几张都对得上时挑最像的；
+    她点过“不是同一个人”的那一对跳过、换下一个。只是建议，她点“合并”才合；留下的是微信那张。"""
+    ensure(db)
+    locks.ensure(db)
+    rows = [dict(r) for r in db.conn.execute("SELECT id, name, relation, circle, wx_key, wx_name FROM people")]
+    chat = [r for r in rows if not r["wx_key"]]
+    wx = [r for r in rows if r["wx_key"]]
+    out = []
+    for c in chat:
+        n, kin = c["name"], _kin(c["name"])
+        cands = []
+        for w in wx:
+            if locks.locked(db, "person", _pair_ref(c["id"], w["id"]), "dismissed"):
+                continue
+            hay = f"{w['name']} {w.get('wx_name') or ''}"
+            if n == w["name"] or n == (w.get("wx_name") or ""):
+                cands.append((3, w, "名字一样"))
+            elif kin and _kin(w["name"]) == kin:
+                cands.append((2, w, f"都是你{kin}"))
+            elif kin and _her_kin(w.get("relation")) == kin:
+                cands.append((2, w, f"都是你{kin}"))
+            elif len(n) >= 2 and not kin and n in hay:
+                cands.append((1, w, "名字对得上"))
+        if cands:
+            score, w, why = max(cands, key=lambda x: (x[0], -x[1]["id"]))
+            out.append({"drop": {"id": c["id"], "name": n, "circle": c.get("circle") or ""},
+                        "keep": {"id": w["id"], "name": w["name"], "relation": w.get("relation") or ""}, "why": why,
+                        "more": len(cands) - 1})
+    return out[:limit]
 
 
 def deleted_people(db) -> list:
@@ -763,6 +1038,7 @@ def main(argv=None) -> int:
         router = patient(build_router(args.data, 50.0), store)
         from .bgwork import QuotaBlocked, stop_or_blocked
         stop = stop_or_blocked(args.data, deadline(args.max_minutes))
+        router.stop = stop
         try:
             print(retry_locked(lambda: organize_all(store.db, router, her_today(), stop=stop, beat=lambda n: heartbeat(args.data, n))),
                   flush=True)

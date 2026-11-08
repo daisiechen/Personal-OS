@@ -84,7 +84,7 @@ def light(h: float) -> str:
 
 def week_row(db, day: date) -> dict:
     """健康线一行：今天几小时、本周日均、本周最长那天；灯按本周最差那天算。"""
-    start = day - timedelta(days=day.weekday())
+    start = clock.week_start(day)
     days = [start + timedelta(days=i) for i in range(day.weekday() + 1)]
     hs = [hours(db, d) for d in days]
     worked = [h for h in hs if h > 0]

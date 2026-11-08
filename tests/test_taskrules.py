@@ -102,6 +102,32 @@ class StateTest(Fixture):
         self.assertEqual(w, {"open": "soon", "other": "month", "far": "far", "nodue": "none"})
 
 
+    def test_status_note_titles_are_waiting(self):
+        """这种标题是状态不是事，不进今日任务。"""
+        tomorrow = (D + timedelta(days=1)).isoformat()
+        ids = [self.db.conn.execute("INSERT INTO tasks (title, due, done, created_at) VALUES (?, ?, 0, ?)", (t, tomorrow, D.isoformat())).lastrowid
+               for t in ("法签预约已取消，暂不备材料", "法签预约已取消，新日期定了再记", "准备法签材料")]
+        self.db.conn.commit()
+        today = taskrules.view_ids(self.db, "today", D)
+        self.assertEqual([i in today for i in ids], [False, False, True])
+        self.assertEqual(taskrules.get(self.db, ids[0], D)["state"], "waiting")
+
+    def test_appointment_only_on_its_day(self):
+        """明天跟合伙人开会，不该提前进今天的待办；当天才进。要提前做的（准备材料、约时间）照旧提前列。"""
+        tomorrow = (D + timedelta(days=1)).isoformat()
+        meet = self.db.conn.execute("INSERT INTO tasks (title, due, done, created_at) VALUES ('和国内合伙人开会', ?, 0, ?)",
+                                    (tomorrow, D.isoformat())).lastrowid
+        prep = self.db.conn.execute("INSERT INTO tasks (title, due, done, created_at) VALUES ('准备和合伙人开会的材料', ?, 0, ?)",
+                                    (tomorrow, D.isoformat())).lastrowid
+        self.db.conn.commit()
+        self.assertEqual(taskrules.get(self.db, meet, D)["when"], "month")
+        self.assertNotIn(meet, taskrules.view_ids(self.db, "today", D))
+        self.assertIn(meet, taskrules.view_ids(self.db, "other", D))
+        self.assertIn(meet, taskrules.view_ids(self.db, "today", D + timedelta(days=1)))
+        self.assertIn(prep, taskrules.view_ids(self.db, "today", D))
+        self.assertTrue(taskrules.is_appointment("Call with investor"))
+        self.assertFalse(taskrules.is_appointment("约时间和导师见面"))
+
 class ViewMatrixTest(Fixture):
     def test_matrix(self):
         """第 8 节对照表：每个视图收哪几件。"""
@@ -255,7 +281,7 @@ class EntryPointsTest(Fixture):
         from ethan import todo
         from unittest import mock
         with mock.patch("ethan.taskrules.her_today", return_value=D):
-            text, kb = todo.render(self.db)
+            text, kb = todo.render(self.db, D)  # 传固定的日子：todo 自己取的“今天”过了 11-06 就和清单对不上
         ids = {int(b["callback_data"].split(":")[3]) for row in kb for b in row if b["callback_data"].startswith("td:done:t:")}
         mine = ids - {self.T["ethan"]}
         self.assertEqual(mine, set(taskrules.view_ids(self.db, "tg_list", D, None)))
@@ -424,6 +450,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

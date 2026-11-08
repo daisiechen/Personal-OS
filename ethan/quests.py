@@ -1,10 +1,11 @@
 """任务系统（晚 Mia 定：按游戏任务系统做，攒积分兑换 小伴 的惊喜）。
 
 任务四类（她的部分；小伴 替她准备的事不算她的积分）：
-  主线：每个目标完整拆成的步骤（一个目标一章），按大小 小/中/大 = 40/100/200 分，阶段节点再 +300；
+  主线：每个目标完整拆成的步骤（一个目标一章），按预计工作量定档 S/M/L/XL = 40/100/200/400 分（方案 A，
+        档在 ethan/taskrules.py 建任务时定），阶段节点再 +300；
         “硬骨头”（最难开始的事）×1.5（评审后翻倍，见 docs/design/game-review.md）。
         第一次拆解是草稿，小伴 发她过目，她说定稿才算正式（草稿也能做、照样给分）。
-  支线：其他随手的待办，每件 20 分。
+  支线：其他随手的待办，也按档（11-06 起；之前每件 20 分，还没定档的老待办照旧 20）。
   日常：每天坚持的事，每项 10 分；做简单版也算打卡、不断连续，拿一半分。当天该做的全部打卡“满勤” +20。
         每周可开 1 天休整日：那天做到 2 项日常就算满勤。
   周常：每周一次的事（新体验、周日复盘），完成 +50。
@@ -17,8 +18,9 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from .clock import her_today
+from . import clock
 
-SIZE_POINTS = {"S": 40, "M": 100, "L": 200}
+SIZE_POINTS = {"S": 40, "M": 100, "L": 200, "XL": 400}  # S 一小时内、M 半天、L 一两天、XL 好几天（方案 A）
 MILESTONE_BONUS = 300
 HARD_FACTOR = 1.5
 SIDE_POINTS = 20
@@ -76,14 +78,22 @@ def _awarded(db, ref: str) -> bool:
     return db.conn.execute("SELECT 1 FROM points WHERE ref = ?", (ref,)).fetchone() is not None
 
 
-# 主线 / 支线
+# 主线 / 支线 / 阶段任务：一件事给多少分只在这里算（工作台、计划器、完成时给分都调它）
 def task_points(task: dict) -> int:
+    """邮件来的 0；阶段任务按 stages.points_for（反复做的每次 +10 等）；其余按档 S 40 / M 100 / L 200 / XL 400，
+    节点 +300，硬骨头 ×1.5（方案 A：按预计工作量定档，加成照旧）。还没定档的老待办：主线按 M、支线按 20。"""
     if task.get("source_type") == "email":  # 邮件里自动生成的检查、确认类杂事不计分（系统替她记的，不算进展）
         return 0
-    if task.get("quest") == "main":
-        pts = SIZE_POINTS.get(task.get("size") or "M", 100) + (MILESTONE_BONUS if task.get("milestone") else 0)
+    if task.get("milestone_id"):
+        from . import stages
+        return stages.points_for(task)
+    size = task.get("size")
+    if size in SIZE_POINTS:
+        pts = SIZE_POINTS[size]
     else:
-        pts = SIDE_POINTS
+        pts = SIZE_POINTS["M"] if task.get("quest") == "main" else SIDE_POINTS
+    if task.get("quest") == "main" and task.get("milestone"):
+        pts += MILESTONE_BONUS
     return int(pts * HARD_FACTOR) if task.get("hard") else pts
 
 
@@ -165,14 +175,21 @@ def complete_task(db, task_id: int, day: date) -> int:
                  f"task:{task_id}")
 
 
+def _size_of(step: dict) -> str:
+    """计划器 / 小伴 给了档就用，没给按标题估（taskrules.estimate，估不出是 S）。"""
+    from . import taskrules
+    return step["size"] if step.get("size") in SIZE_POINTS else taskrules.estimate(step.get("title") or "")[0]
+
+
 def add_breakdown(db, goal_id: int, steps: list, draft: bool = True) -> list:
-    """把一个目标拆成主线任务：steps = [{"title", "size": S/M/L, "milestone": bool, "hard": bool}]，按顺序。"""
+    """把一个目标拆成主线任务：steps = [{"title", "size": S/M/L/XL, "milestone": bool, "hard": bool}]，按顺序。
+    建任务时定档的规矩和 taskrules.add 一样（方案 A）。"""
     ids = []
     for n, s in enumerate(steps, 1):
         cur = db.conn.execute(
             "INSERT INTO tasks (goal_id, title, done, promised_by_ethan, created_at, quest, size, milestone, seq, draft, hard) "
             "VALUES (?, ?, 0, 0, ?, 'main', ?, ?, ?, ?, ?)",
-            (goal_id, s["title"], now(), s.get("size") if s.get("size") in SIZE_POINTS else "M",
+            (goal_id, s["title"], now(), _size_of(s),
              int(bool(s.get("milestone"))), n, int(draft), int(bool(s.get("hard")))))
         ids.append(cur.lastrowid)
     db.conn.commit()
@@ -210,8 +227,7 @@ def due_today(habit: dict, day: date) -> bool:
     return not habit["weekdays"] or str(day.weekday()) in habit["weekdays"].split(",")
 
 
-def _week_start(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+_week_start = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def checked(db, habit_id: int, day: date) -> bool:
@@ -222,6 +238,15 @@ def checked(db, habit_id: int, day: date) -> bool:
 def week_count(db, habit_id: int, day: date) -> int:
     return db.conn.execute("SELECT COUNT(*) FROM habit_log WHERE habit_id = ? AND day >= ? AND day <= ?",
                            (habit_id, _week_start(day).isoformat(), day.isoformat())).fetchone()[0]
+
+
+def weekly_count(db, h, day: date) -> int:
+    """周常这周做了几次（首页周常小块、早报、小伴 看的汇总）。英语陪练和领域页、属性分同一个口径：
+    english.practice_days（有练习记录的天 ∪ 打卡的天），别的周常数打卡。"""
+    from . import english
+    if h["title"] == english.HABIT:
+        return len(english.practice_days(db, _week_start(day), day) or ())
+    return week_count(db, h["id"], day)
 
 
 def full_day(db, day: date) -> bool:
@@ -280,6 +305,10 @@ def streak(db, day: date) -> dict:
     return {"days": days, "best": max(days, streak_best_recorded(db)), "freezes_used": sum(used.values())}
 
 
+MEET_AUTO = "life:meet"  # 和 lifelog.MEET_HABIT 同一个值（见了朋友自动打卡的那条坚持）
+MEET_TICK = "首页打卡：和朋友见面"
+
+
 def check_habit(db, habit_id: int, day: date, easy: bool = False) -> int:
     """打卡并给分，同一天同一项只给一次；easy 是做了简单版（算打卡、拿一半分）。返回这次加的分（含满勤和连续奖励）。"""
     h = db.conn.execute("SELECT * FROM habits WHERE id = ?", (habit_id,)).fetchone()
@@ -288,6 +317,11 @@ def check_habit(db, habit_id: int, day: date, easy: bool = False) -> int:
     db.conn.execute("INSERT INTO habit_log (habit_id, day, at, easy) VALUES (?, ?, ?, ?)",
                     (habit_id, day.isoformat(), now(), int(easy)))
     db.conn.commit()
+    if (h["auto"] if "auto" in h.keys() else None) == MEET_AUTO:  # 首页点了“和朋友见面”：社交领域和赛季分数按见面记录算，也记一笔
+        from . import lifelog
+        if not lifelog.met_on(db, day):
+            lifelog.add(db, "meet", day, None, MEET_TICK)
+            db.conn.commit()
     gained = 0
     if h["cadence"] == "daily":
         pts = h["points"] // 2 if easy else h["points"]
@@ -317,6 +351,8 @@ def uncheck_habit(db, habit_id: int, day: date) -> int:
     was_full = full_day(db, day)
     week_done = h["cadence"] == "weekly" and week_count(db, habit_id, day) >= h["target"]
     db.conn.execute("DELETE FROM habit_log WHERE habit_id = ? AND day = ?", (habit_id, day.isoformat()))
+    if (h["auto"] if "auto" in h.keys() else None) == MEET_AUTO:  # 撤销打卡：首页那一笔见面也收回（她自己记的、跟 小伴 说的不动）
+        db.conn.execute("DELETE FROM life_log WHERE kind = 'meet' AND day = ? AND who IS NULL AND text = ?", (day.isoformat(), MEET_TICK))
     refs = [f"habit:{habit_id}:{day}", f"habitx:{habit_id}:{day}"]
     if was_full and not full_day(db, day):
         refs += [f"full:{day}"] + [f"streak{n}:{day}" for n in STREAK_BONUS]
@@ -424,16 +460,18 @@ def rewards(db, day: date = None) -> list:
 
 
 def redeem(db, reward_id: int, day: date):
-    """兑换：余额够就扣分、生成一条待策划的惊喜；返回 (成功, 说明)。"""
-    r = db.conn.execute("SELECT * FROM rewards WHERE id = ? AND active = 1", (reward_id,)).fetchone()
-    if r is None:
-        return False, "这个奖励不在了"
-    bal = totals(db)["balance"]
-    if bal < r["cost"]:
-        return False, f"还差 {r['cost'] - bal} 分"
-    db.conn.execute("INSERT INTO redemptions (reward_id, cost, status, at) VALUES (?, ?, '待策划', ?)",
-                    (reward_id, r["cost"], now()))
-    db.conn.commit()
+    """兑换：余额够就扣分、生成一条待策划的惊喜；返回 (成功, 说明)。
+    查余额和扣分在一个写事务里（Codex 评审 11-07 第 8 条：工作台和 Telegram 两个连接同时兑换，都读到同一个余额，100 分换成了 −100 分）。"""
+    from . import tx
+    with tx.atomic(db):
+        r = db.conn.execute("SELECT * FROM rewards WHERE id = ? AND active = 1", (reward_id,)).fetchone()
+        if r is None:
+            return False, "这个奖励不在了"
+        bal = totals(db)["balance"]
+        if bal < r["cost"]:
+            return False, f"还差 {r['cost'] - bal} 分"
+        db.conn.execute("INSERT INTO redemptions (reward_id, cost, status, at) VALUES (?, ?, '待策划', ?)",
+                        (reward_id, r["cost"], now()))
     return True, f"兑换成功：{r['title']}，小伴 去策划了"
 
 
@@ -455,7 +493,7 @@ def today_summary(db, day: date) -> dict:
     t = totals(db)
     hs = habits(db)
     daily = [{"id": h["id"], "title": h["title"], "done": checked(db, h["id"], day)} for h in hs if due_today(h, day)]
-    weekly = [{"id": h["id"], "title": h["title"], "count": week_count(db, h["id"], day), "target": h["target"]}
+    weekly = [{"id": h["id"], "title": h["title"], "count": weekly_count(db, h, day), "target": h["target"]}
               for h in hs if h["cadence"] == "weekly"]
     nxt = min((r["cost"] for r in rewards(db) if r["cost"] > t["balance"]), default=None)
     return {**t, "daily": daily, "weekly": weekly, "streak": streak(db, day),

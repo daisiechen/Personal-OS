@@ -42,7 +42,11 @@ class TempUntilTest(Base):
         self.assertEqual(lifebase.temp_until("她这几天在巴黎出差", fri), "2026-11-02")
         self.assertEqual(lifebase.temp_until("她这个月在减脂", fri), "2026-10-31")
         self.assertEqual(lifebase.temp_until("她今天很累", "2026-10-30T09:00:00"), "2026-10-30")
-        self.assertIsNone(lifebase.temp_until("她最近在减脂", fri))  # 没明说多久的不补（拿不准不填）
+        self.assertEqual(lifebase.temp_until("她最近在减脂", fri), "2026-11-13")  # 自己判断——只说“最近”的算两周
+        self.assertEqual(lifebase.temp_until("她2025年3月说最近几天在赶论文", "2025-03-10"), "2025-03-13")  # 这几天：按说的那天
+        self.assertEqual(lifebase.temp_until("她2025年3月在赶论文", "2025-03-10"), "2025-03-31")  # 只写到月：到月底
+        self.assertIsNone(lifebase.temp_until("她2025年10月起不喝奶茶", "2025-10-01"))  # 从那时起：长期的
+        self.assertIsNone(lifebase.temp_until("她2016年硕士毕业", None))  # 背景
         self.assertIsNone(lifebase.temp_until("她住在伦敦", fri))
         self.assertTrue(lifebase.expired("2026-10-29", "2026-10-30"))
         self.assertFalse(lifebase.expired("2026-10-30", "2026-10-30"))  # 当天还算
@@ -116,6 +120,13 @@ class TempUntilTest(Base):
         self.db.conn.commit()
         self.assertEqual(mepage.refresh(self.db, today=self.today)["expire"], 1)
 
+    def test_long_past_expiry_not_asked(self):
+        """11-07：早就过去的旧事按到期处理，不进待你定问她；两周内刚到期的才问。"""
+        lifebase.add_fact(self.db, "rhythms", "她2025年3月在赶论文", [self.ev], until="2025-03-31")
+        lifebase.add_fact(self.db, "body", "她这周在生病", [self.ev], until=(self.today - timedelta(days=2)).isoformat())
+        self.db.conn.commit()
+        self.assertEqual(mepage.refresh(self.db, today=self.today)["expire"], 1)
+
     def test_migration_backfills_only_unlocked_temp_states(self):
         from ethan import locks
         a = lifebase.add_fact(self.db, "body", "她这周在生病", [self.ev], valid_from="2026-10-30")
@@ -128,9 +139,9 @@ class TempUntilTest(Base):
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
         self.assertIn("原话", mod.__doc__)
-        self.assertIn("1 条", mod.run(self.store))
+        self.assertIn("2 条", mod.run(self.store))  # 11-07 起“最近”的也补（两周）
         got = {r["id"]: r["until"] for r in self.db.conn.execute("SELECT id, until FROM facts")}
-        self.assertEqual((got[a], got[b], got[c], got[d]), ("2026-11-01", None, None, None))
+        self.assertEqual((got[a], got[b], got[c], got[d]), ("2026-11-01", None, None, "2026-11-13"))
         self.assertEqual(self.stmt(a)["until"], "2026-11-01")
 
 
@@ -270,6 +281,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

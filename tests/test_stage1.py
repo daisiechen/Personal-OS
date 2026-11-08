@@ -30,7 +30,7 @@ class Backend:
         return Reply(self.text, self.name, "m", 0.0)
 
 
-class Stage1Test(unittest.TestCase):
+class Stage1Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -56,6 +56,8 @@ class Stage1Test(unittest.TestCase):
     def item(self, title_start):
         return [i for i in self.plan["items"] if i["title"].startswith(title_start)][0]
 
+
+class Stage1Test(Stage1Base):
     def test_ethan_sees_concrete_plan(self):
         self.ethan("好").reply("telegram", "今天练什么", today=DAY)
         system = self.backend.systems[0]
@@ -178,7 +180,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class HerTicksOnlyTest(Stage1Test):
+class HerTicksOnlyTest(Stage1Base):
     def test_ethan_never_ticks_or_undoes_her_tasks(self):
         """所有待办和任务都由她自己勾，小伴 不替她勾、不替她打卡、也不撤销她勾的。"""
         from ethan import quests
@@ -196,6 +198,26 @@ class HerTicksOnlyTest(Stage1Test):
         self.assertFalse(quests.checked(self.db, h, DAY))  # 只说做完了，不算叫他点
         self.ethan("好嘞 [打卡 训练]").reply("telegram", "帮我把训练打个卡", today=DAY)
         self.assertTrue(quests.checked(self.db, h, DAY))
+
+    def test_grok_english_she_says_record_it(self):
+        """在 Grok App 里练了近一小时，Grok 没发回报，服务器一次没记上（english_sessions 一直是空的）。
+        她跟 小伴 说“帮我记上”才记：补昨天的打卡 + 记下分钟数；只说练了、没叫他记，不动；只能补今天和昨天。"""
+        from datetime import timedelta
+        from ethan import english
+        h = quests.habit_by_title(self.db, english.HABIT)["id"]
+        yday = DAY - timedelta(days=1)
+        self.ethan("厉害 [打卡 英语陪练（Grok） 昨天 50 分钟]").reply("telegram", "昨天在 Grok 练了英语快一小时", today=DAY)
+        self.assertFalse(quests.checked(self.db, h, yday))  # 没叫他记
+        self.ethan("记上啦 [打卡 英语陪练（Grok） 昨天 50 分钟]").reply("telegram", "昨天在 Grok 练了英语 50 分钟，帮我记上", today=DAY)
+        self.assertTrue(quests.checked(self.db, h, yday))
+        self.assertFalse(quests.checked(self.db, h, DAY))
+        self.assertEqual(self.db.conn.execute("SELECT day, minutes FROM english_sessions").fetchall()[0][:], (yday.isoformat(), 50))
+        self.assertEqual(english.longest(self.db), 50)
+        reply = self.ethan("好 [打卡 英语陪练 " + (DAY - timedelta(days=3)).isoformat() + "]").reply("telegram", "帮我把三天前的英语记上", today=DAY)
+        self.assertFalse(quests.checked(self.db, h, DAY - timedelta(days=3)))  # 只能补今天和昨天
+        self.assertTrue(any("只能补今天或昨天" in b for b in reply["bubbles"]))
+        self.ethan("好 [打卡 睡前拉伸 5 分钟]").reply("telegram", "帮我把拉伸打个卡", today=DAY)  # 名字里本来就带分钟的照旧
+        self.assertTrue(quests.checked(self.db, quests.habit_by_title(self.db, "睡前拉伸 5 分钟")["id"], DAY))
 
 
 class TodoDedupeTest(unittest.TestCase):
@@ -225,7 +247,7 @@ class TodoDedupeTest(unittest.TestCase):
             store.close()
 
 
-class ClaudeChatTest(Stage1Test):
+class ClaudeChatTest(Stage1Base):
     def test_claude_session_shares_memory_with_telegram(self):
         """固定的 Claude 会话和 Telegram、微信是同一个 小伴，聊过的互相都知道。"""
         from ethan import chat

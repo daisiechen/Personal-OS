@@ -25,7 +25,7 @@ class Backend:
         return Reply(self.text, self.name, "m", 0.0)
 
 
-class TodoTest(unittest.TestCase):
+class TodoBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -43,6 +43,8 @@ class TodoTest(unittest.TestCase):
     def buttons(self):
         return [row[0]["callback_data"] for row in render(self.db)[1]]
 
+
+class TodoTest(TodoBase):
     def test_words_and_add_parsing(self):
         self.assertTrue(is_list_request("待办"))
         self.assertTrue(is_list_request("/todo"))
@@ -108,7 +110,7 @@ class TodoTest(unittest.TestCase):
         self.assertFalse([t for t in titles if "退改" in t])
 
 
-class TelegramTodoTest(TodoTest):
+class TelegramTodoTest(TodoBase):
     def channel(self, api):
         router = Router(Backend(), Ledger(self.root / "l2"), Settings(self.root / "s2.json"))
         ch = TelegramChannel(api, Ethan(self.store, router, persona="人设"), sleep=lambda s: None)

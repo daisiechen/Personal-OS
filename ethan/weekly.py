@@ -11,6 +11,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 
 from . import meals, training
+from . import clock
 
 SCHEMA = "CREATE TABLE IF NOT EXISTS week_plans (week TEXT PRIMARY KEY, plan TEXT NOT NULL, created_at TEXT NOT NULL, told INTEGER NOT NULL DEFAULT 0)"
 PREP_DAYS = (0, 3, 6)
@@ -22,7 +23,7 @@ def ensure(db):
 
 
 def next_monday(today: date) -> date:
-    return today + timedelta(days=7 - today.weekday())
+    return clock.week_start(today) + timedelta(days=7)
 
 
 def build(db, monday: date) -> dict:
@@ -72,7 +73,7 @@ def make(db, today: date, force: bool = False) -> dict:
 def get(db, today: date) -> dict:
     """工作台看：这周的和下周的。这周的还没有（刚上线）就当场算一份；周末就把下周的也算好。"""
     ensure(db)
-    this = today - timedelta(days=today.weekday())
+    this = clock.week_start(today)
     if not db.conn.execute("SELECT 1 FROM week_plans WHERE week = ?", (this.isoformat(),)).fetchone():
         make(db, this - timedelta(days=1))
     if today.weekday() >= 5:

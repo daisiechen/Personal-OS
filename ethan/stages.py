@@ -10,6 +10,7 @@
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from . import clock
 
 CADENCES = ("once", "daily", "weekly", "per_milestone")
 CADENCE_NAME = {"once": "一次性", "daily": "每天", "weekly": "每周", "per_milestone": "每个阶段一次"}
@@ -111,16 +112,49 @@ def window(db, m: dict, day: date) -> tuple:
 
 
 def goal_progress(db, goal_id: int) -> dict:
-    """副本进度按里程碑算：过了几个 / 一共几个（没达成但复盘过的也算走过）。"""
+    """副本进度按里程碑算：过了几个 / 一共几个（没达成但复盘过的也算走过），再加上当前里程碑里做完的任务占这个里程碑的几分之几
+    当前里程碑只算一次性的任务，反复做的不算。"""
     ms = milestones(db, goal_id)
     passed = sum(1 for m in ms if m["status"] != "open")
-    return {"passed": passed, "total": len(ms), "frac": round(passed / len(ms), 2) if ms else None,
-            "current": next((m for m in ms if m["status"] == "open"), None)}
+    cur = next((m for m in ms if m["status"] == "open"), None)
+    cur_done = cur_total = 0
+    if cur:
+        r = db.conn.execute("SELECT COUNT(*), COALESCE(SUM(done), 0) FROM tasks WHERE milestone_id = ? AND COALESCE(cadence, 'once') = 'once'",
+                            (cur["id"],)).fetchone()
+        cur_total, cur_done = int(r[0] or 0), int(r[1] or 0)
+    part = cur_done / cur_total if cur_total else 0.0
+    return {"passed": passed, "total": len(ms), "frac": round((passed + part) / len(ms), 2) if ms else None,
+            "current": cur, "cur_done": cur_done, "cur_total": cur_total}
+
+
+def boss_progress(metric_frac=None, milestones: dict = None, steps_done: int = 0, steps_total: int = 0) -> dict:
+    """副本进度条按什么画：所有页面（首页、领域页、副本详情、周回顾）只用这一处。
+
+    先后：有量化指标（体重这类，从基线到目标走了多少）→ 按指标；拆了里程碑 → 按里程碑过了几个；
+    老结构拆了步骤 → 按步骤做了几步；都没有 → 不画进度条（frac 为 None）。
+    by 是依据，label 写在进度条旁边（“按里程碑 1/4”），让人看得出这不是指标；short 给右下角的小牌子。
+    """
+    if metric_frac is not None:
+        f = round(min(max(float(metric_frac), 0.0), 1.0), 2)
+        return {"by": "metric", "frac": f, "label": f"按指标 {round(100 * f)}%", "short": ""}
+    ms = milestones or {}
+    if ms.get("total"):
+        p, t = ms.get("passed", 0), ms["total"]
+        d, n = ms.get("cur_done", 0), ms.get("cur_total", 0)
+        frac = ms["frac"] if ms.get("frac") is not None else round(p / t, 2)
+        return {"by": "milestones", "frac": frac, "label": f"按里程碑 {p}/{t}" + (f"，当前里程碑任务 {d}/{n}" if n else ""),
+                "short": f"里程碑 {p}/{t}"}
+    if steps_total:
+        return {"by": "steps", "frac": round(steps_done / steps_total, 2), "label": f"按步骤 {steps_done}/{steps_total}",
+                "short": f"{steps_done}/{steps_total} 步"}
+    return {"by": None, "frac": None, "label": "", "short": "待拆步骤"}
 
 
 # ---------- 阶段任务 ----------
 def add_task(db, milestone_id: int, title: str, cadence: str = "once", per_week: int = None, depends_on: int = None,
-             habit_id: int = None, size: str = "S", review: bool = False) -> int:
+             habit_id: int = None, size: str = None, review: bool = False) -> int:
+    """加一件阶段任务。size 不给就按标题和所属里程碑估（taskrules.add，方案 A），估不出是 S。"""
+    from . import taskrules
     ensure(db)
     if cadence not in CADENCES:
         raise ValueError("频次只能是一次性、每天、每周、每个阶段一次")
@@ -130,10 +164,11 @@ def add_task(db, milestone_id: int, title: str, cadence: str = "once", per_week:
     if m is None:
         raise ValueError("没有这个里程碑")
     seq = db.conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM tasks WHERE milestone_id = ?", (milestone_id,)).fetchone()[0]
-    tid = db.add_task((title or "").strip()[:200], goal_id=m["goal_id"])
-    db.conn.execute("UPDATE tasks SET quest = 'main', size = ?, seq = ?, milestone_id = ?, cadence = ?, per_week = ?, depends_on = ?, "
+    ms_title = db.conn.execute("SELECT title FROM milestones WHERE id = ?", (milestone_id,)).fetchone()[0]
+    tid = taskrules.add(db, (title or "").strip()[:200], goal_id=m["goal_id"], size=size, context=ms_title)
+    db.conn.execute("UPDATE tasks SET quest = 'main', seq = ?, milestone_id = ?, cadence = ?, per_week = ?, depends_on = ?, "
                     "habit_id = ?, is_review = ? WHERE id = ?",
-                    (size, seq, milestone_id, cadence, per_week, depends_on, habit_id, 1 if review else 0, tid))
+                    (seq, milestone_id, cadence, per_week, depends_on, habit_id, 1 if review else 0, tid))
     db.conn.commit()
     return tid
 
@@ -199,9 +234,9 @@ def progress(db, task: dict, day: date) -> dict:
         return {"done": got, "need": need, "text": f"{got} / {need} 天"}
     if cad == "weekly":  # 每周 N 次：这周做了几次；这个阶段一共几周、达标了几周（M2 两周要买两次菜）
         per = task.get("per_week") or 1
-        monday = day - timedelta(days=day.weekday())
+        monday = clock.week_start(day)
         got = _count(db, task, monday, day)
-        weeks, ok, w = 0, 0, start - timedelta(days=start.weekday())
+        weeks, ok, w = 0, 0, clock.week_start(start)
         while w <= end:
             weeks += 1
             ok += _count(db, task, max(w, start), min(w + timedelta(days=6), end)) >= per
@@ -241,7 +276,8 @@ def is_stage(task: dict) -> bool:
 
 
 def points_for(task: dict) -> int:
-    """引用日常周常的不另给分；每天 / 每周的每做一次 +10；每个阶段一次的 +40；一次性的按大小。"""
+    """引用日常周常的不另给分；每天 / 每周的每做一次 +10；每个阶段一次的 +40；一次性的按档 S 40 / M 100 / L 200 / XL 400
+    （方案 A），硬骨头 ×1.5 和别的任务一样。"""
     from . import quests
     if task.get("habit_id"):
         return 0
@@ -250,7 +286,8 @@ def points_for(task: dict) -> int:
         return REPEAT_POINTS
     if cad == "per_milestone":
         return PER_MILESTONE_POINTS
-    return quests.SIZE_POINTS.get(task.get("size") or "M", 100)
+    pts = quests.SIZE_POINTS.get(task.get("size") or "S", quests.SIZE_POINTS["S"])
+    return int(pts * quests.HARD_FACTOR) if task.get("hard") else pts
 
 
 def done_on(db, task: dict, day: date) -> bool:
@@ -348,7 +385,7 @@ def advance(db, milestone_id: int, day: date, review: str = "") -> int:
             if (t.get("cadence") or "once") != "once" and t["title"] not in have \
                     and not locks.she_deleted(db, t["title"], goal_id=m["goal_id"]):  # 她在这个副本里删掉过的，不再带过去
                 created.append(add_task(db, nxt["id"], t["title"], t["cadence"], t.get("per_week"), habit_id=t.get("habit_id"),
-                                        size=t.get("size") or "S"))
+                                        size=t.get("size")))
     _record(db, "milestone", milestone_id, "open", "done" if ok else "missed",
             {"points": [f"milestone:{milestone_id}"], "created": created, "next": nxt["id"] if nxt else None})
     db.conn.commit()
@@ -415,7 +452,7 @@ def view(db, goal_id: int, day: date) -> list:
                               "depends_on": t.get("depends_on"), "depends": titles.get(t.get("depends_on")),
                               "blocked": blocked(db, t), "done": bool(t["done"]), "today": done_on(db, t, day),
                               "progress": p["text"], "points": points_for(t), "depth": t["depth"], "habit_id": t.get("habit_id"),
-                              "state": r["state"], "label": r["label"] if r["state"] in ("waiting", "not_started", "postponed") else ""})
+                              "size": t.get("size") or "S", "state": r["state"], "label": r["label"] if r["state"] in ("waiting", "not_started", "postponed") else ""})
         if state == "later" and cur:  # 以后的阶段：反复做的会在进入时从当前阶段带过来，先列出来让她看到全貌（M3 M4 没有引用任务了么）
             have = {t["title"] for t in tasks}
             for t in tasks_of(db, cur["id"]):

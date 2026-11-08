@@ -13,7 +13,8 @@
   总时长 40 分（12 小时封顶）+ 晚上 9 点后 20 分（3 小时封顶）+ 最长一段不停 15 分（4 小时封顶，中间停够 15 分钟才算歇）
   + 周末还在工作 15 分（周末 6 小时封顶）+ 一整天没出门 10 分（出门 2 小时就不扣）。
 产出只算事业和学术（学术算、学习不算、生活体验不算）：这周完成的事业 / 学术任务经验，另记 agent 交的活被她验收通过几件。
-效率 = 事业和学术经验 ÷ 工作小时。目标：时长一周比一周少，产出稳住，效率往上。
+效率 = 事业和学术经验 ÷ 工作小时（11-06 起含里程碑达成 / 复盘分和反复做的阶段任务每次的分），看本周和最近 4 周平均两个数，
+只在 efficiency() 算。目标：时长一周比一周少，产出稳住，效率往上。
 
 晚上：9 点提醒收尾，10 点劝收工，11 点停；她跟 小伴 说“今晚要赶，到几点”就放行到那时（[加班 到 01:00]）。
 11 点后 Mac 和云端的 Claude Code 新指令被钩子挡回（ethan/setup_hook.py 的收工钩子），Mac 弹全屏提醒（不锁屏），
@@ -27,7 +28,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from . import worktime
 from . import clock
 
-WORK_DOMAINS = ("事业", "学术")
+WORK_KEYS = ("career", "academic")  # 领域的键（ethan/territory.py）
 REMIND, PERSUADE, STOP = time(21, 0), time(22, 0), time(23, 0)
 MORNING = time(clock.DAY_START_HOUR, 0)  # 凌晨 5 点前还算前一晚（常量在 clock）
 OVERRIDE = "CREATE TABLE IF NOT EXISTS curfew_override (night TEXT PRIMARY KEY, until TEXT NOT NULL, at TEXT NOT NULL, said TEXT)"
@@ -143,23 +144,71 @@ def day_stats(db, day: date) -> dict:
             "weekend": weekend, "outside": out, "index": round(score) if h > 0 else 0}
 
 
+def _is_work(domain, goal_domain) -> bool:
+    """归事业 / 学术吗：她给这件选过的领域优先（库里记的是 career 这类键，老数据也有写“事业”的），其次所属副本的领域。"""
+    from . import territory
+    if domain:
+        key = domain if domain in territory.NAME else territory.KEY_OF.get(domain)
+    else:
+        key = territory.KEY_OF.get(goal_domain or "")
+    return key in WORK_KEYS
+
+
 def output(db, start: date, end: date) -> dict:
-    """事业和学术：这几天完成的任务经验；agent 交的活被她验收通过几件。"""
-    pts = db.conn.execute(
-        "SELECT COALESCE(SUM(p.delta), 0) FROM points p JOIN tasks t ON p.ref = 'task:' || t.id LEFT JOIN goals g ON g.id = t.goal_id "
-        f"WHERE p.delta > 0 AND p.day >= ? AND p.day < ? AND COALESCE(t.domain, g.domain) IN ({','.join('?' * len(WORK_DOMAINS))})",
-        (start.isoformat(), end.isoformat(), *WORK_DOMAINS)).fetchone()[0]
+    """事业和学术：[start, end) 这几天进账的经验。（方案 C 的一半）补上原来漏算的：
+    一次性任务（ref task:编号）、反复做的阶段任务每次 +10（stage:编号:日期）、里程碑达成 +300 / 复盘 +50（milestone:编号）都算；
+    另记 agent 交的活被她验收通过几件。"""
+    from . import stages
+    stages.ensure(db)
+    span = (start.isoformat(), end.isoformat())
+    task_dom = {r[0]: (r[1], r[2]) for r in db.conn.execute(
+        "SELECT t.id, t.domain, g.domain FROM tasks t LEFT JOIN goals g ON g.id = t.goal_id")}
+    ms_dom = {r[0]: r[1] for r in db.conn.execute("SELECT m.id, g.domain FROM milestones m LEFT JOIN goals g ON g.id = m.goal_id")}
+    pts = 0
+    parts = {"task": 0, "stage": 0, "milestone": 0}
+    for ref, delta in db.conn.execute("SELECT ref, delta FROM points WHERE delta > 0 AND day >= ? AND day < ? AND ref IS NOT NULL", span):
+        kind, _, rest = ref.partition(":")
+        ident = rest.split(":")[0]
+        if not ident.isdigit() or kind not in parts:
+            continue
+        work = _is_work(None, ms_dom.get(int(ident))) if kind == "milestone" else _is_work(*task_dom.get(int(ident), (None, None)))
+        if work:
+            pts += delta
+            parts[kind] += delta
     try:
         acc = db.conn.execute("SELECT COUNT(*) FROM agent_tasks WHERE status = 'accepted' AND reviewed_at >= ? AND reviewed_at < ?",
-                              (start.isoformat(), end.isoformat())).fetchone()[0]
+                              span).fetchone()[0]
     except Exception:
         acc = 0
-    return {"points": int(pts), "accepted": acc}
+    return {"points": int(pts), "parts": parts, "accepted": acc}
+
+
+def _ratio(points, hours):
+    return round(points / hours, 1) if hours else None
+
+
+def _span(db, start: date, day: date) -> dict:
+    """start 到 day（含）：经验、小时、效率。"""
+    hours = round(sum(day_stats(db, start + timedelta(days=i))["hours"] for i in range((day - start).days + 1)), 1)
+    out = output(db, start, day + timedelta(days=1))
+    return {"from": start.isoformat(), "points": out["points"], "hours": hours, "efficiency": _ratio(out["points"], hours)}
+
+
+AVG_WEEKS = 4
+
+
+def efficiency(db, day: date) -> dict:
+    """效率 =（事业 + 学术经验）÷ 工作小时，只在这里算（领域页事业健康线、周报都调它）：
+    本周（周一到今天）一个数，最近 4 周（到今天为止的 28 天，总经验 ÷ 总小时）一个数。大事完成那天的跳变被 4 周摊平。"""
+    this = _span(db, clock.week_start(day), day)
+    avg = _span(db, day - timedelta(days=7 * AVG_WEEKS - 1), day)
+    return {"week": this["efficiency"], "avg4": avg["efficiency"], "week_points": this["points"], "week_hours": this["hours"],
+            "avg4_points": avg["points"], "avg4_hours": avg["hours"], "avg4_from": avg["from"]}
 
 
 def week(db, day: date) -> dict:
     """day 所在这周（周一到 day）。"""
-    monday = day - timedelta(days=day.weekday())
+    monday = clock.week_start(day)
     days = [day_stats(db, monday + timedelta(days=i)) for i in range(day.weekday() + 1)]
     worked = [d for d in days if d["hours"] > 0]
     hours = round(sum(d["hours"] for d in days), 1)
@@ -167,7 +216,7 @@ def week(db, day: date) -> dict:
     return {"from": monday.isoformat(), "days": days, "hours": hours,
             "index": round(sum(d["index"] for d in worked) / len(worked)) if worked else 0,
             "late": round(sum(d["late"] for d in days), 1), "weekend": round(sum(d["hours"] for d in days if d["weekend"]), 1),
-            "output": out, "efficiency": round(out["points"] / hours, 1) if hours else None}
+            "output": out, "efficiency": _ratio(out["points"], hours)}
 
 
 def compare(db, day: date) -> dict:

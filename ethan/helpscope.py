@@ -66,7 +66,7 @@ def pick(db, router, day: date) -> list:
             tid = int(h["id"]) if str(h.get("id", "")).isdigit() else None
             from . import naming
             what = naming.title(h.get("what") or "")  # 标题式（docs/design/ui-spec.md 第 5 节）
-            from . import prep
+            from . import prep, taskrules
             if tid not in by_id or not what or prep.is_ops(what):
                 continue
             t = by_id[tid]
@@ -75,7 +75,7 @@ def pick(db, router, day: date) -> list:
             gone = onto_query.she_removed(db, "prep", what) if onto_query.reading_new(db, "prep") else locks.she_deleted(db, what)
             if locks.she_deleted(db, what, "prep") or gone:  # 她不要过的同一件，不再挑回来
                 continue
-            new = db.add_task(what, due=t.get("due"), goal_id=t.get("goal_id"), promised_by_ethan=True)
+            new = taskrules.add(db, what, due=t.get("due"), goal_id=t.get("goal_id"), promised_by_ethan=True)
             db.conn.execute("UPDATE tasks SET help_for = ? WHERE id = ?", (tid, new))
             added.append(new)
     db.conn.execute("INSERT OR REPLACE INTO prep_meta (key, value) VALUES (?, ?)", (key, json.dumps(added)))

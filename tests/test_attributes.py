@@ -63,5 +63,30 @@ class AttributesTest(unittest.TestCase):
         self.assertEqual(hist[0]["day"], DAY.isoformat())
 
 
+
+class CareerMilestoneTest(unittest.TestCase):
+    def test_goal_without_metric_scored_by_milestones_on_time(self):
+        """事业副本没有指标时，至少按里程碑算——到今天该完成的里程碑完成了几个。"""
+        from ethan import stages
+        with tempfile.TemporaryDirectory() as t:
+            store = MemoryStore(Path(t))
+            db = store.db
+            stages.ensure(db)
+            g = db.add_goal("个人管理系统上线", "year", status="active", domain="事业")
+            m1 = stages.add_milestone(db, g, "M1 工作台能每天用", None)
+            stages.add_milestone(db, g, "M2 数据流程改版", "2026-11-22")
+            db.conn.execute("UPDATE milestones SET status = 'done' WHERE id = ?", (m1,))
+            db.conn.commit()
+            day = date(2026, 11, 7)
+            item = attributes.career(db, day - timedelta(days=29), day)[0]
+            self.assertEqual(item["score"], 100.0)  # 还没有到期的：按期
+            self.assertIn("11-22 到期", item["actual"])
+            late = date(2026, 11, 25)
+            item = attributes.career(db, late - timedelta(days=29), late)[0]
+            self.assertEqual(item["score"], 0.0)  # M2 过期没做完
+            self.assertIn("过期没做完：M2", item["actual"])
+            store.close()
+
+
 if __name__ == "__main__":
     unittest.main()

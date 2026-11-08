@@ -19,7 +19,7 @@ class FakeRouter:
         return SimpleNamespace(text=json.dumps(self.replies.pop(0), ensure_ascii=False))
 
 
-class PrepTest(unittest.TestCase):
+class PrepBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -37,6 +37,8 @@ class PrepTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+
+class PrepTest(PrepBase):
     def test_season_quest_first_then_ready_and_chat_approval(self):
         order = [x["id"] for x in prep.queue(self.db)]
         self.assertLess(order.index(self.main), order.index(self.season))  # 本赛季副本相关的先做
@@ -97,7 +99,7 @@ class PrepTest(unittest.TestCase):
         self.db.delete_task(tid)  # 有准备记录的待办也能删（之前外键报错）
         self.assertIsNone(self.db.conn.execute("SELECT 1 FROM tasks WHERE id = ?", (tid,)).fetchone())
 
-class PrepReviseNowTest(PrepTest):
+class PrepReviseNowTest(PrepBase):
     def test_her_edit_runs_right_away_even_after_daily_limit(self):
         """跟 小伴 说哪里要改，改不了：意见一提就马上重做，不等下一轮、不被当天额度卡住。"""
         r = FakeRouter([{"status": "ready", "result": "第一版", "summary": "s", "decision": ""},
@@ -124,7 +126,7 @@ class PrepReviseNowTest(PrepTest):
         self.assertIn("#9 做旅行清单", prompt)
 
 
-class PrepKnowsHerGoalsTest(PrepTest):
+class PrepKnowsHerGoalsTest(PrepBase):
     def test_brief_has_her_goals_and_chat_and_empty_note_works(self):
         """准备员看不到她的目标、点“让他改”还要再写一遍聊天里说过的话。"""
         prep.ensure(self.db)
@@ -140,7 +142,7 @@ class PrepKnowsHerGoalsTest(PrepTest):
         self.assertIn("聊天", prep.detail(self.db, self.main)["feedback"])
 
 
-class PrepRedoAllTest(PrepTest):
+class PrepRedoAllTest(PrepBase):
     def test_brief_has_her_memory_and_redo_migration(self):
         """准备员没记忆；七件按新办法重做，旧版留底。"""
         import importlib.util
@@ -162,7 +164,7 @@ class PrepRedoAllTest(PrepTest):
         self.assertIn("自查", prep.PROMPT)
 
 
-class PrepPendingTest(PrepTest):
+class PrepPendingTest(PrepBase):
     def test_parked_items_are_not_waiting_on_her_and_come_back(self):
         """“先放着”：暂时用不上的收起来，不算等她确认，随时拿出来。"""
         from ethan.core.router import Settings
@@ -183,7 +185,7 @@ class PrepPendingTest(PrepTest):
 
 
 
-class PrepOrderTrashTest(PrepTest):
+class PrepOrderTrashTest(PrepBase):
     def test_her_order_wins_and_drop_goes_to_trash(self):
         """小伴 的事按她拖的顺序做；“不要了”进回收站，能放回。"""
         ids = [x["id"] for x in prep.queue(self.db)]
@@ -210,7 +212,7 @@ class PrepOrderTrashTest(PrepTest):
         self.assertIn(title, [x["title"] for x in prep.queue(self.db)])
 
 
-class PrepReviewTest(PrepTest):
+class PrepReviewTest(PrepBase):
     def test_review_decides_order_tops_up_but_never_ticks(self):
         """她排的顺序是参考，小伴 每天通盘看一遍定先后；做没做完她自己点。"""
         self.store.raw.append("telegram", "ethan", "某商学院 的资源我整理好了，发你啦")
@@ -254,7 +256,7 @@ class PrepReviewTest(PrepTest):
         self.assertFalse(prep.mark_done(self.db, self.main))
 
 
-class PrepStarTest(PrepTest):
+class PrepStarTest(PrepBase):
     def test_star_goes_first_and_team_queue_only_today(self):
         """她点星星的今天必须做完，最先做；团队页排队只放今天的。"""
         from ethan.core.router import Settings
@@ -271,7 +273,7 @@ class PrepStarTest(PrepTest):
         prep.set_star(self.db, self.season, False)
         self.assertEqual(prep.stars(self.db), set())
 
-class PrepSecretTest(PrepTest):
+class PrepSecretTest(PrepBase):
     def test_surprise_hidden_from_her(self):
         """“他准备的那个惊喜不用告诉我”：照常准备，不出现在她的清单、红点、团队页和“等你看”里。"""
         from ethan.core.router import Settings
@@ -287,7 +289,7 @@ class PrepSecretTest(PrepTest):
         prompt = agent.build_system_prompt("人设", {"today": "2026-10-30", "prep_secret": [{"id": sid, "title": "策划周末的小惊喜", "result": "去看展"}]})
         self.assertIn("别提前说", prompt)
 
-class ParkedRemindTest(PrepTest):
+class ParkedRemindTest(PrepBase):
     def test_parked_reminded_once_a_day(self):
         """先放着的每天第一次打开工作台提醒看一次。"""
         from ethan.core.router import Settings
@@ -305,7 +307,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AskFirstTest(PrepTest):
+class AskFirstTest(PrepBase):
     def test_new_item_waits_until_she_says_yes(self):
         tid = self.db.add_task("做芬兰装备清单", promised_by_ethan=True)
         self.assertEqual(next(x for x in prep.queue(self.db) if x["id"] == tid)["state"], "ask")
@@ -389,6 +391,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

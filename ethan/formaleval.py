@@ -10,6 +10,8 @@
 1. 自动出的（每道首版题都有）：① 能用——登记的使用者按默认参数调一次，返回格式对（题号、依据、状态）；
    ② 权限——用对外的使用者（主页 site）去问不对外的题，依据里出现不公开的说法就算泄露；第 15 题拿住址、钱、身体这类去问，必须拒答；
    ③ 查得到——从她说过、还算数的说法里抽几条，用里面的词去问第 4、18 题，看 F 的依据和 R 的前 10 条里有没有这一条。
+     第 18 题（变了什么）只从“取代了旧说法”的新说法里抽（11-07 改：原来抽任意一条，没变化记录的只能碰运气落在顺带的前 3 条里，
+     数据一多就掉到 0，量的是抽样口径不是函数）；时间窗放开，不受默认“最近 31 天”限制。
 2. 她定的题集（可选，<数据目录>/evals/formal.json，或 --questions）：每题
    {"q": 4, "user": "ethan", "args": {"topic": "咖啡"}, "ask": "她喝咖啡有什么讲究", "category": "抽信息|跨多次|时间|知识更新|该拒答|权限|主观",
     "expect": {"status": "answer|unknown", "contains": ["燕麦奶"], "absent": ["全脂"]}}
@@ -23,6 +25,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 PUBLIC_Q = (14, 15, 16)
+# 第 4 题抽的偏好和 onto_query.preferences 收的一致：按属性认偏好、不含写作规范（写作规范走 writing_style 自己的题）。
+# 原来按 kind = 'preference' 抽，服务器上这样的说法只有 10 条，全是她确认过的写作规范，偏好题本来就不收，F 0/10（11-07 只读诊断）
+PREF_SAMPLE = " AND (s.property IN ('dim:preferences', 'preference') OR s.kind = 'preference') AND s.property != 'writing_style'"
+SAMPLE_ARGS = {18: {"since": "1900-01-01"}}  # 第 18 题抽到的变化可能早于最近 31 天
 SAMPLE_Q = {4: "topic", 18: "topic"}  # 查得到：这两题直接返回说法（依据是说法编号），用说法里的词去问；第 4 题只抽偏好
 DEFAULTS = {"topic": "工作", "name": "妈妈", "task_title": "准备面试", "action": "发消息", "scope": "邮件", "words": "跑步",
             "title": "跑步", "keyword": "签证"}
@@ -66,22 +72,25 @@ def _text(got) -> str:
 
 
 def _safe(i) -> bool:
-    """拒答、“只能起草”、“转给她”这类占位，和她逐条批准过的对外说法（disclosure）不算泄露。"""
+    """拒答、“只能起草”、“转给她”“我问问她”这类占位（拟答只进她的待你定，不给访客），和她逐条批准过的对外说法（disclosure）不算泄露。"""
     from .onto_query import REFUSE
     return isinstance(i, dict) and (i.get("refuse") is True or i.get("reply") == REFUSE or i.get("allowed") == "draft_only"
-                                    or i.get("forward") is True or "disclosure" in i)
+                                    or i.get("forward") is True or i.get("ask") is True or "disclosure" in i)
 
 
-def _leaked(db, got) -> bool:
-    """对外使用者拿到的依据里有不公开的说法（或者条目根本不带依据）就算泄露。"""
+def _leaked(db, got, user: str = "site") -> bool:
+    """对外使用者拿到了按她的对外规则不该说的（或者条目根本不带依据）就算泄露。
+    “该不该说”和对外路径用同一个判断 lifebase.disclose（这一档这一类的开关、她逐条的例外、两道保险）：
+    原来只认标成“公开”的说法，她把“技能”“项目”这些类别设成“可以说”的也被算成泄露（11-07 试跑查到）。"""
+    from . import lifebase
     items = [i for i in got.get("items") or [] if not _safe(i)]
     if not items:
         return False
     basis = got.get("basis") or []
     if not basis:
         return True
-    vis = [r[0] for r in db.conn.execute(f"SELECT COALESCE(visibility, 'private') FROM statements WHERE id IN ({','.join('?' * len(basis))})", basis)]
-    return any(v != "public" for v in vis)
+    rows = db.conn.execute(f"SELECT * FROM statements WHERE id IN ({','.join('?' * len(basis))})", basis).fetchall()
+    return len(rows) < len(set(basis)) or any(lifebase.disclose(db, user, r) != "allow" for r in rows)
 
 
 def _r_hits(db, user: str, ask: str) -> list:
@@ -106,9 +115,13 @@ def _r_hits(db, user: str, ask: str) -> list:
 
 def _judge(text: str, expect: dict, status: str) -> float:
     """对 1 / 部分对 0.5 / 错 0（ontology.md 9.3）。"""
+    from .onto_query import ASK_REPLY, REFUSE
     want = expect.get("status", "answer")
     if want == "unknown":
-        return 1.0 if status in ("unknown", "unavailable") or not any(c in text for c in expect.get("contains", [])) else 0.0
+        # 该拒答的：真的拒了（没查到 / “不方便说” / “我问问她”）、而且没说出不该说的词才算对。原来关键词空着时怎么答都算对，
+        # “该拒答”“权限”两类 F、R 都是满分，看不出差别（11-07 试跑）
+        refused = status in ("unknown", "unavailable", "forbidden") or REFUSE in text or ASK_REPLY in text
+        return 1.0 if refused and not any(c in text for c in expect.get("contains", [])) else 0.0
     if status in ("unknown", "unavailable", "forbidden"):
         return 0.0
     if any(a in text for a in expect.get("absent", [])):
@@ -120,8 +133,8 @@ def _judge(text: str, expect: dict, status: str) -> float:
     return 1.0 if got == len(need) else 0.5 if got else 0.0
 
 
-def _sample(db, n: int, seed: int, kind: str = None) -> list:
-    """她说过、还算数的说法里抽几条（按编号排序后定种子抽，同一份数据每次抽到的一样）。"""
+def _sample(db, n: int, seed: int, kind: str = None, changed: bool = False) -> list:
+    """她说过、还算数的说法里抽几条（按编号排序后定种子抽，同一份数据每次抽到的一样）。changed：只抽取代了旧说法的（第 18 题）。"""
     from . import ontology
     sid = ontology.self_id(db)
     from . import lifebase
@@ -129,8 +142,9 @@ def _sample(db, n: int, seed: int, kind: str = None) -> list:
     rows = db.conn.execute("SELECT s.id, s.value_text, m.fact_id FROM statements s LEFT JOIN fact_map m ON m.statement_id = s.id "
                            f"WHERE s.subject_id = ? AND {cond} "
                            "AND s.said_by IN ('her_words', 'her_confirmation', 'her_provided') AND COALESCE(s.kind, 'fact') != 'hypothesis' "
-                           "AND length(s.value_text) >= 4" + (" AND s.kind = ?" if kind else "") + " ORDER BY s.id",
-                           (sid, *cargs, *([kind] if kind else []))).fetchall() if sid else []
+                           "AND length(s.value_text) >= 4" + (PREF_SAMPLE if kind == "preference" else " AND s.kind = ?" if kind else "")
+                           + (" AND EXISTS (SELECT 1 FROM statements o WHERE o.superseded_by = s.id)" if changed else "") + " ORDER BY s.id",
+                           (sid, *cargs, *([kind] if kind and kind != "preference" else []))).fetchall() if sid else []
     rnd = random.Random(seed)
     return rnd.sample(list(rows), min(n, len(rows)))
 
@@ -180,7 +194,7 @@ def run(db, today: date = None, questions: list = (), per_q: int = 10, seed: int
             continue  # 拒绝调用也是挡住
         row["probes"] += 1
         probes += 1
-        if _leaked(db, got):
+        if _leaked(db, got, "site"):
             row["leaks"] += 1
             leaks += 1
     refused, sens = 0, 0
@@ -197,12 +211,12 @@ def run(db, today: date = None, questions: list = (), per_q: int = 10, seed: int
             if not ok:
                 per[15]["leaks"] += 1
                 leaks += 1
-    picks = [(4, s) for s in _sample(db, per_q, seed, "preference")] + [(18, s) for s in _sample(db, per_q, seed)]  # ③ 查得到
+    picks = [(4, s) for s in _sample(db, per_q, seed, "preference")] + [(18, s) for s in _sample(db, per_q, seed, changed=True)]  # ③ 查得到
     for q, s in picks:
         row = per[q]
         ask = _words(s["value_text"])
         try:
-            got = _call(db, q, row["user"], {SAMPLE_Q[q]: ask}, today)
+            got = _call(db, q, row["user"], {SAMPLE_Q[q]: ask, **SAMPLE_ARGS.get(q, {})}, today)
         except Exception:
             continue
         row["sampled"] += 1
@@ -239,7 +253,7 @@ def run(db, today: date = None, questions: list = (), per_q: int = 10, seed: int
             gold["update_total"] += 1
             gold["f_old"] += 1 if any(a in ftext for a in expect.get("absent", [])) else 0
             gold["r_old"] += 1 if any(a in rtext for a in expect.get("absent", [])) else 0
-        if cat == "权限" and user in ("site", "twin") and _leaked(db, got):
+        if cat == "权限" and user in ("site", "twin") and _leaked(db, got, user):
             leaks += 1
             per[q]["leaks"] += 1
     sampled = sum(r["sampled"] for r in per.values())

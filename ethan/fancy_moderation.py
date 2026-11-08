@@ -151,11 +151,10 @@ class Alerts:
         return self._settings
 
     def _gate(self, alert: dict, now: datetime):
-        from .clock import DEFAULT_TZ
+        from .clock import her_tz
         from .proactive import gate
-        from zoneinfo import ZoneInfo
         s = self.settings()
-        return gate(gate_key(alert), now.astimezone(ZoneInfo(s.get("timezone", DEFAULT_TZ))), s)
+        return gate(gate_key(alert), now.astimezone(her_tz(s)), s)
 
     def flush_held(self, now: datetime = None) -> list:
         """免打扰里存着的常规提醒：现在过得了关口就补发（proactive.main 每 10 分钟调一次）。返回发出去的 kind。"""

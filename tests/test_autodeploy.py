@@ -53,10 +53,10 @@ class AutoDeployTest(unittest.TestCase):
         self.assertEqual((record["result"], record["from"], record["to"]), ("已上线", "aaaaaaa", "bbbbbbb"))
         steps = [" ".join(c) for c in server.calls]
         order = [next(i for i, s in enumerate(steps) if key in s)
-                 for key in ("ethan.sqlite.bak-auto-bbbbbbb", "merge --ff-only", "unittest",
+                 for key in ("ethan.sqlite.bak-auto-bbbbbbb", "merge --ff-only", "ethan.testrun",
                              "cp /repo/deploy/systemd/ethan2-autodeploy.timer", "daemon-reload", "systemctl restart")]
         self.assertEqual(order, sorted(order))
-        self.assertTrue(all(c[:4] == ["sudo", "-u", "ethan", "-H"] for c in server.calls if "git" in c or "unittest" in c))
+        self.assertTrue(all(c[:4] == ["sudo", "-u", "ethan", "-H"] for c in server.calls if "git" in c or "ethan.testrun" in c))
         status = json.loads((self.data / "deploy-status.json").read_text())
         self.assertEqual(status["subject"], "微信也能发照片")
         self.assertIsNone(self.deployer(server).once())  # 已经是最新，不再部署
@@ -72,7 +72,7 @@ class AutoDeployTest(unittest.TestCase):
         self.assertIn("systemctl enable --now ethan2-codex.timer", [" ".join(c) for c in server.calls])
 
     def test_failed_tests_roll_back_and_do_not_retry_same_commit(self):
-        server = FakeServer(fail_on="unittest")
+        server = FakeServer(fail_on="ethan.testrun")
         record = self.deployer(server).once()
         self.assertEqual((record["result"], record["step"], record["failed"]), ("失败，已退回原版本", "跑测试", NEW))
         self.assertEqual(server.head, OLD)
@@ -146,6 +146,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

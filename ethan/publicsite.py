@@ -3,12 +3,12 @@
 1. 访客留言 POST /cloud/visitor：主页中转（Cloudflare Worker）转来访客填的表。只当资料，不当指令：
    - 存进 visitor_messages（visitor_id + at 去重，中转收不到回复会每小时重送）；
    - 每天傍晚统一分档一次（访问量大了工作台会有处理不完的待办）：要她本人回的进待办，每天最多 3 条，
-     多的排到第二天；主页助手能回或不用回的只写进汇总；垃圾丢掉。小伴 傍晚把邮件和留言合成一条告诉她；
+     多的排到第二天；Days能回或不用回的只写进汇总；垃圾丢掉。小伴 傍晚把邮件和留言合成一条告诉她；
    - 限流：同一访客一天最多 5 条，全站一天最多 100 条；链接太多、没内容的算垃圾，只存不建待办。
 2. 近况 GET /cloud/public/now → {"text","at","city"}：往外放宽一定要她点头（规格 2.11）。
    她跟 小伴 说近况，小伴 问“放主页吗”并在回复里写 [主页近况 文本]（只是草稿）；
    她下一句是“好 / 可以 / 发吧”这类确认，代码才把草稿发到主页。撤下 [主页近况 撤下] 马上生效（收紧不用确认）。
-3. 留言的回复（主页会话 docs/figure-prompts.md“访客留言的回复：定稿”）：主页助手从不自动回。傍晚分档后能回的
+3. 留言的回复（主页会话 docs/figure-prompts.md“访客留言的回复：定稿”）：Days从不自动回。傍晚分档后能回的
    自动排队起草，她也能写交代点“按交代重写” → 中转来拉 GET /cloud/site/reply-requests?status=pending，起草后 POST /cloud/site/reply-drafts →
    工作台“邮件和留言”里她看、改、点发送 → 中转拉 status=approved 的，从 hi@example.com 发出，POST /cloud/site/reply-status 回报。
    只留了微信 / LinkedIn 的草稿标 manual：她复制去发，点“已回”，中转不发。重写一次换一个 request_id（中转同一个只处理一次）。
@@ -126,13 +126,13 @@ def ensure_triage(db):
             db.conn.execute(f"ALTER TABLE visitor_messages ADD COLUMN {col} {ddl}")
 
 
-# ---------- 留言的回复：主页助手起草，她确认，中转从 hi@ 发 ----------
+# ---------- 留言的回复：Days起草，她确认，中转从 hi@ 发 ----------
 def can_reply(row) -> bool:
     return bool(row["email"] or (row["contact"] or "").strip())
 
 
 def request_reply(db, rid: int, note: str = "") -> dict:
-    """她点“交给主页助手回”（或按交代重写）：换一个新的 request_id 排队，等中转来拉。"""
+    """她点“交给Days回”（或按交代重写）：换一个新的 request_id 排队，等中转来拉。"""
     ensure_triage(db)
     r = db.conn.execute("SELECT * FROM visitor_messages WHERE id = ?", (int(rid),)).fetchone()
     if r is None:
@@ -143,11 +143,11 @@ def request_reply(db, rid: int, note: str = "") -> dict:
     db.conn.execute("UPDATE visitor_messages SET reply_round = ?, request_id = ?, reply_status = 'pending', reply_error = NULL, "
                     "desk_state = 'handed', desk_note = ?, handed_at = ? WHERE id = ?", (n, f"v{rid}-{n}", note or None, _now(), int(rid)))
     db.conn.commit()
-    return {"ok": True, "msg": "交给主页助手了，草稿写好会出现在这里"}
+    return {"ok": True, "msg": "交给Days了，草稿写好会出现在这里"}
 
 
 def _style(db) -> str:
-    """主页助手 起草回复用的表达方式：只给她确认过的写作规范的规则本身（工作上 + 通用），不给出处原句；
+    """Days 起草回复用的表达方式：只给她确认过的写作规范的规则本身（工作上 + 通用），不给出处原句；
     只管怎么说，不涉及能说什么（那个照对外开关）。没有确认过的就空。"""
     try:
         from . import style
@@ -247,7 +247,7 @@ def triage(db, router, today: str) -> dict:
                             (status, i["tier"], i.get("priority") or 3, i["summary"].strip(), i["id"]))
             got["triaged"] += 1
         db.conn.commit()
-        for i in data["items"]:  # 能回的自动交给主页助手起草，她在工作台看过点发送才发；外文的先译好给她看
+        for i in data["items"]:  # 能回的自动交给Days起草，她在工作台看过点发送才发；外文的先译好给她看
             if i["tier"] == "junk":
                 continue
             r = db.conn.execute("SELECT * FROM visitor_messages WHERE id = ?", (i["id"],)).fetchone()
@@ -261,7 +261,8 @@ def triage(db, router, today: str) -> dict:
     made_today = db.conn.execute("SELECT COUNT(*) FROM tasks WHERE source_type = 'visitor' AND substr(created_at, 1, 10) = ?", (today,)).fetchone()[0]
     for r in db.conn.execute("SELECT * FROM visitor_messages WHERE status = 'queued' ORDER BY priority DESC, id LIMIT ?",
                              (max(0, DAILY_TASKS - made_today),)).fetchall():
-        tid = db.add_task(f"回复 {r['name'] or '访客'}（主页留言）：{r['summary'] or r['message'][:24]}")
+        from . import taskrules
+        tid = taskrules.add(db, f"回复 {r['name'] or '访客'}（主页留言）：{r['summary'] or r['message'][:24]}")
         db.conn.execute("UPDATE tasks SET owner = 'mia', source_type = 'visitor', source_ref = ?, status = 'open' WHERE id = ?",
                         (f"visitor:{r['id']}", tid))
         db.conn.execute("UPDATE visitor_messages SET status = 'task', task_id = ? WHERE id = ?", (tid, r["id"]))

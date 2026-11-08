@@ -1,15 +1,16 @@
 """赛季页：这个赛季她在七块领域上过得怎么样、彼此怎么此消彼长、下个赛季该怎么调（docs/design/season-page.md）。
 
-的第二版：上面是样稿 A 的“赛季通行证”（等级、本季积分轨道、下一级 / 下一个成就 / 下一个奖励），
-中间 小伴 的一句话总评 + 下赛季建议（一直显示），下面是样稿 C 的“七块领地分数柱”（现在的分数、比开季 / 上季的变化），
-最后只留主副本一条关卡路线。目的是一眼看出哪些领域好、哪些不好、各有什么变化。
+的第二版：小伴 的一句话总评 + 下赛季建议（一直显示），下面是样稿 C 的“七块领地分数柱”（现在的分数、比开季 / 上季的变化），
+最后只留主副本一条关卡路线。最上面原来的“赛季通行证”大卡（等级、本季积分轨道、下一级 / 成就 / 奖励）和首页重复，删了。目的是一眼看出哪些领域好、哪些不好、各有什么变化。
 数字都由代码算；总评、每块的原因、下季建议由 小伴 每周日写一次（season_notes），没写就用代码规则兜底（不额外调模型）。
+11-06：小伴 只写判断不写数字；他写完以后她又记了东西（newer_records），带数字的旧句子先收起来换成现算的，后台重写（每天最多 REWRITE_CAP 次）。
 """
 
 import json
 from datetime import date, datetime, timedelta, timezone
 
 from . import attributes, lifelog, quests, workaholic, worktime
+from . import clock
 
 SEASON = {"name": "2026 冬季 · 城市篇", "start": "2026-10-13", "end": "2026-12-31"}
 
@@ -41,7 +42,7 @@ def info(season: dict, start: date, day: date) -> dict:
     total = (end - start).days + 1
     gone = (day - start).days + 1
     two_thirds = start + timedelta(days=round(total * 2 / 3) - 1)
-    week = ((day - timedelta(days=day.weekday())) - (start - timedelta(days=start.weekday()))).days // 7 + 1  # 按自然周，和依据里的周数一致
+    week = clock.season_week(day, start)  # 按自然周，和依据里的周数一致
     return {"name": season["name"], "start": start.isoformat(), "end": season["end"], "week": week,
             "days_left": max(0, (end - day).days), "two_thirds": two_thirds.isoformat(), "late": day >= two_thirds,
             "ended": day > end}
@@ -58,7 +59,7 @@ def _habit_count(db, title: str, a: date, b: date) -> int:
 
 def ledger(db, start: date, day: date, weeks: int = 3) -> dict:
     """最近几个自然周（含本周）的四个数。只算赛季开始以后。"""
-    monday = day - timedelta(days=day.weekday())
+    monday = clock.week_start(day)
     out = []
     for i in range(weeks - 1, -1, -1):
         a = monday - timedelta(weeks=i)
@@ -66,7 +67,7 @@ def ledger(db, start: date, day: date, weeks: int = 3) -> dict:
         if b < start:
             continue
         a = max(a, start)
-        out.append({"from": a.isoformat(), "to": b.isoformat(), "n": ((a - timedelta(days=a.weekday())) - (start - timedelta(days=start.weekday()))).days // 7 + 1,  # 按自然周数（看到“第 1、1 周”）
+        out.append({"from": a.isoformat(), "to": b.isoformat(), "n": clock.season_week(a, start),  # 按自然周数（看到“第 1、1 周”）
                     "work": round(sum(worktime.hours(db, a + timedelta(days=n)) for n in range((b - a).days + 1)), 1),
                     "train": _habit_count(db, "训练", a, b), "friends": lifelog.count(db, "meet", a, b, distinct_days=True),
                     "sleep": _habit_count(db, "0 点前睡", a, b)})
@@ -130,13 +131,6 @@ def relations(db, start: date, day: date) -> list:
 
 
 # ---------- 各领域 ----------
-def _score_at(db, key: str, day: date):
-    attributes.history(db)  # 确保表在
-    r = db.conn.execute("SELECT score FROM attribute_daily WHERE key = ? AND day >= ? AND score IS NOT NULL ORDER BY day LIMIT 1",
-                        (key, day.isoformat())).fetchone()
-    return round(r["score"]) if r else None
-
-
 def domains(db, start: date, day: date, notes: dict, rels: list, past: list = None) -> list:
     """七块领域的分数。past 是往季结算（nextseason.archive），有上一季就带上上季收官的分数（和上赛季比）。"""
     prev = {d.get("name"): d.get("now") for d in ((past or [{}])[0].get("domains") or [])} if past else {}
@@ -145,8 +139,9 @@ def domains(db, start: date, day: date, notes: dict, rels: list, past: list = No
     out = []
     for key in attributes.ORDER:
         r = now[key]
-        before = _score_at(db, key, start)
-        score = None if r["score"] is None else round(r["score"])
+        score = None if r["score"] is None else round(r["score"])  # 现在的分数现算（她记一笔，刷新就变）
+        tr = attributes.trail(db, key, start, day, r["score"])  # 开季那天的分数：和领域页同一处取（attributes.trail）
+        before = attributes.first_of(tr, day)
         delta = None if score is None or before is None else score - before
         facts = [{"name": i["name"], "actual": i["actual"] if i.get("score") is not None else "还没有数据", "standard": i["standard"]}
                  for i in r["items"]][:3]  # 没数据的也列出来写“还没有数据”（学习卡片里怎么没有认知拓展）
@@ -156,10 +151,13 @@ def domains(db, start: date, day: date, notes: dict, rels: list, past: list = No
             "floor": score is not None and score < 40,  # 跌破保底（40 以下受损）
             "hours": work if key == "career" else None, "facts": facts, "weak": _weakest(r),
             "why": (notes.get("why") or {}).get(key) or _why(r), "why_by": "小伴" if (notes.get("why") or {}).get(key) else "",
+            "fact": _why(r),  # 现算的那一项数字，摆在 小伴 的判断旁边（他只写判断，11-06）
             "crowded_by": [x["label"] for x in rels if x["to"] == key and x["kind"] == "crowd"],
             "crowds": [ICON_KEY[x["to"]] for x in rels if x["from"] == key and x["kind"] == "crowd"],
             "helped_by": [x["label"] for x in rels if x["to"] == key and x["kind"] == "help"],
         })
+        out[-1]["status"] = status(out[-1])
+        out[-1]["adjust"] = adjust(out[-1], r)
     # 失衡最严重的两块做大卡：先看跌破保底，再看跌得多
     ranked = sorted([d for d in out if d["now"] is not None], key=lambda d: (not d["floor"], d["delta"] if d["delta"] is not None else 0, d["now"]))
     focus = [d["key"] for d in ranked if d["floor"] or (d["delta"] or 0) < 0][:2]
@@ -167,6 +165,50 @@ def domains(db, start: date, day: date, notes: dict, rels: list, past: list = No
         d["focus"] = d["key"] in focus
         d["source"] = d["key"] in {x["from"] for x in rels if x["kind"] == "crowd"}
     return sorted(out, key=lambda d: (not d["focus"], not d["source"], attributes.ORDER.index(d["key"])))
+
+
+STATUS = {"floor": "跌破保底", "down": "在往下掉", "good": "状态好", "mid": "一般", "none": "还没有数据"}
+
+
+def status(d: dict) -> str:
+    """每块领地一个状态（看完赛季页就知道接下来怎么调整）：floor / down / good / mid / none。"""
+    if d["now"] is None:
+        return "none"
+    if d["floor"]:
+        return "floor"
+    if (d["delta"] or 0) < 0:
+        return "down"
+    return "good" if d["now"] >= 70 else "mid"
+
+
+def adjust(d: dict, r: dict) -> str:
+    """这块接下来怎么调，一句（代码规则，不调模型）：挤了别人的少加码；往下掉的先补离标准最远那项；一般的把那项拉到标准；好的保持。"""
+    items = [i for i in r["items"] if i.get("score") is not None]
+    if not items:
+        first = next((i["name"] for i in r["items"]), "")
+        return f"先开始记录{first}，有数据才看得出好坏" if first else "先接上数据来源"
+    worst = min(items, key=lambda i: i["score"])
+    std = str(worst["standard"]).split("（")[0].split("；")[0]  # 只留“每周 5 天”这一截，30 天折算和保底放领域页
+    gap = f"{worst['name']}（现在 {worst['actual']}，标准{'' if std.startswith('每') else ' '}{std}）"
+    if d["crowds"]:
+        return f"少加码：在挤{'、'.join(d['crowds'])}"
+    if d["status"] in ("floor", "down"):
+        return f"先补{gap}" + (f"；{d['crowded_by'][0]}，先把那边缓一缓" if d["crowded_by"] else "")
+    if d["status"] == "good":
+        return "照现在的节奏保持" + (f"，{worst['name']}再稳一点" if worst["score"] < 70 else "")
+    return f"把{gap}拉到标准"
+
+
+def conclusion(doms: list) -> str:
+    """结论：接下来先做哪一件（代码按分数拼，小伴 的总评在上面）。只挑重点，不再列哪几块好、哪几块在掉——下面的表逐个列了
+"""
+    bad = [d for d in doms if d["status"] in ("floor", "down")]
+    if bad:
+        first = min(bad, key=lambda d: (d["status"] != "floor", d["delta"] or 0, d["now"]))
+        return f"接下来先管{first['name']}：{first['adjust']}。"
+    if any(d["status"] == "good" for d in doms):
+        return "接下来照现在的节奏，别往上加码。"
+    return "各个领域都还在中间，数据再攒一攒就看得出该往哪边调。" if any(d["now"] is not None for d in doms) else "还没有数据，记上几天再看。"
 
 
 def _weakest(r: dict):
@@ -180,7 +222,8 @@ def _why(r: dict) -> str:
     if not items:
         return "还没有数据"
     worst = min(items, key=lambda i: i["score"])
-    return f"{worst['name']}：{worst['actual']}（标准 {worst['standard']}）"
+    std = str(worst["standard"]).split("（")[0].split("；")[0]
+    return f"{worst['name']}：{worst['actual']}（标准{'' if std.startswith('每') else ' '}{std}）"
 
 
 # ---------- 小伴 每周写的结论 ----------
@@ -217,9 +260,10 @@ def fallback_line(led: dict, rels: list = None) -> str:
 
 
 WRITER = """你是 小伴，在给 Mia 写赛季页的周总结（她的人生被分成七块领域：健康、事业、财务、社交、学习、学术、生活体验）。
-下面是这个赛季到现在的数据（都是代码算的，照抄数字，不要编）。请只输出一个 JSON：
-{"line": "一句结论，30–60 字，说清这几周哪块在冲、哪块在让路、具体少了什么（用数字），口吻是你本人，温柔但直说",
- "why": {"领域 key": "这块变好或变差最主要的原因，一句，20–40 字，尽量点到具体的人、日子、次数"},
+下面是这个赛季到现在的数据（都是代码算的，不要编）。页面上的数字（次数、小时、分数）由代码打开页面时现算、摆在你的话旁边，
+所以你只写判断，不写数字：她之后补记一笔，你写的数字就和页面对不上了（社交补记了两笔，总评还写着见朋友 0 次）。请只输出一个 JSON：
+{"line": "一句结论，30–60 字，只挑最要紧的一两件说（最该管的那块、为什么、具体少了什么；说事，不写数字），不要把七个领域挨个点评一遍——下面的表已经逐个列了，口吻是你本人，温柔但直说",
+ "why": {"领域 key": "这块变好或变差最主要的原因，一句，20–40 字，尽量点到具体的人、日子、事，不写数字"},
  "next": null 或 {"keep": ["保留的目标"], "pause": ["暂停的"], "start": ["新开的"], "rule": "一条硬线，比如“工作每周不超过 45 小时”"}}
 next 只有在数据里 late 为 true（赛季过了三分之二）时才写，否则写 null。不提副本进度。不说教，不喊口号。"""
 
@@ -240,7 +284,7 @@ def write_note(db, router, season: dict, start: date, day: date) -> dict:
             "evidence": led}
     if not body["line"]:
         raise ValueError("没写出结论")
-    week = (day - timedelta(days=day.weekday())).isoformat()
+    week = clock.week_start(day).isoformat()
     db.conn.execute("INSERT OR REPLACE INTO season_notes (week, season, body, created_at) VALUES (?, ?, ?, ?)",
                     (week, season["name"], json.dumps(body, ensure_ascii=False), datetime.now(timezone.utc).isoformat(timespec="seconds")))
     db.conn.commit()
@@ -253,41 +297,17 @@ def page(db, season: dict, start: date, day: date, past: list = None) -> dict:
     led = ledger(db, start, day)
     rels = relations(db, start, day)
     inf = info(season, start, day)
-    doms = domains(db, start, day, note, rels, past)
+    newer = newer_records(db, note)
+    shown = usable_note(note, newer)  # 写完以后她又记了东西：带数字的旧句子不再摆出来（会和现算的数对不上）
+    doms = domains(db, start, day, shown, rels, past)
     nxt = note.get("next") if inf["late"] else None
-    return {"season": inf, "line": note.get("line") or fallback_line(led, rels), "stale": stale(note, day), "line_by": "小伴" if note.get("line") else "",
-            "line_at": (note.get("at") or "")[:10], "ledger": led, "relations": rels, "domains": doms, "next": nxt,
+    # 小伴 写了总评就不再拼代码的结论：两句各挑各的重点会打架
+    return {"season": inf, "line": shown.get("line") or fallback_line(led, rels), "conclusion": "" if shown.get("line") else conclusion(doms),
+            "stale": stale(note, day) or bool(newer), "outdated": bool(newer), "line_by": "小伴" if shown.get("line") else "",
+            "line_at": (note.get("at") or "")[:10], "note_at": note_label(note), "hidden": bool(note.get("line")) and not shown.get("line"),
+            "ledger": led, "relations": rels, "domains": doms, "next": nxt,
             # 下赛季建议一直显示：小伴 过了三分之二才写正式的，之前用代码按这季的数字先拟
-            "suggest": {**nxt, "by": "小伴"} if nxt else suggest_next(doms, led, rels),
-            "pass": season_pass(db, start, day, date.fromisoformat(season["end"]))}
-
-
-# ---------- 赛季通行证（样稿 A 的上半部分） ----------
-def season_pass(db, start: date, day: date, end: date) -> dict:
-    """本季积分轨道：这季拿了多少分、本周多少、照这个节奏收官大约多少，轨道上标出升级的位置。"""
-    q = "SELECT COALESCE(SUM(delta), 0) FROM points WHERE delta > 0 AND day >= ? AND day <= ?"
-    pts = db.conn.execute(q, (start.isoformat(), day.isoformat())).fetchone()[0]
-    monday = max(start, day - timedelta(days=day.weekday()))
-    week = db.conn.execute(q, (monday.isoformat(), day.isoformat())).fetchone()[0]
-    gone = max(1, (min(day, end) - start).days + 1)
-    total = max(gone, (end - start).days + 1)
-    proj = round(pts / gone * total) if pts else 0
-    earned = db.conn.execute("SELECT COALESCE(SUM(delta), 0) FROM points WHERE delta > 0").fetchone()[0]
-    base = earned - pts  # 开季那天的累计分
-    scale = max(proj, pts, 1)
-    cut = quests.cutover(db)
-    ticks, e = [], base
-    for _ in range(12):  # 这季轨道范围里的升级点；没到的至少标出下一级
-        lvl, need = quests.level_for(e, cut)
-        if need - base > scale and any(not t["got"] for t in ticks):
-            break
-        ticks.append({"label": f"Lv.{lvl + 1}", "at": need - base, "got": need <= earned})
-        e = need
-    scale = max([scale] + [t["at"] for t in ticks])
-    got = [t for t in ticks if t["got"]]
-    ticks = got[-1:] + [t for t in ticks if not t["got"]]  # 已经升过的只留最近一级，免得挤在轨道开头
-    return {"points": pts, "week": week, "projected": proj, "scale": scale, "ticks": ticks,
-            "start": start.isoformat(), "end": end.isoformat(), "days_gone": gone, "days_total": total}
+            "suggest": {**nxt, "by": "小伴"} if nxt else suggest_next(doms, led, rels)}
 
 
 # ---------- 下赛季建议的兜底（代码规则，不调模型） ----------
@@ -314,6 +334,80 @@ def suggest_next(doms: list, led: dict, rels: list) -> dict:
     elif any(w["train"] < TRAIN_STD for w in full):
         rule = f"每周训练 {TRAIN_STD} 次"
     return {"keep": keep, "pause": pause, "start": start, "rule": rule, "by": "rule"}
+
+
+# ---------- 小伴 写完以后她又记了东西（社交补记了两笔，赛季页还写着“见朋友 0 次”） ----------
+# 计分来源里带“记下时间”的表（UTC 时间串，和 season_notes.created_at 同一种写法）
+RECORD_SOURCES = (("life_log", "at"), ("habit_log", "at"), ("place_events", "at"), ("english_sessions", "at"),
+                  ("body_measures", "at"), ("metric_entries", "at"), ("tasks", "done_at"), ("wishes", "done_at"))
+REWRITE_CAP = 3        # 因为“之后有新记录”每天最多重写几次（另有 bgwork 的 15 分钟锁和额度规则）
+REWRITES_FILE = "season-note-rewrites.json"
+
+
+def newer_records(db, note: dict) -> str:
+    """小伴 写那几句以后，计分来源里最新一笔的记下时间；没有更新的返回空串。"""
+    at = (note or {}).get("at") or ""
+    if not at:
+        return ""
+    latest = ""
+    for table, col in RECORD_SOURCES:
+        try:
+            v = db.conn.execute(f"SELECT MAX({col}) FROM {table} WHERE {col} > ? AND {col} GLOB '[0-9]*'", (at,)).fetchone()[0]
+        except Exception:  # 这张表还没建（没接上这个来源）
+            v = None
+        if v and v > latest:
+            latest = v
+    return latest
+
+
+def _has_number(text) -> bool:
+    return any(c.isdigit() for c in str(text or ""))
+
+
+def usable_note(note: dict, newer: str) -> dict:
+    """能摆出来的那几句：她之后又记了东西时，带数字的句子先收起来（数字是写的时候的，现在对不上），用代码现算的兜底；
+    只写判断、不带数字的照旧显示，旁边标写的日期。"""
+    if not note or not newer:
+        return note or {}
+    out = dict(note)
+    if _has_number(out.get("line")):
+        out["line"] = ""
+    out["why"] = {k: v for k, v in (out.get("why") or {}).items() if not _has_number(v)}
+    return out
+
+
+def note_label(note: dict) -> str:
+    """“11 月 5 日”：给页面上“这几句是 X 月 X 日写的”用（存的是 UTC，换成她那边的日子）。"""
+    at = (note or {}).get("at") or ""
+    if not at:
+        return ""
+    try:
+        d = clock.her_now(now=datetime.fromisoformat(at)).date()
+    except ValueError:
+        return ""
+    return f"{d.month} 月 {d.day} 日"
+
+
+def _rewrites(root, day: date) -> int:
+    from pathlib import Path
+    try:
+        got = json.loads((Path(root) / REWRITES_FILE).read_text())
+    except (OSError, ValueError):
+        return 0
+    return got.get("n", 0) if isinstance(got, dict) and got.get("day") == day.isoformat() else 0
+
+
+def may_rewrite(root, day: date, cap: int = REWRITE_CAP) -> bool:
+    """因为有新记录而重写：今天还没到上限。真起了后台再 count_rewrite 记一次（15 分钟锁挡下的不算）。"""
+    return _rewrites(root, day) < cap
+
+
+def count_rewrite(root, day: date):
+    from pathlib import Path
+    try:
+        (Path(root) / REWRITES_FILE).write_text(json.dumps({"day": day.isoformat(), "n": _rewrites(root, day) + 1}))
+    except OSError:
+        pass
 
 
 def stale(note: dict, day: date) -> bool:

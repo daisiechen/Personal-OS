@@ -6,7 +6,8 @@
 - 后台大批整理：微信对话、人物卡整理到哪了，从数据库现算；有活却 2 小时没进展算卡住；
 - 主动消息里的几样（聊聊、周五周末推荐、派 Grok 查本周新闻 / 周末去哪）和她 Mac 上的导出（服务器只看最近一次收到）；
 - 订阅额度：最近 5 小时用了多少、门槛多少、后台整理是不是在让路（ethan/bgwork.py budget）；
-- 来源健康（lifebase.source_health）、服务器可用内存（/proc/meminfo）、红点自检（ethan/invariants.py）。
+- 来源健康（lifebase.source_health）、服务器可用内存（/proc/meminfo）、红点自检（ethan/invariants.py）；
+- Agent-Box 每晚备份（Agent-Box 仓库 docs/mia/design.md 第 3 节）：洛杉矶每晚拉下的备份仓库里各机器的 status.json，连续两晚没备上进巡检。
 只读：不改她的数据。时间按本地时间写给她看。
 """
 
@@ -15,11 +16,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import jobs
+from . import clock
 
 MEM_LOW, MEM_CRITICAL = 300, 200  # 可用内存低于 300MB 标黄，低于 200MB 进巡检（2G 的机器，11-04 曾被会话进程吃满）
 STUCK_AFTER = timedelta(hours=2)  # 大批整理有活却 2 小时没进展
 CHECK_LATE = timedelta(minutes=15)  # 自动上线每 2 分钟看一次 main，15 分钟没看算停了
-LONDON = "Europe/London"
+BACKUP_DIR_NAME = "agent-box-backup"  # 在数据目录旁边（洛杉矶 /home/ethan/agent-box-backup），ethan 用户每晚 04:10 拉一次（Agent-Box deploy/backup）
+# 机器 → 该有的备份种类和最长间隔：两台服务器每晚一次，过 50 小时 = 连续两晚没备上；Mac 常合着，放宽到 3 天
+BACKUPS = {"seoul": ("db", timedelta(hours=50)), "la": ("homes", timedelta(hours=50)), "mac": ("homes", timedelta(hours=74))}
 
 
 def _t(v):
@@ -40,8 +44,7 @@ def _fmt(t) -> str:
     t = _t(t) if not isinstance(t, datetime) else t
     if not t:
         return ""
-    from zoneinfo import ZoneInfo
-    return t.astimezone(ZoneInfo(LONDON)).strftime("%m-%d %H:%M")
+    return t.astimezone(clock.her_tz()).strftime("%m-%d %H:%M")
 
 
 def _one(db, sql, args=()):
@@ -75,6 +78,24 @@ def deploy_info(root, now: datetime = None) -> dict:
             "checked": _fmt(checked), "check_error": chk.get("error", ""),
             # 心跳文件是这次统一巡检才加的：还没有就不报（上线后 2 分钟就有了）
             "check_ok": not chk or (checked is not None and now - checked <= CHECK_LATE and not chk.get("error"))}
+
+
+def backup_info(root, now: datetime = None, base: Path = None) -> list:
+    """Agent-Box 每晚备份各机器最近一次。备份仓库没在这台机器上就返回空（不报）。"""
+    now = now or datetime.now(timezone.utc)
+    base = Path(base) if base else Path(root).resolve().parent / BACKUP_DIR_NAME
+    if not (base / ".git").exists():
+        return []
+    out = []
+    for name, (kind, limit) in BACKUPS.items():
+        try:
+            st = json.loads((base / name / "status.json").read_text(encoding="utf-8")).get(kind) or {}
+        except (OSError, ValueError):
+            st = {}
+        at = _t(st.get("time"))
+        out.append({"name": name, "kind": kind, "at": _fmt(at), "bytes": st.get("bytes"),
+                    "ok": at is not None and now - at <= limit})
+    return out
 
 
 # ---------- 服务器内存 ----------
@@ -115,6 +136,13 @@ def backlog(db, now: datetime = None) -> dict:
     p_total = _one(db, f"SELECT COUNT(*) FROM people WHERE {wechat_people}") or 0
     p_done = _one(db, f"SELECT COUNT(*) FROM people WHERE {wechat_people} AND organized_at IS NOT NULL") or 0
     p_todo = _one(db, f"SELECT COUNT(*) FROM people WHERE {todo_sql}") or 0
+    try:  # 只有统计、还没有聊天记录可整理的人不算“没整理”：等她 Mac 上交过来（11-08 的 CHEN. 让体检一直报人物卡卡住）
+        from . import relations
+        waiting = sum(1 for r in db.conn.execute(f"SELECT wx_name, wx_key FROM people WHERE {todo_sql}").fetchall()
+                      if not relations._records(db, r["wx_name"], r["wx_key"])[0].strip())
+        p_todo -= waiting
+    except Exception:
+        pass
     last_people = _t(_one(db, "SELECT MAX(organized_at) FROM people"))
     people_since = _t(_one(db, f"SELECT MIN(stats_at) FROM people WHERE {todo_sql}"))
 
@@ -158,9 +186,8 @@ def feeds(db, now: datetime = None) -> list:
     """{name, last, detail, ok}：这些不是单独的定时任务（在主动消息里，或在她 Mac 上），单列出来才看得到有没有在动。"""
     now = now or datetime.now(timezone.utc)
     out = []
-    from zoneinfo import ZoneInfo
-    local = now.astimezone(ZoneInfo(LONDON))
-    week = (local.date() - timedelta(days=local.weekday())).isoformat()
+    local = now.astimezone(clock.her_tz())
+    week = clock.week_start(local.date()).isoformat()
 
     chat = _one(db, "SELECT MAX(at) FROM nudge_once WHERE key LIKE 'lesson-chat:%'")
     out.append({"name": "聊聊（知识点 + 补缺口）", "last": _fmt(chat), "ok": True,
@@ -175,13 +202,19 @@ def feeds(db, now: datetime = None) -> list:
     fri = local.date() + timedelta(days=4 - local.weekday()) if local.weekday() <= 4 else local.date() - timedelta(days=local.weekday() - 4)
     this_week = wk if wk and wk.get("week") == fri.isoformat() else None
     late_fri = local.date() == fri and local.hour >= 21 or local.date() > fri
-    if this_week and this_week.get("sent_at"):
-        d, ok = f"这周的发了（{_fmt(this_week['sent_at'])}）", True
+    # 发出去记在主动消息的发送记录里（键 weekend:周五），weekend_recs.sent_at 没人写（11-07 体检误报“这周五过了还没发”，其实 11-06 12:32 发了）
+    try:
+        from . import nudges
+        sent = (this_week or {}).get("sent_at") or nudges.sent_at(db, f"weekend:{fri.isoformat()}")
+    except Exception:
+        sent = (this_week or {}).get("sent_at")
+    if sent:
+        d, ok = f"这周的发了（{_fmt(sent)}）", True
     elif late_fri:
         d, ok = "这周五过了还没发", False
     else:
         d, ok = f"周五 12:00–20:30 发；{('Grok 已在查' if this_week and this_week.get('asked_at') and not this_week.get('got_at') else 'Grok 查回来了' if this_week and this_week.get('got_at') else '还没派 Grok')}", True
-    out.append({"name": "周五“这周末可以去”", "last": _fmt((wk or {}).get("sent_at")), "detail": d, "ok": ok})
+    out.append({"name": "周五“这周末可以去”", "last": _fmt(sent or (wk or {}).get("sent_at")), "detail": d, "ok": ok})
 
     news = None
     try:
@@ -225,7 +258,7 @@ def overview(root, db, now: datetime = None, wb=None, meminfo: Path = Path("/pro
     from .clock import her_today
     now = now or datetime.now(timezone.utc)
     out = {"jobs": jobs.overview(root, now), "deploy": deploy_info(root, now), "memory": memory_info(meminfo)}
-    for key, fn in (("backlog", lambda: backlog(db, now)), ("quota", lambda: quota(root, now)), ("feeds", lambda: feeds(db, now)), ("sources", lambda: lifebase.source_health(db, now))):
+    for key, fn in (("backlog", lambda: backlog(db, now)), ("quota", lambda: quota(root, now)), ("feeds", lambda: feeds(db, now)), ("sources", lambda: lifebase.source_health(db, now, cached=True))):
         try:
             out[key] = fn()
         except Exception as e:
@@ -235,6 +268,11 @@ def overview(root, db, now: datetime = None, wb=None, meminfo: Path = Path("/pro
     # 巡检多看的：任务自己报的错、常驻服务停了、邮箱登不上、互相矛盾（只取这里没单独列的）
     shown = {j["name"] for j in out["jobs"]} | {"自动上线", "数据改动", "数据来源", "服务器内存", "自动上线检查", "大批整理"}
     out["other"] = [p for p in checkup.problems(root, db, now, services=services) if p["what"] not in shown and not p["what"].startswith("检查：")]
+    try:  # 等着办：系统的到了没人收、等太久还没到的（ethan/followups.py）；只在体检页列，不进巡检推送
+        from . import followups
+        out["other"] += followups.problems(db, her_today())
+    except Exception as e:
+        out["other"].append({"what": "等着办", "detail": f"没查成：{type(e).__name__} {str(e)[:120]}"})
     bad = [j for j in out["jobs"] if not j["ok"]]
     n = len(bad) + (0 if out["deploy"]["ok"] or not out["deploy"]["has"] else 1) + (0 if out["deploy"]["check_ok"] else 1)
     n += sum(1 for s in out.get("sources") or [] if s["state"] == "stale")
@@ -269,6 +307,10 @@ def problems(root, db, now: datetime = None, meminfo: Path = Path("/proc/meminfo
                 out.append({"what": "大批整理", "detail": f"还有 {b['people']['left']} 张人物卡没整理，最近一次进展 {b['last_people'] or '没有'}，超过 2 小时没动"})
         except Exception as e:
             out.append({"what": "大批整理", "detail": f"没查成：{type(e).__name__} {str(e)[:200]}"})
+    for b in backup_info(root, now):
+        if not b["ok"]:
+            out.append({"what": "Agent-Box 备份", "detail": f"{b['name']} 的{'数据库' if b['kind'] == 'db' else ' agent 目录'}最近一次备份是 {b['at'] or '从来没有'}，"
+                                                     "连续两晚没备上（看那台机器的 agentbox-backup 定时任务日志）"})
     mem = memory_info(meminfo)
     if mem and mem["level"] == "critical":
         out.append({"what": "服务器内存", "detail": f"可用只剩 {mem['available_mb']}MB（共 {mem['total_mb']}MB，交换区用了 {mem['swap_used_mb']}MB）。"

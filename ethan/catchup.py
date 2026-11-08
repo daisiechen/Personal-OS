@@ -8,8 +8,9 @@
 有该补的、额度停跑标记不在（ethan/core/quota.py）、这一样一小时内没试过，就另起进程 python3 -m ethan.catchup 补：
 - journal：昨天有聊天但没有聊天记忆 journal/<昨天>（每晚整理第一步没跑成）→ 重跑 nightly.run；
 - diary：昨天的日记还没写 → diary.backfill（开始以来漏的一起补）；
-- card：今天的昨日卡在等（日记补不出、或导演没编出来，记在 card-wait.json）
-  → 再出一次（图、卡名、那句话一起）；还不行就接着等，不生图；卡已经出了、只是日记后来补上对不上 → 照旧只重写那句话（cards.refresh）。
+- card：今天的昨日卡在等（日记补不出、或导演没编出来，记在 card-wait.json），
+  或今天的卡是导演没编出来时退回随机拼的（卡文件没有 shot）
+  → 再出一次（图、卡名、那句话一起；退回拼的那张重出不成就原样留着）；还不行就接着等，不生图；卡已经出了、只是日记后来补上对不上 → 照旧只重写那句话（cards.refresh）。
 每晚整理还没跑过今天这一轮（她那边 12 点前）不补，免得和它抢着写同一天。
 每样一小时最多试一次（试之前先记时间，进程中途死了也算试过），停跑标记在时一样都不试，不反复刷额度。
 运行：python3 -m ethan.catchup --data <数据目录>
@@ -74,9 +75,10 @@ def nightly_done(root, settings=None, now: datetime = None) -> bool:
 
 
 def card_need(root, db, day) -> str:
-    """今天的卡要补什么："make" 在等日记 / 导演，还没出；"refresh" 出了但日记后来变了（只重写那句话）；没有就空。"""
+    """今天的卡要补什么："make" 在等日记 / 导演还没出，或卡是导演没编出来时退回拼的（没有 shot，11-06 那张）；
+    "refresh" 出了但日记后来变了（只重写那句话）；没有就空。"""
     from . import cards
-    if cards.waiting(root, day):
+    if cards.waiting(root, day) or cards.patched(root, day):
         return "make"
     if not (Path(root) / "cards" / f"{day.isoformat()}.json").exists():
         return ""
@@ -172,10 +174,12 @@ def _replay(root, now=None) -> str:
 def _card(store, router, today, maker, ledger) -> str:
     from . import cards
     need = card_need(store.root, store.db, today)
-    if need == "make":
-        card = cards.make_card(store.root, store.db, today, store.db.latest_plan(today.isoformat()),
-                               maker=maker, ledger=ledger, router=router, store=store)
-        return f"接着等：{card['waiting']}" if card.get("waiting") else f"出了：{card.get('title')}"
+    if need == "make":  # 退回拼的那张：旧的先挪开再出，没编出来挪回来（cards.remake），她的卡不丢
+        make = cards.remake if cards.patched(store.root, today) else cards.make_card
+        card = make(store.root, store.db, today, None,  # 今天的计划不进昨日卡
+                    maker=maker, ledger=ledger, router=router, store=store)
+        return (f"接着等：{card['waiting']}" if card.get("waiting") else f"没重出，原来那张留着：{card['redo_failed']}"
+                if card.get("redo_failed") else f"出了：{card.get('title')}")
     if need == "refresh":
         card = cards.refresh(store.root, store.db, today, router, store=store)
         return f"日记补上了，那句话重写：{card.get('line')}"

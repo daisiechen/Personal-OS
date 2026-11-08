@@ -14,6 +14,7 @@ from pathlib import Path
 from . import standards
 from . import lifelog, places_log, worktime
 from .clock import her_today
+from . import clock
 
 ORDER = {"bad": 0, "warn": 1, "ok": 2, "none": 3}
 TERRITORIES = [  # (key, 名字, 数据库里的领地名)；身体区域 改叫“健康”，库里还记“身体”
@@ -55,7 +56,7 @@ def worst(lights: list) -> str:
 
 
 def _week(day: date) -> tuple:
-    start = day - timedelta(days=day.weekday())
+    start = clock.week_start(day)
     return start, day.weekday() + 1  # 本周一、已经过了几天（含今天）
 
 
@@ -161,7 +162,9 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
             rows.append(_row("体重（7 天平均）", "每周降 0.3–0.7 kg", "—", "—", "none", "记满一周才算趋势"))
     elif key == "study":
         en, cg = standards.get("english"), standards.get("cognitive")
-        n = _habit_days(db, en.habit, start, day)
+        from . import english  # 次数 = 有练习记录的天 ∪ 打卡的天，和学习页的图同一个口径（english.practice_days）
+        days = english.practice_days(db, start, day)
+        n = None if days is None else len(days)
         rows.append(_row(en.habit, standards.week_label("english", "target"), standards.week_label("english", "floor"),
                          f"{n} 次" if n is not None else "—",
                          _paced(n, en.target, en.floor, elapsed, quests_active), "" if n is not None else "还没开"))
@@ -202,9 +205,11 @@ def health(db, key: str, day: date, quests_active: bool, root: Path = None) -> l
                 rows.append(_row("工作狂指数", "—", f"健康区间 {workaholic.HEALTHY[0]}–{workaholic.HEALTHY[1]}", f"本周 {t['index']}（{b['label']}，上周同期 {l['index']}）{arrow(t['index'], l['index'])}",
                                  b["light"],
                                  f"晚上 9 点后 {t['late']:g} 小时 · 周末 {t['weekend']:g} 小时"))
+                e = workaholic.efficiency(db, day)  # 本周和最近 4 周平均，和周报同一个函数
+                fmt = lambda v: "—" if v is None else f"{v:g}"
                 rows.append(_row("效率 =（事业经验 + 学术经验）÷ 工作小时", "—", "时长往下、产出稳住、效率往上",
-                                 f"本周 {t['efficiency'] if t['efficiency'] is not None else '—'}（上周同期 {l['efficiency'] if l['efficiency'] is not None else '—'}）",
-                                 "none", f"产出 {t['output']['points']} 经验 · 验收通过的交付 {t['output']['accepted']} 件 · 工作 {t['hours']:g} 小时"))
+                                 f"本周 {fmt(e['week'])} · 最近 4 周平均 {fmt(e['avg4'])}",
+                                 "none", f"本周产出 {e['week_points']} 经验（含里程碑和反复做的阶段任务）· 验收通过的交付 {t['output']['accepted']} 件 · 工作 {e['week_hours']:g} 小时"))
             except Exception as e:
                 print(f"[territory] 工作狂指数没算出来：{type(e).__name__} {e}", flush=True)
         else:
@@ -277,7 +282,7 @@ def spend_curve(db, day: date) -> dict:
     budget = settings_budget(db, day)
     cur, cap = next(iter(budget.items())) if budget else ("GBP", None)
     rate = finance.fx_rate(db)
-    monday = day - timedelta(days=day.weekday())
+    monday = clock.week_start(day)
 
     def cum(start, upto):
         out, total = [], 0.0

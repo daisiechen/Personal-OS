@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from ethan import desk, mail, publicsite
 from ethan.memory import MemoryStore
@@ -44,6 +45,13 @@ class FakeSMTP:
         FakeSMTP.sent.append(msg)
 
 
+def setUpModule():
+    # make_msgid() 默认要反查本机域名，有的机器一次卡 5 秒；测试里换成固定的
+    patcher = mock.patch.object(desk, "make_msgid", lambda: "<t@test>")
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class DeskTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -65,7 +73,7 @@ class DeskTest(unittest.TestCase):
         publicsite.receive(self.db, {"visitor_id": "v", "at": "t", "name": "Lena", "intent": "合作", "message": "想合作", "contact": "l@x.com"},
                            datetime.now(timezone.utc))
         publicsite.triage(self.db, router({"items": [{"id": 1, "tier": "reply", "priority": 4, "summary": "Lena 想合作"}]}), "2026-10-30")
-        self.assertEqual([x["kind"] for x in desk.items(self.db)], ["mail", "mail"])  # 主页助手的草稿没好，留言先不给她看
+        self.assertEqual([x["kind"] for x in desk.items(self.db)], ["mail", "mail"])  # Days的草稿没好，留言先不给她看
         publicsite.reply_draft(self.db, {"request_id": "v1-1", "channel": "manual", "body": "谢谢，我们聊聊"})
         items = desk.items(self.db)
         v = next(x for x in items if x["kind"] == "visitor")

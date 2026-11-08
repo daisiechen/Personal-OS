@@ -95,7 +95,9 @@ def budget(ledger, settings=None, now: datetime = None) -> dict:
     util_max = _setting(settings, UTIL_KEY, UTIL_MAX)
     util = quota.windows(root, now)
     # 现在已经到门槛，或者照最近一小时的速度一小时后会到，或者 Claude 报的用量到了八成，都让路
-    over_usd = limit > 0 and max(w["used_usd"], w["projected_usd"]) >= limit
+    # 有 Claude 自己报的用量就只看它；按 API 价折算的美元只在拿不到时兜底（11-07：$5 是 11-05 先拍的保守值，小伴 平时聊天就在 $4.9 上下，
+    # 后台从 11-05 上午起一直让路、一条没整理，而 Claude 报的 5 小时 / 7 天用量只有 20% / 27%）
+    over_usd = not util and limit > 0 and max(w["used_usd"], w["projected_usd"]) >= limit
     over_util = util_max > 0 and any(v >= util_max for v in util.values())
     block = paid_block(root, now)
     w.update({"limit_usd": limit, "util": util, "util_max": util_max, "paid_block": block,
@@ -137,6 +139,16 @@ class PatientRouter:
     def __getattr__(self, name):
         return getattr(self.router, name)
 
+    stop = None  # 这一轮的时限（deadline() 返回的函数）；设了就不歇过时限，到点抛 QuotaBlocked 让出位置，下一轮接着做
+
+    def _nap(self, seconds):
+        """歇一会儿；这一轮到时限了就不歇，直接让出来（11-06：让路时一歇 5 小时，30 分钟的时限没管住，还占着整理的位置）。"""
+        if self.stop is not None and self.stop():
+            raise QuotaBlocked("这一轮到时限了，先让出来，下一轮接着整理")
+        self.sleep(seconds)
+        if self.stop is not None and self.stop():
+            raise QuotaBlocked("这一轮到时限了，先让出来，下一轮接着整理")
+
     def _yield(self):
         """她在聊：每分钟看一眼；额度预计要超门槛：每 15 分钟看一眼。合计最多 MAX_YIELD 秒，到了照常做。"""
         spent = 0
@@ -150,7 +162,7 @@ class PatientRouter:
                 self.budget_waits += 1
             else:
                 return
-            self.sleep(step)
+            self._nap(step)
             spent += step
 
     def _check_paid(self):
@@ -172,7 +184,7 @@ class PatientRouter:
                 last = e
                 self._check_paid()  # 这次报错刚记下额度用完：别歇了再试，停
                 self.waited += 1
-                self.sleep(BACKOFF * 60)
+                self._nap(BACKOFF * 60)
         raise last
 
 

@@ -48,7 +48,7 @@ class MatchTest(unittest.TestCase):
     def test_only_questions_the_user_registered(self):
         for q, *_ in askroute.RULES:
             self.assertIn(q, memusers.USERS["ethan"]["questions"])
-        self.assertIsNone(askroute.match("我现在住哪？", user="twin"))  # 主页助手 没登记第 1 题
+        self.assertIsNone(askroute.match("我现在住哪？", user="twin"))  # Days 没登记第 1 题
 
 
 class RouteTest(unittest.TestCase):

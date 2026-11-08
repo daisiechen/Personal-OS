@@ -37,7 +37,6 @@ JOBS = {
 # 跑了多久还没结束算卡住；None = 不按时长判断（大批整理一跑几个小时，看的是 ethan/syscheck.py 的整理进度）
 STUCK = {"backlog": None, "codex": timedelta(hours=4, minutes=30)}
 STUCK_DEFAULT = timedelta(hours=3)
-LONDON = "Europe/London"
 
 
 def load(data: Path) -> dict:
@@ -95,7 +94,27 @@ def run(data: Path, name: str, cmd: list, runner=subprocess.run) -> int:
         mark_start(data, name, started)
     except OSError:
         pass
-    proc = runner(cmd, capture_output=True, text=True)
+    import signal
+
+    class _Stopped(Exception):
+        pass
+
+    def _stop(signum, frame):
+        raise _Stopped()
+
+    try:  # systemd 到了 TimeoutStartSec 会发 SIGTERM：要记一笔“被停掉”，不然体检一直以为还在跑（11-08 记忆整理“6 小时还没结束”）
+        old_handler = signal.signal(signal.SIGTERM, _stop)
+    except ValueError:  # 不在主线程（测试里）就不装
+        old_handler = None
+    try:
+        proc = runner(cmd, capture_output=True, text=True)
+    except _Stopped:
+        record(data, name, False, started, datetime.now(timezone.utc),
+               "被系统停掉了：多半是跑超了服务的时长上限（TimeoutStartSec），这一轮没跑完")
+        return 143
+    finally:
+        if old_handler is not None:
+            signal.signal(signal.SIGTERM, old_handler)
     out = (proc.stdout or "") + (proc.stderr or "")
     sys.stdout.write(proc.stdout or "")
     sys.stderr.write(proc.stderr or "")
@@ -181,12 +200,13 @@ def every_text(spec: str) -> str:
     zone = "" if len(parts) > 2 else " UTC"
     if "," in hh:
         hs = hh.split(",")
-        return f"{hs[0]}–{hs[-1]} 点每 2 小时（{mm}）" if len(hs) > 2 else f"每天 {'、'.join(h + ':' + mm for h in hs)}"
+        return f"{hs[0]}–{hs[-1]} 点每 2 小时（:{mm}）" if len(hs) > 2 else f"每天 {'、'.join(h + ':' + mm for h in hs)}"
     return f"{'每' + day if day else '每天'} {int(hh):02d}:{mm}{zone}"
 
 
 def _fmt(t: datetime) -> str:
-    return t.astimezone(_zone(LONDON)).strftime("%m-%d %H:%M")
+    from .clock import her_tz
+    return t.astimezone(her_tz()).strftime("%m-%d %H:%M")  # 显示用她的时区（11-06 去掉写死的伦敦）
 
 
 def _seen(data: Path, now: datetime) -> dict:

@@ -17,6 +17,7 @@ from . import brain, english, focus, progress, review
 from .core.agent import Ethan, build_system_prompt
 from .memory import MemoryStore
 from .clock import her_today
+from . import clock
 
 OVERVIEW_WORDS = ("看看总览", "总览", "/overview")
 MAX_TELEGRAM = 4000
@@ -26,8 +27,7 @@ def is_overview_request(text: str) -> bool:
     return text.strip().rstrip("。！!？?~～") in OVERVIEW_WORDS
 
 
-def week_start(today: date) -> date:
-    return today - timedelta(days=today.weekday())  # 周一
+week_start = clock.week_start  # 周一；只在 clock 算（11-06）
 
 
 def collect_facts(store: MemoryStore, today: date) -> dict:
@@ -91,7 +91,7 @@ def collect_facts(store: MemoryStore, today: date) -> dict:
         "还没有数据来源的区域": [t["区域"] for t in territories if t["灯"] == "没数据"],
         "记忆对齐": _memory_line(db, today),
         "说到做到（你没做就说做了的次数，开发会话据此给你加能力、改规矩）": _deeds_line(db, today),
-        "工作和生活（工作时长、工作狂指数、事业和学术的产出和效率，和上周比；她要时长往下、产出稳住、效率往上）": _work_line(db, today),
+        "工作和生活（工作时长、工作狂指数、事业和学术的产出和上周比；效率看本周和最近 4 周平均；她要时长往下、产出稳住、效率往上）": _work_line(db, today),
         "这周教了她什么（小伴 主动教的知识点和复习结果，ethan/lessons.py）": _lessons_line(db, today),
     }
 
@@ -146,8 +146,9 @@ def _work_line(db, today):
         from . import workaholic
         c = workaholic.compare(db, today)
         pick = lambda w: {"工作小时": w["hours"], "工作狂指数": w["index"], "晚上9点后小时": w["late"], "周末小时": w["weekend"],
-                          "事业和学术经验": w["output"]["points"], "验收通过的交付": w["output"]["accepted"], "效率": w["efficiency"]}
-        return {"这周": pick(c["this"]), "上周": pick(c["last"])}
+                          "事业和学术经验": w["output"]["points"], "验收通过的交付": w["output"]["accepted"]}
+        e = workaholic.efficiency(db, today)  # 效率和领域页同一个函数：本周 + 最近 4 周平均
+        return {"这周": pick(c["this"]), "上周": pick(c["last"]), "效率": {"本周": e["week"], "最近4周平均": e["avg4"]}}
     except Exception:
         return {}
 

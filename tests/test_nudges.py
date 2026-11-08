@@ -14,7 +14,7 @@ def at(h, m=0, day=MONDAY):
     return datetime(day.year, day.month, day.day, h, m, tzinfo=LDN)
 
 
-class NudgeTest(unittest.TestCase):
+class NudgeBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = make_demo(Path(self.tmp.name))
@@ -24,6 +24,8 @@ class NudgeTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+
+class NudgeTest(NudgeBase):
     def test_follow_up_after_planned_start(self):
         item = next(i for i in self.db.latest_plan(MONDAY.isoformat())["items"] if i.get("start") and i["kind"] != "travel")
         h, m = map(int, item["start"].split(":"))
@@ -60,7 +62,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class DepartNudgeTest(NudgeTest):
+class DepartNudgeTest(NudgeBase):
     def test_calendar_trip_reminds_once_with_route(self):
         """她日历里的递签证没有出发提醒；现在提前 1 小时说清去哪、路上多久、几点出门。"""
         import json
@@ -78,7 +80,7 @@ class DepartNudgeTest(NudgeTest):
         self.assertIsNone(nudges._depart(self.db, at(9, 45), {key: "已发送"}))
 
 
-class SurpriseOnceTest(NudgeTest):
+class SurpriseOnceTest(NudgeBase):
     def test_reveal_only_once_across_days(self):
         """拆了惊喜，小伴 主动揭晓一次；第二天不会再“刚拆开”一遍（自查）。"""
         from ethan import quests
@@ -93,7 +95,7 @@ class SurpriseOnceTest(NudgeTest):
         self.assertFalse(got and got[0].startswith("redeem:"))
 
 
-class SurpriseInChatTest(NudgeTest):
+class SurpriseInChatTest(NudgeBase):
     def test_ethan_checks_back_and_confirms_surprise(self):
         """别让她点“兑现了”：揭晓两天后 小伴 问一句玩了没有，由他记兑现。"""
         from datetime import datetime

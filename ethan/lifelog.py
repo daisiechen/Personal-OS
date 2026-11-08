@@ -40,7 +40,28 @@ def add(db, kind: str, day: date, who: str = None, text: str = "", n: float = No
         return False
     db.conn.execute("INSERT INTO life_log (kind, day, who, text, n, at) VALUES (?, ?, ?, ?, ?, ?)",
                     (kind, day.isoformat(), who, (text or "")[:300], n, datetime.now(timezone.utc).isoformat(timespec="seconds")))
+    if kind in MET:  # 记了见面，每周“和朋友见面”自动打卡（明明见过了，小伴 周六还问“这周跟朋友见面那格还空着吧”）
+        from . import quests
+        quests.auto_check(db, MEET_HABIT, day)
     return True
+
+
+MET = ("meet", "new_friend")
+MEET_HABIT = "life:meet"  # habits.auto：见了朋友就自动打卡的那条坚持
+
+
+def met_on(db, day: date) -> bool:
+    """这天记过和朋友见面没有。"""
+    ensure(db)
+    return bool(db.conn.execute(f"SELECT 1 FROM life_log WHERE kind IN ({','.join('?' * len(MET))}) AND day = ? LIMIT 1",
+                                (*MET, day.isoformat())).fetchone())
+
+
+def met_since(db, start: date) -> bool:
+    """从 start 那天起记过和朋友见面没有。"""
+    ensure(db)
+    return bool(db.conn.execute(f"SELECT 1 FROM life_log WHERE kind IN ({','.join('?' * len(MET))}) AND day >= ? LIMIT 1",
+                                (*MET, start.isoformat())).fetchone())
 
 
 def note(db, text: str, day: date) -> int:

@@ -15,6 +15,26 @@
 - 邮件本身照常按邮件整理的规则分类、归档，记账不影响它。
 - 代码：`ethan/mail.py` 的 `bank_email`、`ethan/finance.py` 的 `record_cmb` / `record_cmb_digest`。
 
+## Apple Pay 每刷一次自动记账（Revolut 等没有接口的卡）
+
+发现最近的消费都没记进来：办了 Revolut 卡，之后的花销走 Revolut，Revolut 不给个人开放接口。
+做法：iPhone 快捷指令的“钱包 → 交易”自动化，每次用 Apple Pay 付款就把卡、商户、金额发到服务器（`finance.record_applepay`）。
+Monzo 卡和招行卡发过来会被跳过（已有官方同步 / 邮件，避免算两遍），其余的卡（Revolut、Amex……）都记；同一张卡、同一商户、同一金额、同一分钟只记一次。
+和邮件、Monzo 记的去重：金额、币种一样、日子相差不超过 1 天就算同一笔——邮件或 Monzo 先记了，Apple Pay 这条不记；Apple Pay 先记了，邮件或 Monzo 那条到了就以它为准、删掉 Apple Pay 那条。认出是 Revolut 的卡没有别的来源，不参与去重。
+
+她要做的（一次，约 3 分钟）：
+1. 打开“快捷指令” → 底部“自动化” → 右上“＋” → 往下找“钱包”（Wallet）。
+2. 卡片选“Revolut”（别的没接的卡也可以一起勾上；Monzo、招行不用勾，勾了也会被跳过）；类别全选；选“立即运行”，关掉“运行时通知”，点“下一步”。
+3. 选“新建空白自动化” → 添加操作“获取 URL 内容”：
+   - URL：`https://ethan.example.com/cloud/spend`
+   - 点“显示更多”：方法选 **POST**；头部加一项，键 `Authorization`，值 `Bearer ` 加钥匙（和出门 / 到家那两条快捷指令同一把，空格不要漏）；
+   - 请求体选 **JSON**，加四项（后三项的值都点蓝色变量“快捷指令输入”，不要自己打字）：
+     - `kind`：文本 `applepay`
+     - `card`：快捷指令输入 → **卡或票证**（Card or Pass）
+     - `merchant`：快捷指令输入 → **商户**（Merchant）
+     - `amount`：快捷指令输入 → **金额**（Amount）
+4. 完成。用 Revolut 付一笔小钱，几秒后工作台“财务”里就能看到这一笔（来源 revolut）。
+
 ## 国内银行卡：iPhone 快捷指令转发（旧做法，邮件整理上线后不再需要）
 
 下面是 2026-11-01 之前的接法，留着备用（比如哪天服务器收不到某个邮箱）。

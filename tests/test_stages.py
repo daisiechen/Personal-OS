@@ -34,6 +34,19 @@ class StagesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             stages.add_milestone(self.db, self.gid, " ")
 
+    def test_done_tasks_in_current_milestone_count(self):
+        """两个里程碑、M1 里 4 件做完 2 件 → 25%。"""
+        ids = [stages.add_task(self.db, self.m1, t) for t in ("体态评估", "约复查", "买泡沫轴", "列动作清单")]
+        stages.add_task(self.db, self.m1, "训练前称重", "daily")  # 反复做的不算
+        for i in ids[:2]:
+            self.db.conn.execute("UPDATE tasks SET done = 1 WHERE id = ?", (i,))
+        self.db.conn.commit()
+        g = stages.goal_progress(self.db, self.gid)
+        self.assertEqual((g["frac"], g["cur_done"], g["cur_total"]), (0.25, 2, 4))
+        p = stages.boss_progress(None, g)
+        self.assertEqual(p["frac"], 0.25)
+        self.assertIn("当前里程碑任务 2/4", p["label"])
+
     def test_four_cadences_become_todays_todos(self):
         weigh = stages.add_task(self.db, self.m1, "训练前称重", "daily")
         shop = stages.add_task(self.db, self.m1, "按清单买菜", "weekly", per_week=1)
@@ -68,6 +81,23 @@ class StagesTest(unittest.TestCase):
         quests.check_habit(self.db, h["id"], D)
         row = dict(self.db.conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone())
         self.assertTrue(stages.progress(self.db, row, D)["text"].startswith("本周 1 / 5"))  # 后面还写这阶段几周达标
+
+
+
+class BossProgressTest(unittest.TestCase):
+    """进度条按什么画只在 stages.boss_progress 一处定，
+    旁边写明依据；有指标按指标，没有指标按里程碑或步骤并写“按里程碑 1/4”，什么依据都没有就不画。"""
+
+    def test_order_and_labels(self):
+        from ethan.stages import boss_progress
+        self.assertEqual(boss_progress(0.4, {"passed": 1, "total": 4}, 2, 5)["by"], "metric")
+        ms = boss_progress(None, {"passed": 1, "total": 4}, 7, 8)
+        self.assertEqual((ms["by"], ms["frac"], ms["label"]), ("milestones", 0.25, "按里程碑 1/4"))
+        st = boss_progress(None, None, 3, 8)
+        self.assertEqual((st["by"], st["label"], st["short"]), ("steps", "按步骤 3/8", "3/8 步"))
+        none = boss_progress(None, {"passed": 0, "total": 0}, 0, 0)
+        self.assertIsNone(none["frac"])
+        self.assertEqual(none["label"], "")
 
 
 if __name__ == "__main__":

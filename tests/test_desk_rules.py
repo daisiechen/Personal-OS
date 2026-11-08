@@ -1,6 +1,6 @@
 """收件台“等你处理”统一成一处判断（ethan/desk.py 的 state_of / VIEWS / rows，docs/design/mail-desk.md）。
 
-决定 6：主页留言里“主页助手 能回 / 不用回”的不算红点；小伴 正在起草的算“等你”。
+决定 6：主页留言里“Days 能回 / 不用回”的不算红点；小伴 正在起草的算“等你”。
 """
 
 import re
@@ -36,7 +36,7 @@ class StateTest(unittest.TestCase):
             ("mail", mail_row(attention=0, fyi=1, created_at="2026-10-20T10:00:00+00:00"), "hidden"),  # 知道一下只留 7 天
             ("mail", mail_row(attention=0, fyi=0), "hidden"),
             ("visitor", {"tier": "reply", "desk_state": "open"}, "needs_her"),
-            ("visitor", {"tier": "fyi", "desk_state": "open"}, "can_skip"),  # 决定 6：主页助手能回或不用回的不算红点
+            ("visitor", {"tier": "fyi", "desk_state": "open"}, "can_skip"),  # 决定 6：Days能回或不用回的不算红点
             ("visitor", {"tier": "fyi", "desk_state": "draft"}, "draft_ready"),  # 她让起草了、草稿回来了：要她看
             ("visitor", {"tier": "reply", "desk_state": "handed", "draft": None}, "handed"),
             ("visitor", {"tier": "reply", "desk_state": "handed", "draft": "hi"}, "draft_ready"),
@@ -90,7 +90,7 @@ class DeskRulesTest(unittest.TestCase):
         items = desk.items(self.db)
         waits = {x["title"]: x["wait"] for x in items}
         self.assertEqual(waits, {"要回": "needs_her", "在起草": "drafting", "知道一下": "fyi", "夸主页": "can_skip", "想合作": "needs_her"})
-        self.assertEqual(desk.count(self.db), 3)  # 要回、在起草、想合作；主页助手能回的和知道一下不算
+        self.assertEqual(desk.count(self.db), 3)  # 要回、在起草、想合作；Days能回的和知道一下不算
         self.assertEqual(desk.count(self.db), sum(x["waiting"] for x in items))
         self.assertEqual(sorted(m["subject"] for m in mail.to_digest(self.db)), ["在起草", "要回", "记成待办"])
         self.assertEqual(sorted(v["summary"] for v in publicsite.to_digest(self.db)), sorted(["想合作", "夸主页"]))  # 汇总里说一声“不用她回”的
@@ -105,6 +105,17 @@ class DeskRulesTest(unittest.TestCase):
         self.assertTrue(any("weird" in x for x in invariants.states_valid(self.db)))
         self.assertEqual(set(transitions.STATES["mail_desk"]) >= {"open", "drafting", "draft", "todo", "sent", "ignored", "closed"}, True)
 
+
+    def test_every_state_desk_writes_is_in_the_graph(self):
+        """11-06 巡检：desk.ignore 能把发件箱写成 ignored，状态图里却没有，体检一直报“不在状态图里”。"""
+        import inspect
+        import re
+        from ethan import desk
+        self.assertIn("out", inspect.getsource(desk._table))  # ignore 接受 out
+        written = set(re.findall(r"desk_state = '([a-z_]+)'", inspect.getsource(desk)))
+        for state in written:
+            self.assertTrue(any(state in transitions.STATES[g] for g in desk.DESK_STATES.values()), state)
+        self.assertIn("ignored", transitions.STATES["outbox_desk"])
 
 class GuardTest(unittest.TestCase):
     """别的模块不再自己写“等她处理”的 desk_state 条件；前端只认服务端给的 waiting。"""
@@ -130,3 +141,32 @@ class GuardTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IgnoreDropsTaskTest(unittest.TestCase):
+    """邮件里点了“不用管”，从它来的待办应该从她的待办里消失。"""
+
+    def test_ignore_mail_drops_its_tasks(self):
+        import tempfile
+        from pathlib import Path
+        from ethan import desk, taskrules
+        from ethan.memory import MemoryStore
+        with tempfile.TemporaryDirectory() as d:
+            store = MemoryStore(Path(d))
+            db = store.db
+            desk.ensure(db)
+            taskrules.ensure(db)
+            db.conn.execute("INSERT INTO mail_items (msg_key, sender, subject, created_at, desk_state) VALUES "
+                            "('k1', 'Anthropic <no-reply@anthropic.com>', '新权限', '2026-11-06', 'open')")
+            mid = db.conn.execute("SELECT id FROM mail_items WHERE msg_key = 'k1'").fetchone()[0]
+            auto = db.add_task("查看并决定是否接受 Claude 新权限")
+            db.conn.execute("UPDATE tasks SET source_type = 'email', source_ref = 'mail:k1', status = 'open' WHERE id = ?", (auto,))
+            other = db.add_task("别的事")
+            db.conn.commit()
+            got = desk.ignore(db, "mail", mid)
+            self.assertIn("1 件", got.get("msg", ""))
+            st = {r[0]: r[1] for r in db.conn.execute("SELECT id, status FROM tasks")}
+            self.assertEqual(st[auto], "drop_asked")  # 收进“你说算了的”，不删
+            self.assertNotEqual(st[other], "drop_asked")
+            self.assertTrue(taskrules.restore(db, auto))  # 能恢复
+            store.close()

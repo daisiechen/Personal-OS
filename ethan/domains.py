@@ -8,6 +8,7 @@
 from datetime import date, timedelta
 
 from .progress import year_progress
+from . import clock
 
 # (模块, 小伴 带她做时要收集什么)
 COLD_START = [  # 2026-10-28 按 territories.md 清理：Apple Pay 不单独接（Monzo 和招行覆盖），赛季 1 只练英语，专注不是领地
@@ -68,7 +69,7 @@ def domain_lines(db, today: date, start: date = None) -> list:
             # 和健康区域、成就用同一个数：日常“训练”打卡的天数（她自己打卡）
             done = db.conn.execute(
                 "SELECT COUNT(DISTINCT l.day) FROM habit_log l JOIN habits h ON h.id = l.habit_id WHERE h.title = '训练' AND l.day >= ?",
-                ((today - timedelta(days=today.weekday())).isoformat(),)).fetchone()[0]
+                (clock.week_start(today).isoformat(),)).fetchone()[0]
             parts.append(f"本周训练 {done}/5 次")
         if domain == "学术":
             parts.append("进修计划这两个月暂停")

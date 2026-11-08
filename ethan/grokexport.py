@@ -528,7 +528,8 @@ def monthly_todo(db, today=None) -> dict:
     else:
         from . import lifebase
         lifebase.ensure(db)
-        tid = db.add_task(title, due=today.isoformat())
+        from . import taskrules
+        tid = taskrules.add(db, title, due=today.isoformat())
         db.conn.execute("UPDATE tasks SET owner = 'mia', source_type = 'agent-export', source_ref = ?, status = 'open' WHERE id = ?",
                         (f"grok-export:{today:%Y-%m}", tid))
         why = f"待办 #{tid}"

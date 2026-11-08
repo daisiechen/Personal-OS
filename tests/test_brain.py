@@ -12,7 +12,7 @@ from tests.test_workbench import make_demo
 NOW = datetime.now(timezone.utc)
 
 
-class BrainTest(unittest.TestCase):
+class BrainBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -41,6 +41,8 @@ class BrainTest(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+
+class BrainTest(BrainBase):
     def test_sync_collects_every_source_once(self):
         self.assertGreater(brain.sync(self.store), 0)
         self.assertEqual(brain.sync(self.store), 0)  # 再同步不重复
@@ -109,7 +111,7 @@ class BrainTest(unittest.TestCase):
         self.assertIn("Sky Garden，City，免费", [i["where"] for i in brain.ideas(self.db)])  # 计划器挑新体验时用
 
 
-class EnrichTest(BrainTest):
+class EnrichTest(BrainBase):
     def test_enrich_writes_summary_tags_territory_and_respects_her_edits(self):
         from types import SimpleNamespace
         from ethan import brain_enrich
@@ -142,7 +144,7 @@ class EnrichTest(BrainTest):
         self.assertEqual({x["status"] for x in brain.search(self.db, "all", kind="saved")}, {"kept"})  # 收下由 小伴 定
 
 
-class RecallAndCardTest(BrainTest):
+class RecallAndCardTest(BrainBase):
     def test_recall_finds_related_and_skips_unrelated(self):
         brain.sync(self.store)
         self.assertEqual([x["title"] for x in brain.recall(self.db, "明天早餐吃什么高蛋白的")], ["高蛋白早餐碗"])
@@ -177,7 +179,7 @@ class RecallAndCardTest(BrainTest):
 
 
 
-class WikiInBrainTest(BrainTest):
+class WikiInBrainTest(BrainBase):
     def test_wiki_pages_join_brain_except_grok_digest(self):
         self.store.wiki.write("people/lily", "Amy", "某商学院 同学，喜欢攀岩，周三有空。")
         self.store.wiki.write("from-grok", "Grok 那边的回报", "- 一条回报")
@@ -202,7 +204,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AskTest(BrainTest):
+class AskTest(BrainBase):
     def test_ethan_unsure_marks_ask_with_red_dot(self):
         from ethan import brain_enrich
         brain.sync(self.store)
@@ -220,7 +222,7 @@ class AskTest(BrainTest):
         self.assertNotIn("brain", self.wb.state()["badges"])
 
 
-class GrokSplitTest(BrainTest):
+class GrokSplitTest(BrainBase):
     def test_grok_from_her_saves_counts_as_saved(self):
         """Grok 从收藏夹整理的算“你的收藏”，交代给它的调研才是“Grok 情报”。"""
         inbox = self.root / "inbox" / f"{NOW.date().isoformat()}.jsonl"

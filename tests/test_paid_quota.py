@@ -89,12 +89,14 @@ class RouterTest(Tmp):
         return Router(backend, Ledger(self.root / "ledger"), Settings(self.root / "settings.json"))
 
     def test_overage_reply_blocks_background_but_chat_answers(self):
-        r = self.router(Sub(info(isUsingOverage=True)))
+        # 路由按真实的“现在”记：重置时间也按现在往后算，不写死（写死的 11-07 20:00 一过，这条就挂、上线被退回）
+        reset = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(days=2)
+        r = self.router(Sub(info(isUsingOverage=True, resetsAt=int(reset.timestamp()))))
         self.assertEqual(r.complete("s", [{"role": "user", "content": "嗨"}]).text, "好")  # 聊天照常
-        b = quota.blocked(self.root, NOW)
+        b = quota.blocked(self.root, reset - timedelta(days=1))
         self.assertIn("付费额度", b["reason"])
-        self.assertEqual(datetime.fromisoformat(b["until"]), RESET)
-        self.assertFalse(quota.blocked(self.root, RESET + timedelta(minutes=1)))
+        self.assertEqual(datetime.fromisoformat(b["until"]), reset)
+        self.assertFalse(quota.blocked(self.root, reset + timedelta(minutes=1)))
         self.assertEqual(quota.state(self.root)["isUsingOverage"], True)
 
     def test_back_to_normal_clears(self):

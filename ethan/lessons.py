@@ -20,6 +20,7 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from . import clock
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS lessons (
     id INTEGER PRIMARY KEY, day TEXT NOT NULL UNIQUE, topic TEXT NOT NULL, title TEXT NOT NULL, gist TEXT NOT NULL,
@@ -144,8 +145,7 @@ def use_text(lesson: dict) -> str:
 
 
 # ---------- 每周让 Grok 查一次本周新闻 ----------
-def week_start(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+week_start = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def ask_news(db, grok, day: date, now: datetime = None) -> bool:

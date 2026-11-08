@@ -154,6 +154,61 @@ class CatchupTest(unittest.TestCase):
         self.assertEqual(len(spawned), 1)
 
 
+class PatchedCardTest(unittest.TestCase):
+    """上线“等补好再出”之前退回 choose() 拼出来的卡（有 variety、没有 shot、没在等）也要重出。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.store = make_demo(self.root)
+        self.db = self.store.db
+        (self.root / "weather.json").write_text(json.dumps({"days": {MONDAY.isoformat(): {"day": MONDAY.isoformat(), "code": 3, "max": 12,
+                                                                                            "min": 6, "wind": 10, "rain": 0}}}))
+        diary.save(self.db, MONDAY.isoformat(), "今天我去训练了，练完腿有点酸。", source="ethan")
+        with redirect_stdout(io.StringIO()):  # 没接模型：照旧按代码拼，和 11-06 那张一样有 variety、没有 shot
+            self.old = cards.make_card(self.root, self.db, TUESDAY, None, maker=FakeMaker(), store=self.store)
+        self.path = self.root / "cards" / f"{TUESDAY}.json"
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_patched_card_is_due(self):
+        self.assertTrue(self.old.get("variety"))
+        self.assertNotIn("shot", self.old)
+        self.assertTrue(cards.patched(self.root, TUESDAY))
+        self.assertEqual(catchup.card_need(self.root, self.db, TUESDAY), "make")
+        self.assertIn("card", catchup.due(self.store, now=AT))
+
+    def test_card_with_shot_is_not_due(self):
+        self.path.write_text(json.dumps({**self.old, "shot": SHOT}, ensure_ascii=False))
+        self.assertFalse(cards.patched(self.root, TUESDAY))
+        self.assertNotIn("card", catchup.due(self.store, now=AT))
+
+    def test_remake_replaces_it_with_a_directed_card(self):
+        with redirect_stdout(io.StringIO()):
+            got = catchup.run(self.store, Router(), now=AT, maker=FakeMaker())
+        card = json.loads(self.path.read_text())
+        self.assertIn("出了", got["card"])
+        self.assertEqual((card["title"], card["shot"]["scene"]), ("河边慢跑", "by the Thames"))
+        self.assertTrue(list((self.root / "cards" / "old").glob(f"{TUESDAY}-*.json")))  # 旧的挪进 old，不删
+        self.assertNotIn("card", catchup.due(self.store, now=AT + timedelta(hours=2)))
+
+    def test_failed_remake_keeps_her_card_and_retries_hourly(self):
+        before = self.path.read_text()
+        image = (self.root / "cards" / f"{TUESDAY}.jpg").read_bytes()
+        maker = FakeMaker()
+        with redirect_stdout(io.StringIO()):
+            got = catchup.run(self.store, Router(director_ok=False), now=AT, maker=maker)
+        self.assertIn("接着等", got["card"])
+        self.assertEqual(self.path.read_text(), before)  # 原来那张挪回来了
+        self.assertEqual((self.root / "cards" / f"{TUESDAY}.jpg").read_bytes(), image)
+        self.assertFalse((self.root / cards.WAIT).exists())
+        self.assertEqual(maker.calls, [])
+        self.assertNotIn("card", catchup.due(self.store, now=AT + timedelta(minutes=50)))  # 一小时最多试一次
+        self.assertIn("card", catchup.due(self.store, now=AT + timedelta(minutes=61)))
+
+
 class YesterdayWeatherTest(unittest.TestCase):
     """卡上写昨天的实际天气；毛毛雨几乎没下写“阴”，不写“雨”。"""
 

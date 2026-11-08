@@ -77,7 +77,61 @@ class RecallTest(Base):
         lifebase.forget(self.db, evidence_ids=[old, new])  # 删了的不算
         self.assertEqual(onto_query.last_said(self.db, "ethan", "芬兰极光")["status"], "unknown")
 
+    def test_last_said_reads_her_lines_in_transcripts(self):
+        """11-07：整段对话（上万字）整份比，什么话题都“命中”，最近 3 条全被占满、只截前 300 字，真正说到的那句排不进来。现在只比【她】的行。"""
+        said = self.say("2026-10-20T10:00:00", "我决定以后每周跑步五次")
+        noise = "〔2026-11-05〕\n" + "\n".join(f"【小王】周末一起去跑步吧，第{i}次约你，每周都可以" for i in range(300)) + "\n【她】好呀\n"
+        for d in ("2026-11-04", "2026-11-05", "2026-11-06"):
+            lifebase.add_evidence(self.db, "wechat", f"raw:wx:{d}", f"{d}T20:00:00", noise)
+        got = onto_query.last_said(self.db, "ethan", "每周跑步")
+        self.assertEqual([i["evidence"] for i in got["items"]], [said])  # 别人说的那几行不算她的原话
+        mine = lifebase.add_evidence(self.db, "wechat", "raw:wx:2026-11-07", "2026-11-07T20:00:00",
+                                     "〔2026-11-07〕\n【小王】最近还跑吗\n【她】现在改成每周跑步三次了\n【小王】好")
+        got = onto_query.last_said(self.db, "ethan", "每周跑步")
+        self.assertEqual(got["items"][0]["evidence"], mine)
+        self.assertEqual(got["items"][0]["quote"], "现在改成每周跑步三次了")  # 只给她那一句，不是整段
+
+    def test_last_said_transcript_turns_and_plain_chat(self):
+        """Codex 评审 11-07：她一轮里的续行要留着；普通聊天里引用了带【她】的文字，不能当整段对话。"""
+        multi = lifebase.add_evidence(self.db, "interview", "raw:cx:1", "2026-11-06T09:00:00",
+                                      "〔2026-11-06〕\n【她】说一下最近的安排\n现在改成每周游泳两次了\n【Codex】好的")
+        got = onto_query.last_said(self.db, "ethan", "每周游泳")
+        self.assertEqual(got["items"][0]["evidence"], multi)
+        self.assertIn("每周游泳两次", got["items"][0]["quote"])
+        wx = lifebase.add_evidence(self.db, "wechat", "raw:wx:m", "2026-11-06T10:00:00",
+                                   "〔2026-11-06〕\n【她】说一下最近的安排\n现在改成每周爬山一次了\n【小王】好的")
+        got = onto_query.last_said(self.db, "ethan", "每周爬山")
+        self.assertEqual(got["items"][0]["evidence"], wx)
+        self.assertIn("每周爬山一次", got["items"][0]["quote"])
+        chat = self.say("2026-11-06T11:00:00", "转给你看：\n【她】这里是引用\n我自己的安排是每周骑车两次")  # 【她】在行首
+        got = onto_query.last_said(self.db, "ethan", "每周骑车")
+        self.assertEqual(got["items"][0]["evidence"], chat)
+        self.assertIn("每周骑车两次", got["items"][0]["quote"])
+        self.assertIn("这里是引用", got["items"][0]["quote"])  # 整条照旧，不按整段对话拆
+        old_fmt = lifebase.add_evidence(self.db, "interview", "raw:iv:old", "2026-11-06T12:00:00",
+                                        "问：【她】上次说过什么\n答：我现在每周打球一次")  # 旧的问 / 答格式照旧整条比
+        got = onto_query.last_said(self.db, "ethan", "每周打球")
+        self.assertEqual(got["items"][0]["evidence"], old_fmt)
+        self.assertIn("每周打球一次", got["items"][0]["quote"])
+
     # ---- 第 3 题 某人是谁 ----
+    def test_person_by_nickname_and_mentions(self):
+        """11-07 评估试跑：“鹏哥”“科比”认不出，王宇航没卡就答不出。小名、短名都认；她说起过的一起带上；没卡也能答。"""
+        from ethan import relations
+        relations.ensure(self.db)
+        self.db.upsert_person("高鹏", relation="做广告产品的圈内朋友，聊天里叫他鹏哥")
+        self.db.upsert_person("科比💤 1123", relation="腾讯前同事")
+        lifebase.add_fact(self.db, "relationships", "她与科比分工调研：科比做产品方面", [self.ev])
+        lifebase.add_fact(self.db, "relationships", "她拉老同事王宇航一起做 KingSail", [self.ev])
+        self.assertEqual(onto_query.person(self.db, "ethan", "鹏哥")["items"][0]["name"], "高鹏")
+        kb = onto_query.person(self.db, "ethan", "科比")["items"][0]
+        self.assertEqual(kb["name"], "科比💤 1123")
+        self.assertIn("分工调研", kb["mentions"][0]["value"])
+        wang = onto_query.person(self.db, "ethan", "王宇航")
+        self.assertEqual(wang["status"], "answer")
+        self.assertIn("KingSail", wang["items"][0]["mentions"][0]["value"])
+        self.assertEqual(onto_query.person(self.db, "twin", "科比")["items"], [])  # 对外照旧拿不到
+
     def test_person(self):
         pid = self.db.upsert_person("Leo", circle="朋友", how_met="伦敦交换")
         lifelog.add(self.db, "meet", DAY, "Leo", "喝咖啡")
@@ -477,6 +531,7 @@ class ConsumersTest(Base):
         planner.note_override(self.db, DAY, "晚上跑步", "delete")
         self.say("2026-11-03T10:00:00", "我来帮你查一下签证进度", who="ethan")
         from unittest import mock
+        import ethan.core.agent, ethan.interviews  # noqa: F401  先加载：补丁期间头一次 import 的模块会把假的 her_today 抓进去（11-07 分路跑时挂了别的测试）
         with mock.patch("ethan.clock.her_today", return_value=DAY):
             got = [p for p in checkup.problems(self.tmp.name, self.db, services=False) if p["what"] == "检查：互相矛盾"]
         self.assertEqual(len(got), 1)

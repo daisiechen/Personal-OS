@@ -65,6 +65,40 @@ class EnglishTest(unittest.TestCase):
         self.assertFalse(quests.checked(self.db, h["id"], MONDAY + timedelta(days=1)))  # 只练 3 分钟不算一次
         self.assertEqual(self.english_items()["touch base"]["last_review"], (MONDAY + timedelta(days=1)).isoformat())
 
+    def test_transfer_needed_for_mastery_and_patterns_become_review_items(self):
+        """每次要复习，还要举一反三。只在原场景会说的不算掌握；从纠错提炼的规律进复习。"""
+        english.ingest(self.db, report(MONDAY, minutes=40, new=[{"en": "circle back", "zh": "回头再聊"}, {"en": "ballpark", "zh": "大概数"}],
+                                       patterns=[{"rule": "拒绝先肯定再转折", "ok": False}]), self.now)
+        day2 = MONDAY + timedelta(days=1)
+        r = english.ingest(self.db, report(day2, minutes=40, review=[{"en": "circle back", "ok": True, "transfer": False},
+                                                                      {"en": "ballpark", "ok": True, "transfer": True}]),
+                           self.now + timedelta(days=1))
+        self.assertEqual(r["reviewed"], 2)
+        items = self.english_items()
+        self.assertEqual(items["circle back"]["interval_days"], 1)  # 换场景没用对：明天接着复习
+        self.assertGreater(items["ballpark"]["interval_days"], 1)
+        self.assertIn("规律：拒绝先肯定再转折", items)
+
+    def test_lesson_is_40_minutes_with_tracks_and_recent_reports(self):
+        for i, track in enumerate(("创业", "创业", "社交")):
+            english.ingest(self.db, report(MONDAY - timedelta(days=3 - i), minutes=40, track=track, scene="路演",
+                                           topics=[{"topic": f"话题{i}", "her_lines": ["We are pre-seed"]}],
+                                           mistakes=[{"said": "I very like", "better": f"I really like {i}"}],
+                                           gaps={"response": f"被追问估值时卡住{i}"}, next=f"练估值追问{i}"), self.now)
+        english.record_said(self.db, MONDAY, 30, self.now)  # 补记的没有内容，不进回报
+        self.assertEqual(english.next_track(self.db)[0], "投融资")
+        m = english.material(self.db, MONDAY + timedelta(days=1))
+        self.assertIn("这次建议的线：投融资", m)
+        for want in ("话题2", "被追问估值时卡住2", "练估值追问2", "I really like 2", "练估值追问0"):
+            self.assertIn(want, m)
+        self.assertNotIn("她跟 小伴 说的", m)
+        self.assertIn("40 分钟", english.LESSON_PROMPT)
+        for part in ("热身", "复习", "主场景", "举一反三", "收尾", "礼仪"):
+            self.assertIn(part, english.LESSON_PROMPT)
+            self.assertIn(part, english.PRACTICE_RULES)
+        for key in ("topics", "gaps", "next", "patterns", "transfer", "track"):
+            self.assertIn(f'"{key}"', english.REPORT_FORMAT)
+
     def test_bad_report_is_kept_but_flagged(self):
         code, body = self.inbox.handle("/grok/result", {"Authorization": "Bearer g"}, f"{english.MARK}\n没写 JSON".encode(), self.now)
         self.assertEqual(code, 200)
@@ -93,6 +127,31 @@ class EnglishTest(unittest.TestCase):
         pages = vault.board_pages(self.store, day)
         self.assertEqual(pages[f"{vault.BOARD}/英语课/今天.md"], text)
         self.assertIn("还没备好", vault.board_pages(self.store, day + timedelta(days=1))[f"{vault.BOARD}/英语课/今天.md"])
+
+
+class SelfTickTest(unittest.TestCase):
+    def test_she_can_tick_and_make_up_yesterday_on_workbench(self):
+        """在 Grok App 里练的英语服务器看不到：工作台“今日 → 周常”她自己勾，第二天也能补昨天（像日常一样）。"""
+        from ethan.core.router import Settings
+        from ethan.workbench.api import Workbench
+        from tests.test_workbench import FakeCalendar, NOON
+        with tempfile.TemporaryDirectory() as t:
+            store = make_demo(Path(t))
+            try:
+                wb = Workbench(store, Settings(Path(t) / "settings.json"), calendar=FakeCalendar())
+                h = quests.habit_by_title(store.db, english.HABIT)
+                wk = lambda: next(x for x in wb.state(NOON)["habits"]["weekly"] if x["id"] == h["id"])
+                self.assertFalse(wk()["yesterday"])  # 首页“补昨天的卡”按钮和弹层会列出它
+                r = wb.act("habit.check", {"id": h["id"], "yesterday": 1}, NOON)
+                self.assertTrue(r["ok"])
+                self.assertTrue(quests.checked(store.db, h["id"], NOON.date() - timedelta(days=1)))
+                self.assertTrue(wk()["yesterday"])
+                self.assertTrue(wb.act("habit.check", {"id": h["id"]}, NOON)["ok"])  # 今天的照样能勾
+                self.assertTrue(wk()["today"])
+                app = (Path(__file__).resolve().parent.parent / "ethan/workbench/static/app.js").read_text(encoding="utf-8")
+                self.assertIn("[...st.habits.daily, ...st.habits.weekly].some((h) => !h.yesterday)", app)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

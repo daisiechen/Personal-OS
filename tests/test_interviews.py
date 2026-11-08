@@ -293,6 +293,34 @@ class TranscriptTest(unittest.TestCase):
         self.assertEqual(got["failed"], 0)
         self.assertEqual(interviews.pending(self.db), [])
 
+    def test_paused_round_not_counted_as_try(self):
+        """11-07 体检：每轮 30 分钟到点时正在整理的那段被算成没成，连着几轮就试满放弃。到点让路不算试过。"""
+        from ethan.core.router import QuotaBlocked
+
+        class Paused:
+            def complete(self, *a, **k):
+                raise QuotaBlocked("这一轮到时限了")
+        self.send_tx()
+        interviews.ensure_digest(self.db)
+        ev = self.db.conn.execute("SELECT * FROM evidence ORDER BY id DESC LIMIT 1").fetchone()
+        for _ in range(4):
+            r = interviews._digest_one(self.store, Paused(), dict(ev))
+            interviews._done(self.db, ev["id"], r)
+        row = self.db.conn.execute("SELECT ok, tries FROM interview_digest WHERE evidence_id = ?", (ev["id"],)).fetchone()
+        self.assertEqual((row["ok"], row["tries"]), (0, 0))
+        self.assertEqual(len(interviews.pending(self.db)), 1)  # 还在排队，没被放弃
+
+    def test_db_locked_not_counted_as_try(self):
+        """11-08 体检：库被每晚整理占着报“database is locked”，被算成试过一次，试满就放弃。占着也是让路。"""
+        import sqlite3
+        from unittest import mock
+        self.send_tx()
+        with mock.patch.object(interviews, "_digest_one", side_effect=sqlite3.OperationalError("database is locked")):
+            interviews.digest_all(self.store, Router())
+        interviews.ensure_digest(self.db)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM interview_digest").fetchone()[0], 0)
+        self.assertEqual(len(interviews.pending(self.db)), 1)
+
     def test_endpoint_passes_format(self):
         inbox = Inbox(self.store, {"cloud": "secret"})
         body = json.dumps({"session": "微信 · 小林", "scene": "x", "text": TX, "format": "transcript"}).encode()
@@ -334,6 +362,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import tx
+from . import clock
 
 DIMENSIONS = ("values", "temperament", "thinking", "abilities", "expression", "preferences",
               "body", "relationships", "resources", "rhythms")
@@ -119,7 +120,8 @@ DEFAULT_RULES = [
     ({"dimension": "thinking"}, "work", 1, "思维方式可以给工作 agent"),
 ]
 TASK_COLUMNS = (("owner", "TEXT"), ("source_type", "TEXT"), ("source_ref", "TEXT"), ("status", "TEXT"),
-                ("claimed_done_at", "TEXT"))
+                ("claimed_done_at", "TEXT"),
+                ("detail", "TEXT"))  # 标题只写短标题，做法、要求、原话放这里（待办不要用描述性的话，改成标题的形式）
 WISH_COLUMNS = (("category", "TEXT"), ("mention_count", "INTEGER NOT NULL DEFAULT 1"), ("last_mentioned_at", "TEXT"),
                 ("quotes", "TEXT NOT NULL DEFAULT '[]'"), ("realizable", "INTEGER"), ("realized_event_id", "INTEGER"))
 
@@ -145,6 +147,7 @@ FACT_COLUMNS = (("locked", "INTEGER NOT NULL DEFAULT 0"),
 EVIDENCE_COLUMNS = (("deleted_at", "TEXT"),)  # 她要求删除：内容清掉，只留编号和删除时间（ontology.md 7.3 节）
 FORGET_SCHEMA = """
 CREATE TABLE IF NOT EXISTS forgotten (fp TEXT PRIMARY KEY, source TEXT, at TEXT NOT NULL, allow_reimport INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS forgotten_claims (fp TEXT NOT NULL, claim TEXT NOT NULL, at TEXT NOT NULL, PRIMARY KEY (fp, claim));
 CREATE TABLE IF NOT EXISTS deletion_requests (id INTEGER PRIMARY KEY, scope TEXT NOT NULL, report TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS disclosures (
     id INTEGER PRIMARY KEY, text TEXT NOT NULL, to_users TEXT NOT NULL, dimension TEXT, quote TEXT NOT NULL,
@@ -218,11 +221,12 @@ def ensure(db):
                     db.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
         from . import ontology
         ontology.ensure(db)  # 新骨架的表（迁移第 1 步）
+        # 旧版双写触发器每次都删：部署时还跑着旧代码的进程会把旧版建回来，和新版一起触发，一条事实写出两条说法（11-06 #5840/#5841）
+        stale = stale_mirror_triggers(db)
+        if stale:
+            db.conn.executescript("".join(f"DROP TRIGGER IF EXISTS {t};" for t in stale))
         if not db.conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'facts_mirror_ins_v5'").fetchone():
-            db.conn.executescript("DROP TRIGGER IF EXISTS facts_mirror_ins; DROP TRIGGER IF EXISTS facts_mirror_upd; "
-                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v2; DROP TRIGGER IF EXISTS facts_mirror_upd_v2; "
-                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v3; DROP TRIGGER IF EXISTS facts_mirror_upd_v3; "
-                                  "DROP TRIGGER IF EXISTS facts_mirror_ins_v4; DROP TRIGGER IF EXISTS facts_mirror_upd_v4;" + MIRROR_SQL)  # 新旧双写
+            db.conn.executescript(MIRROR_SQL)  # 新旧双写
             # v5 起说法也带“预计到哪天”（临时状态到期，借鉴 6）：已经迁过的补上
             db.conn.execute("UPDATE statements SET until = (SELECT f.until FROM fact_map m JOIN facts f ON f.id = m.fact_id "
                             "WHERE m.statement_id = statements.id) WHERE id IN (SELECT statement_id FROM fact_map)")
@@ -232,6 +236,11 @@ def ensure(db):
                             "WHERE m.statement_id = statements.id), locked = COALESCE((SELECT f.locked FROM fact_map m JOIN facts f "
                             "ON f.id = m.fact_id WHERE m.statement_id = statements.id), 0)")
             tx.commit(db)
+        # 下面几条补空值每次 ensure 都跑：给“空着的”建部分索引，只看空着的几行，不再整表扫（我页加载还是慢，一次要 7 遍 ensure）
+        db.conn.executescript("CREATE INDEX IF NOT EXISTS tasks_owner_null ON tasks(id) WHERE owner IS NULL;"
+                              "CREATE INDEX IF NOT EXISTS tasks_status_null ON tasks(id) WHERE status IS NULL;"
+                              "CREATE INDEX IF NOT EXISTS wishes_mentioned_null ON wishes(id) WHERE last_mentioned_at IS NULL;"
+                              "CREATE INDEX IF NOT EXISTS facts_kind_null ON facts(id) WHERE source_kind IS NULL;")
     # 新列补默认值：谁做（取代 promised_by_ethan）、状态（和 done 对齐）
     db.conn.execute("UPDATE tasks SET owner = CASE WHEN promised_by_ethan = 1 THEN 'ethan' ELSE 'mia' END WHERE owner IS NULL")
     db.conn.execute("UPDATE tasks SET status = CASE WHEN done = 1 THEN 'done' ELSE 'open' END WHERE status IS NULL")
@@ -338,6 +347,7 @@ def add_fact(db, dimension: str, statement: str, evidence_ids, subject: str = "s
         raise ValueError("status 只能是 active / candidate / invalid")
     if not (subject == "self" or re.fullmatch(r"person:\d+", subject)):
         raise ValueError("subject 只能是 self 或 person:<编号>")
+    ids = _drop_claimed(db, ids, statement)
     vis = visibility or level_for(db, dimension, None, tags)
     if subject != "self":
         vis = "private"  # 别人的事永远私密
@@ -430,7 +440,27 @@ def invalidate(db, fact_id: int, when: str = None, force: bool = False) -> bool:
     if not force and _locked(db, fact_id):
         ask_locked(db, fact_id, "这条可能不成立了")
         return False
-    db.conn.execute("UPDATE facts SET valid_to = ?, status = 'invalid' WHERE id = ?", (when or _now(), fact_id))
+    # 删掉的不改成“作废”：删除是墓碑，作废会把它从“删掉了”变回“你说不对”（Codex 评审 11-07 第 2 条，撤销时会走到这里）
+    db.conn.execute("UPDATE facts SET valid_to = ?, status = 'invalid' WHERE id = ? AND status != 'deleted'", (when or _now(), fact_id))
+    return True
+
+
+UNDO_COLS = ("valid_from", "valid_to", "superseded_by", "status", "locked", "confidence", "until", "until_cond", "last_confirmed_at")
+
+
+def undo_fact(db, fact_id: int, before: dict, after: dict = None) -> bool:
+    """撤销一次操作时把这条放回操作前的样子（mepage.reopen 用），返回动没动。
+    删除优先于撤销（Codex 评审 11-07 第 2 条）：删掉的、删后停用的不动；记了这次操作后样子（after）的，
+    现在和它对不上（后来又被删、被改过）也不动——只撤这次自己改的，不整段恢复旧快照。"""
+    cols = [c for c in (before or {}) if c in UNDO_COLS]
+    if not cols:
+        return False
+    now = db.conn.execute(f"SELECT status, {', '.join(cols)} FROM facts WHERE id = ?", (int(fact_id),)).fetchone()
+    if not now or now["status"] in ("deleted", "suspended"):
+        return False
+    if after is not None and any(now[c] != after.get(c) for c in cols if c in after):
+        return False
+    db.conn.execute(f"UPDATE facts SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?", (*(before[c] for c in cols), int(fact_id)))
     return True
 
 
@@ -498,6 +528,7 @@ MEM_RULES = {
     "changes_past": "“变了什么”只拿被新说法取代的旧说法；她说不对的（记错了）不算变化",
     "style_accepted": "写作规范只给她确认过的，草稿、有争议的都不给",
     "forget_scope": "删除时要找得到所有还没删掉的，含过时的、她说不对的、停用的",
+    "situation_whole": "情境的起止说法有删掉或删后停用的，整个情境不当“在做的事”：剩下的半截会被当成一直在做（Codex 评审 11-07 第 3 条）",
 }
 MEM_VIEWS = {
     "now":       {"states": {"current", "disputed"}, "rules": ("now_only",)},
@@ -516,6 +547,7 @@ MEM_VIEWS = {
     "changes":   {"states": {"past"}, "rules": ("changes_past",)},
     "style":     {"states": {"current"}, "rules": ("style_accepted",)},
     "deletable": {"states": set(MEM_STATES) - {"forgotten"}, "rules": ("forget_scope",)},
+    "situation_gone": {"states": {"forgotten", "suspended"}, "rules": ("situation_whole",)},
 }
 _FACT_GONE = {"deleted": "forgotten", "invalid": "retracted", "suspended": "suspended"}
 
@@ -556,6 +588,11 @@ def mem_ok(view: str, row, today=None, db=None) -> bool:
     return fact_state(row, today, db) in MEM_VIEWS[view]["states"]
 
 
+# 来源里有她删掉的原始记录的说法：查询一律当“删后停用”（Codex 评审 11-07 第 3 条：原生说法没有旧 facts 对照，遗忘漏掉或从备份恢复的中间态也挡住）
+_SOURCE_GONE = ("SELECT ss.statement_id FROM statement_sources ss JOIN evidence e ON e.id = ss.evidence_id "
+                "WHERE e.deleted_at IS NOT NULL")
+
+
 def _state_case(table: str, alias: str = "") -> tuple:
     """和 fact_state 同一份判断的 SQL（CASE 表达式），返回 (sql, 要几个“今天”参数)。"""
     a = f"{alias}." if alias else ""
@@ -563,7 +600,7 @@ def _state_case(table: str, alias: str = "") -> tuple:
     if table == "statements":
         return (f"(CASE WHEN {a}review IN ('forgotten', 'retracted') THEN {a}review "
                 f"WHEN {a}id IN (SELECT m.statement_id FROM fact_map m JOIN facts f ON f.id = m.fact_id "
-                f"WHERE f.status IN ('suspended', 'deleted', 'invalid')) THEN 'suspended' "
+                f"WHERE f.status IN ('suspended', 'deleted', 'invalid')) OR {a}id IN ({_SOURCE_GONE}) THEN 'suspended' "
                 f"WHEN {a}superseded_by IS NOT NULL OR ({a}valid_to IS NOT NULL AND {a}valid_to != '' AND substr({a}valid_to, 1, 10) <= ?) THEN 'past' "
                 f"WHEN {a}valid_from IS NOT NULL AND {a}valid_from != '' AND substr({a}valid_from, 1, 10) > ? THEN 'future' "
                 f"WHEN {until} THEN 'expired' "
@@ -598,8 +635,52 @@ TEMP_WORDS = (
 )
 
 
+# 说法里写了具体日子的：
+# 写到哪天就到那天，只写到哪个月就到那个月底；“从那时起 / 开始 / 以来”的是长期的，不算；毕业、出生、学历、入职离职这类背景不算
+DATE_DAY = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]|(\d{4})-(\d{1,2})-(\d{1,2})")
+DATE_MONTH = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d{1,2}\s*[日号])")
+LASTING = re.compile(r"(\d{4})\s*年(?:\s*\d{1,2}\s*月)?(?:\s*\d{1,2}\s*[日号])?\s*(?:起|开始|以来|之后|以后)|毕业|出生|生于|生日|本科|硕士|博士|学历|学位|"
+                     r"入职|离职|跳槽|工作经历|工作了|做过|创立|成立|注册了|结婚|离婚|搬到|定居")
+RECENT = re.compile(r"最近|近来|这阵子|这段时间|近期")  # 没写日子、只说最近：从说的那天起两周
+
+
+def _month_end(y: int, m: int):
+    from datetime import date as _date, timedelta as _td
+    nxt = _date(y + (m == 12), m % 12 + 1, 1)
+    return nxt - _td(days=1)
+
+
+def dated_until(text: str, since=None) -> str:
+    """按说法里写的日子算到哪天（最晚的那个）；长期的、背景的返回 None。"""
+    from datetime import date as _date, timedelta as _td
+    if not text or LASTING.search(text):
+        return None
+    ends = []
+    for m in DATE_DAY.finditer(text):
+        y, mo, d = (m.group(1), m.group(2), m.group(3)) if m.group(1) else (m.group(4), m.group(5), m.group(6))
+        try:
+            ends.append(_date(int(y), int(mo), int(d)))
+        except ValueError:
+            pass
+    for m in DATE_MONTH.finditer(text):
+        try:
+            ends.append(_month_end(int(m.group(1)), int(m.group(2))))
+        except ValueError:
+            pass
+    if ends:
+        return max(ends).isoformat()
+    if since and RECENT.search(text):
+        try:
+            d = since if isinstance(since, _date) else _date.fromisoformat(str(since)[:10])
+            return (d + _td(days=14)).isoformat()
+        except ValueError:
+            return None
+    return None
+
+
 def temp_until(text: str, since) -> str:
-    """一句说法要是明说了“今天 / 这几天 / 这周 / 这个月”，按说的那天算出预计到哪天；没说就是 None。
+    """一句说法要是明说了“今天 / 这几天 / 这周 / 这个月”，按说的那天算出预计到哪天；
+    没说这些、但写了具体日子或“最近”的，按 dated_until 算（11-07）；都没有就是 None。
     since：说这话的那天（date 或 'YYYY-MM-DD…'）。"""
     from datetime import date as _date, timedelta as _td
     if not text or not since:
@@ -615,12 +696,12 @@ def temp_until(text: str, since) -> str:
             elif span == "days":
                 end = d + _td(days=3)
             elif span == "week":
-                end = d + _td(days=6 - d.weekday())  # 到这周日
+                end = clock.week_end(d)  # 到这周日
             else:
                 nxt = (d.replace(day=28) + _td(days=4)).replace(day=1)
                 end = nxt - _td(days=1)  # 到月底
             return end.isoformat()
-    return None
+    return dated_until(text, since)
 
 
 def backfill_temp_until(db, dry_run: bool = False) -> list:
@@ -816,6 +897,29 @@ def _forgotten(db, source: str, source_ref: str) -> bool:
 is_forgotten = _forgotten
 
 
+def claim_print(statement: str) -> str:
+    """一句说法的指纹（不含原文）：去掉空白和标点再哈希，“她怕狗。”和“ 她怕狗”算同一句（Codex 评审 11-07 第 6 条）。"""
+    import hashlib
+    s = re.sub(r"[\W_]+", "", (statement or "").strip()[:60]).lower()
+    return hashlib.sha256(s.encode()).hexdigest()[:32]
+
+
+def _drop_claimed(db, ids, statement: str) -> list:
+    """“只删这条”留下的墓碑（来源指纹 + 说法指纹）：同一来源再抽出同一句不再记回来，这份来源不算它的依据；
+    依据全被挡掉就拒绝。别的来源照常算（她又说了一遍，按新来源对待，ontology-contracts.md 1.8 节）。"""
+    try:
+        fps = {r[0] for r in db.conn.execute("SELECT fp FROM forgotten_claims WHERE claim = ?", (claim_print(statement),))}
+    except sqlite3.OperationalError:
+        return ids
+    if not fps or not ids:
+        return ids
+    rows = db.conn.execute(f"SELECT id, source, source_ref FROM evidence WHERE id IN ({','.join('?' * len(ids))})", list(ids)).fetchall()
+    blocked = {r["id"] for r in rows if fingerprint(r["source"], r["source_ref"]) in fps}
+    if blocked and blocked >= set(ids):
+        raise Forgotten("这句她删过，同一来源不再记回来")
+    return [i for i in ids if i not in blocked]
+
+
 def try_evidence(db, source: str, source_ref: str, *a, **kw):
     """同 add_evidence，但她删掉过的来源返回 None（各导入入口用它，删过的不复活）。"""
     try:
@@ -835,6 +939,84 @@ def allow_reimport(db, source: str, source_ref: str, root=None) -> bool:
     return n > 0
 
 
+EVENT_GONE = "（已删除）"  # 事件的来源被删后标题换成这句：检索不收（memsearch.refresh），剩下的来源编号留着等重建
+
+
+def _claims_of(db, f) -> list:
+    """一条要删的条目的墓碑：[[来源指纹, 说法指纹], ...]，都不含原文。"""
+    if not f or not (f["statement"] or "").strip():
+        return []
+    ids = [int(i) for i in json.loads(f["evidence_ids"] or "[]")]
+    rows = db.conn.execute(f"SELECT source, source_ref FROM evidence WHERE id IN ({','.join('?' * len(ids)) or 'NULL'})", ids).fetchall()
+    claim = claim_print(f["statement"])
+    return [[fingerprint(r["source"], r["source_ref"]), claim] for r in rows]
+
+
+def _save_claims(db, claims, at: str) -> None:
+    for fp, claim in claims or []:
+        db.conn.execute("INSERT OR IGNORE INTO forgotten_claims (fp, claim, at) VALUES (?, ?, ?)", (fp, claim, at))
+
+
+def _forget_native(db, ev, now: str) -> dict:
+    """原生说法（add_situation 这类直接建的，没有旧 facts 对照）沿 statement_sources 处理（Codex 评审 11-07 第 3 条）。
+    只靠被删来源撑着的：标 forgotten、内容清空；还有别的来源的：指向被删来源的那行留着，查询按它算“删后停用”（_state_case），
+    和混合来源的事实同一规则；情境对象的说法全删光了，名字清空、对象标 forgotten（不然只剩名字的情境会被当成一直在做）。"""
+    out = {"statements_forgotten": [], "statements_suspended": [], "objects_forgotten": []}
+    if not ev or not db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'statement_sources'").fetchone():
+        return out
+    evl = sorted(int(i) for i in ev)
+    marks = ",".join("?" * len(evl))
+    sids = [r[0] for r in db.conn.execute(f"SELECT DISTINCT statement_id FROM statement_sources WHERE evidence_id IN ({marks}) "
+                                          "AND statement_id NOT IN (SELECT statement_id FROM fact_map)", evl)]
+    subjects = set()
+    for sid in sids:
+        left = db.conn.execute("SELECT COUNT(*) FROM statement_sources ss LEFT JOIN evidence e ON e.id = ss.evidence_id "
+                               "WHERE ss.statement_id = ? AND (ss.from_statement IS NOT NULL OR (ss.evidence_id IS NOT NULL "
+                               "AND e.id IS NOT NULL AND e.deleted_at IS NULL))", (sid,)).fetchone()[0]
+        if left:
+            out["statements_suspended"].append(sid)
+            continue
+        st = db.conn.execute("SELECT subject_id, review FROM statements WHERE id = ?", (sid,)).fetchone()
+        db.conn.execute("UPDATE statements SET review = 'forgotten', value_text = '', value_num = NULL, value_object = NULL, no_value = NULL, "
+                        "context = NULL, retracted_at = COALESCE(retracted_at, ?) WHERE id = ?", (now, sid))
+        db.conn.execute("INSERT INTO statement_changes (statement_id, field, old, new, at) VALUES (?, 'review', ?, 'forgotten', ?)",
+                        (sid, st["review"], now))
+        db.conn.execute("DELETE FROM statement_sources WHERE statement_id = ? AND evidence_id IS NOT NULL", (sid,))
+        db.conn.execute("INSERT INTO statement_sources (statement_id, role, source_unknown) VALUES (?, 'supports', 1)", (sid,))
+        out["statements_forgotten"].append(sid)
+        subjects.add(st["subject_id"])
+    for oid in sorted(subjects):
+        if not db.conn.execute("SELECT 1 FROM object_types WHERE object_id = ? AND type = 'situation'", (oid,)).fetchone():
+            continue
+        if db.conn.execute("SELECT 1 FROM statements WHERE subject_id = ? AND review != 'forgotten'", (oid,)).fetchone():
+            continue
+        db.conn.execute("UPDATE objects SET name = '', status = 'forgotten' WHERE id = ?", (oid,))
+        db.conn.execute("DELETE FROM aliases WHERE object_id = ?", (oid,))
+        out["objects_forgotten"].append(oid)
+    return out
+
+
+def sweep_forgotten(db) -> dict:
+    """补做以前的删除漏掉的（migrations/20261107_forget_leftovers.py 跑一次）：来源早就删了，
+    但混合来源的事件、原生说法和情境当时没处理到（Codex 评审 11-07 第 3、4 条）。可重复跑。"""
+    ensure(db)
+    gone = {r[0] for r in db.conn.execute("SELECT id FROM evidence WHERE deleted_at IS NOT NULL")}
+    out = {"events": 0}
+    for e in db.conn.execute("SELECT id, title, evidence_ids FROM events").fetchall():
+        ids = set(json.loads(e["evidence_ids"] or "[]"))
+        if ids & gone:
+            db.conn.execute("UPDATE events SET title = ?, summary = NULL, people = '[]', evidence_ids = ? WHERE id = ?",
+                            (EVENT_GONE, json.dumps(sorted(ids - gone)), e["id"]))
+            out["events"] += 1
+            if db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'mem_docs'").fetchone():
+                db.conn.execute("DELETE FROM mem_docs WHERE key = ?", (f"event:{e['id']}",))
+                db.conn.execute("DELETE FROM mem_fts WHERE key = ?", (f"event:{e['id']}",))
+    native = _forget_native(db, gone, _now())
+    out.update({k: len(v) for k, v in native.items()})
+    tx.commit(db)
+    return out
+
+
 def forget(db, evidence_ids=(), fact_ids=(), root=None) -> dict:
     """删除她点名的证据和条目，连带处理（ontology.md 7.3 节、ontology-contracts.md 1.8 节）。只能在她勾选确认后调用。
     返回删除报告（只有编号和数量，不含内容）。
@@ -848,19 +1030,23 @@ def forget(db, evidence_ids=(), fact_ids=(), root=None) -> dict:
     ensure(db)
     now = _now()
     ev = {int(i) for i in evidence_ids}
-    report = {"evidence": [], "facts_deleted": [], "facts_suspended": [], "events_deleted": [], "profile_cleared": [],
-              "history_removed": 0, "index_removed": 0}
+    report = {"evidence": [], "facts_deleted": [], "facts_suspended": [], "events_deleted": [], "events_suspended": [],
+              "profile_cleared": [], "history_removed": 0, "index_removed": 0}
     rows = db.conn.execute(f"SELECT id, source, source_ref FROM evidence WHERE id IN ({','.join('?' * len(ev)) or 'NULL'})", list(ev)).fetchall()
+    live = db.conn.execute("SELECT id, statement, evidence_ids FROM facts WHERE status != 'deleted'").fetchall()
     lines = [{"fp": fingerprint(r["source"], r["source_ref"]), "source": r["source"], "allow": 0, "at": now} for r in rows]
-    lines += [{"fact": int(i), "at": now} for i in fact_ids]  # 只删条目的也记下（恢复后条目编号不变，按编号重做）
+    # 只删条目的也记下（恢复后条目编号不变，按编号重做），连同“来源 + 这句”的墓碑：同一来源再抽出同一句不再记回来（第 6 条）
+    lines += [{"fact": int(i), "claims": _claims_of(db, next((f for f in live if f["id"] == int(i)), None)), "at": now} for i in fact_ids]
     report["log_saved"] = _append_log(root, lines) if root and lines else (None if not root else 0)
     for r, line in zip(rows, lines):
         db.conn.execute("INSERT OR REPLACE INTO forgotten (fp, source, at, allow_reimport) VALUES (?, ?, ?, 0)", (line["fp"], r["source"], now))
         db.conn.execute("UPDATE evidence SET text = NULL, path = NULL, participants = '[]', deleted_at = ? WHERE id = ?", (now, r["id"]))
         report["evidence"].append(r["id"])
+    for line in lines[len(rows):]:
+        _save_claims(db, line["claims"], now)
     dead = set(int(i) for i in fact_ids)
     paused = set()
-    for f in db.conn.execute("SELECT id, evidence_ids FROM facts WHERE status != 'deleted'").fetchall():
+    for f in live:
         ids = set(json.loads(f["evidence_ids"] or "[]"))
         if not ids & ev or f["id"] in dead:
             continue
@@ -888,11 +1074,17 @@ def forget(db, evidence_ids=(), fact_ids=(), root=None) -> dict:
                         "WHERE id = ?", (fid,))
         report["facts_deleted"].append(fid)
     report["facts_suspended"] = sorted(paused)
+    # 事件：任何一份来源被删，标题、摘要、人都清掉（可能就是从删掉的那份来的），和混合来源的事实同一规则（Codex 评审 11-07 第 4 条）；
+    # 还有别的来源的留着剩下的来源编号，等重建
     for e in db.conn.execute("SELECT id, evidence_ids FROM events").fetchall():
         ids = set(json.loads(e["evidence_ids"] or "[]"))
-        if ids and ids <= ev:
-            db.conn.execute("UPDATE events SET title = '（已删除）', summary = NULL, people = '[]', evidence_ids = '[]' WHERE id = ?", (e["id"],))
-            report["events_deleted"].append(e["id"])
+        if not ids & ev:
+            continue
+        left = sorted(ids - ev)
+        db.conn.execute("UPDATE events SET title = ?, summary = NULL, people = '[]', evidence_ids = ? WHERE id = ?",
+                        (EVENT_GONE, json.dumps(left), e["id"]))
+        report["events_suspended" if left else "events_deleted"].append(e["id"])
+    report.update(_forget_native(db, ev, now))
     touched = dead | paused
     for b in db.conn.execute("SELECT dimension, fact_ids FROM profile_blocks").fetchall():
         if set(json.loads(b["fact_ids"] or "[]")) & touched:
@@ -902,7 +1094,7 @@ def forget(db, evidence_ids=(), fact_ids=(), root=None) -> dict:
             report["history_removed"] += db.conn.execute("DELETE FROM profile_history WHERE dimension = ?", (b["dimension"],)).rowcount
     if db.conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'mem_docs'").fetchone():
         keys = [f"ev:{i}" for i in report["evidence"]] + [f"fact:{i}" for i in sorted(touched)] + \
-               [f"event:{i}" for i in report["events_deleted"]]
+               [f"event:{i}" for i in report["events_deleted"] + report["events_suspended"]]
         for k in keys:
             report["index_removed"] += db.conn.execute("DELETE FROM mem_docs WHERE key = ?", (k,)).rowcount
             db.conn.execute("DELETE FROM mem_fts WHERE key = ?", (k,))
@@ -913,7 +1105,7 @@ def forget(db, evidence_ids=(), fact_ids=(), root=None) -> dict:
     from . import relations  # 人物卡里从这些记录整理出来的字段清空等重做（她锁住的不动，Codex 评审 11-05 第 9 条）
     report["people_cleared"] = relations.forget_evidence(db, report["evidence"])
     report["still_may_remain"] = ["她自己写过的日记和批注（不自动改，请她自己看）", "加密备份（按保留期自然过期）", "已经发给模型服务商的请求（不在我们控制里）"]
-    if paused:
+    if paused or report["events_suspended"] or report["statements_suspended"]:
         report["still_may_remain"].insert(0, "还有别的依据的条目先停用了，要她或每周复盘看剩下的依据还够不够")
     db.conn.execute("INSERT INTO deletion_requests (scope, report, at) VALUES (?, ?, ?)",
                     (json.dumps({"evidence": sorted(ev), "facts": sorted(int(i) for i in fact_ids)}), json.dumps(report, ensure_ascii=False), now))
@@ -944,7 +1136,7 @@ def approve_disclosure(db, text: str, quote: str, to_users=PUBLIC_USERS, dimensi
                        once: bool = False, to_whom: str = None, statement_id: int = None, fact_id: int = None) -> int:
     """她逐条批准的一句对外表达（ontology.md 6.1 节）。
     身体、钱、关系、性格这类默认不对外；她点头一句就只放这一句、这一版，对谁、到什么时候、她的原话都记下。
-    同类的别的内容照样不说，主页助手 也不能顺着这句往下推（检索只给这句原文）。
+    同类的别的内容照样不说，Days 也不能顺着这句往下推（检索只给这句原文）。
     两种：once=True 是“这次对这个人可以说”（to_whom 写对象），说过一次就失效；
     长期的不自动到期，RENEW_DAYS 天后进“待你定”问一次要不要续（renewals_due）。"""
     ensure(db)
@@ -1030,7 +1222,7 @@ def unclaim_disclosure(db, disclosure_id: int, stamp: str) -> bool:
 
 
 def mark_disclosure_used(db, disclosure_id: int) -> None:
-    """主页助手 真的对外说了这句：记下时间；“这次可以说”的从此失效。"""
+    """Days 真的对外说了这句：记下时间；“这次可以说”的从此失效。"""
     ensure(db)
     db.conn.execute("UPDATE disclosures SET used_at = COALESCE(used_at, ?) WHERE id = ?", (_now(), disclosure_id))
     tx.commit(db)
@@ -1300,6 +1492,7 @@ def reapply_deletions(db, root, may_hold: bool = True) -> dict:
     for d in sorted(entries, key=lambda d: d.get("at") or ""):
         if "fact" in d:
             facts.add(int(d["fact"]))
+            _save_claims(db, d.get("claims"), d.get("at") or _now())  # “只删这条”的墓碑也补回来（第 6 条）
         elif "fp" in d:
             state[d["fp"]] = {**state.get(d["fp"], {}), **d}
     for fp, d in state.items():
@@ -1365,6 +1558,80 @@ if __name__ == "__main__":
     main()
 
 
+# ---------- 规矩、在做的事、住处：从普通说法整理成结构（ethan/structure.py，“按这个做”）----------
+STRUCT_HINT = re.compile(r"每周|每天|每月|不超过|以后|一律|必须|只能|不要|不用|别再|规矩|原则|标准|要求|先.{1,8}再|"
+                         r"在读|交换|读书|上班|在做|在开发|创业|待到|到.{1,4}月|项目|住在|搬到|在伦敦|在深圳|定居")
+
+
+def structure_candidates(db, since_id: int = 0, limit: int = 240) -> list:
+    """她本人说的、现在还算数、关于她自己的说法里，像规矩 / 在做的事 / 住处的（关键词先挑，模型再判）。新的在前。"""
+    ensure(db)
+    from .clock import her_today
+    today = her_today().isoformat()
+    rows = db.conn.execute("SELECT id, statement FROM facts WHERE status = 'active' AND superseded_by IS NULL AND subject = 'self' "
+                           "AND COALESCE(source_kind, 'her_words') = 'her_words' AND (until IS NULL OR until >= ?) AND id > ? "
+                           "ORDER BY id DESC", (today, int(since_id))).fetchall()
+    return [{"id": r["id"], "statement": r["statement"]} for r in rows if STRUCT_HINT.search(r["statement"] or "")][:limit]
+
+
+def fact_evidence(db, fid: int) -> list:
+    """这条说法的出处（证据编号），给从它整理出来的新记录当出处。"""
+    r = db.conn.execute("SELECT evidence_ids FROM facts WHERE id = ?", (int(fid),)).fetchone()
+    return json.loads(r["evidence_ids"] or "[]") if r else []
+
+
+def add_situation(db, name: str, start: str = None, end: str = None, fid: int = None) -> int:
+    """她确认的“在做的事”：建一个情境对象，她是参与者，写开始 / 结束日（第 1 题 whereabouts_now 读）。返回对象编号。"""
+    from . import ontology
+    ensure(db)
+    ontology.ensure(db)
+    me = ontology.self_id(db)
+    now = _now()
+    sid = db.conn.execute("INSERT INTO objects (name, created_at) VALUES (?, ?)", (name.strip()[:60], now)).lastrowid
+    db.conn.execute("INSERT INTO object_types (object_id, type) VALUES (?, 'situation')", (sid,))
+    if me:
+        db.conn.execute("INSERT OR IGNORE INTO situation_roles (situation_id, object_id, role) VALUES (?, ?, 'participant')", (sid, me))
+    evs = fact_evidence(db, fid) if fid else []
+    for prop, val in (("situation_start", start), ("situation_end", end)):
+        if not val:
+            continue
+        st = db.conn.execute("INSERT INTO statements (subject_id, property, value_text, kind, said_by, valid_from, recorded_at, review, "
+                             "visibility, locked) VALUES (?, ?, ?, 'fact', 'her_words', ?, ?, 'accepted', 'private', 1)",
+                             (sid, prop, val, start, now)).lastrowid
+        for e in evs:
+            db.conn.execute("INSERT INTO statement_sources (statement_id, evidence_id, role) VALUES (?, ?, 'supports')", (st, int(e)))
+    db.conn.commit()
+    return sid
+
+
+def repoint_person(db, drop: int, keep: int, alias: str = None):
+    """关系页合并两张人物卡：关于 drop 的记忆改指 keep——旧 facts 的主语、说法的主语和对象、人物卡对应的对象；
+    drop 的名字记成 keep 对象的别名。不提交：跟着调用方的事务走。"""
+    from . import ontology
+    ensure(db)
+    db.conn.execute("UPDATE facts SET subject = ? WHERE subject = ?", (f"person:{keep}", f"person:{drop}"))
+    try:
+        ko = ontology.object_for_ref(db, f"person:{keep}")
+        dobj = db.conn.execute("SELECT object_id FROM object_refs WHERE ref = ?", (f"person:{drop}",)).fetchone()
+        if ko and dobj and dobj[0] != ko:
+            db.conn.execute("UPDATE statements SET subject_id = ? WHERE subject_id = ?", (ko, dobj[0]))
+            db.conn.execute("UPDATE statements SET value_object = ? WHERE value_object = ?", (ko, dobj[0]))
+            db.conn.execute("UPDATE object_refs SET object_id = ? WHERE ref = ?", (ko, f"person:{drop}"))
+        if ko and alias:
+            db.conn.execute("INSERT INTO aliases (alias, object_id, source) VALUES (?, ?, ?)", (alias, ko, "她在关系页合并"))
+    except sqlite3.OperationalError as e:  # 新骨架的表没建（老库）：只改旧 facts
+        print(f"[lifebase] 合并人物卡时说法没改指：{e}", flush=True)
+
+
+MIRROR_TRIGGERS = ("facts_mirror_ins_v5", "facts_mirror_upd_v5")  # 当前版；升版时改这里和 MIRROR_SQL
+
+
+def stale_mirror_triggers(db) -> list:
+    """facts 上不是当前版的双写触发器（facts_mirror_*）。"""
+    return [r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'facts' "
+                                          "AND name LIKE 'facts_mirror%' ORDER BY name") if r[0] not in MIRROR_TRIGGERS]
+
+
 RELAY_SOURCES = ("grok", "agent")  # 转述来的（docs/design/ontology.md 7.1 节）：不算独立证据
 
 
@@ -1412,10 +1679,12 @@ END;
 
 
 def statement_gone(db, statement_id) -> bool:
-    """这条说法对应的旧 facts 是不是删了、作废了或删后停用了。"""
+    """这条说法对应的旧 facts 是不是删了、作废了或删后停用了；或者它的来源里有她删掉的
+    （原生说法没有旧 facts 对照，Codex 评审 11-07 第 3 条）。"""
     return bool(statement_id) and bool(db.conn.execute(
         "SELECT 1 FROM fact_map m JOIN facts f ON f.id = m.fact_id WHERE m.statement_id = ? "
-        "AND f.status IN ('suspended', 'deleted', 'invalid')", (statement_id,)).fetchone())
+        "AND f.status IN ('suspended', 'deleted', 'invalid')", (statement_id,)).fetchone() or db.conn.execute(
+        f"SELECT 1 WHERE ? IN ({_SOURCE_GONE})", (statement_id,)).fetchone())
 
 
 REVIEW_OF = {"active": "accepted", "invalid": "retracted", "deleted": "forgotten"}  # 其余（候选、停用）都是 candidate
@@ -1500,6 +1769,9 @@ def reconcile_statements(db) -> list:
     except sqlite3.OperationalError:
         return []
     out = []
+    srcs = {}  # 出处一次取完（11-07：原来每条说法查一次，一万多条要 18 秒，设置页“系统体检”一直加载不出来）
+    for sid, eid in db.conn.execute("SELECT statement_id, evidence_id FROM statement_sources WHERE evidence_id IS NOT NULL"):
+        srcs.setdefault(sid, set()).add(eid)
     for r in rows:
         diff = []
         if (r["statement"] or "") != (r["value_text"] or ""):
@@ -1512,7 +1784,7 @@ def reconcile_statements(db) -> list:
             diff.append("权限")
         if (r["prop"] or "dim:" + (r["dimension"] or "")) != r["property"]:
             diff.append("属性")
-        src = {x[0] for x in db.conn.execute("SELECT evidence_id FROM statement_sources WHERE statement_id = ? AND evidence_id IS NOT NULL", (r["sid"],))}
+        src = srcs.get(r["sid"], set())
         if src != set(json.loads(r["evidence_ids"] or "[]")):
             diff.append("出处")
         if diff:
@@ -1544,6 +1816,9 @@ def integrity_problems(db) -> list:
         out.append(f"删除请求 #{rid} 的删除记录没写到库外，从备份恢复时可能复活")
     if on_hold(db):
         out.append(f"记忆暂停中：{on_hold(db)}（她确认后 --release-hold 放开）")
+    stale = stale_mirror_triggers(db)
+    if stale:
+        out.append(f"旧版双写触发器还在：{'、'.join(stale)}（一条事实会写出两条说法）")
     out += reconcile_statements(db)
     return out
 
@@ -1564,7 +1839,7 @@ def write_behavior(db, day=None, weeks: int = 4) -> dict:
     from . import clock, onto_query
     ensure(db)
     day = day or clock.her_today()
-    week = (day - timedelta(days=day.weekday())).isoformat()
+    week = clock.week_start(day).isoformat()
     out = {"written": 0, "superseded": 0, "skipped": 0}
     from . import runlog
     try:
@@ -1644,8 +1919,25 @@ FACT_SOURCES = {
 }
 
 
-def source_health(db, now: datetime = None, registry=SOURCE_REGISTRY) -> list:
-    """每个来源：最近一条、隔了几天、本月贡献了几条说法、是不是断档。给每晚体检和“我”页的来源一栏用。"""
+_HEALTH_CACHE = {}
+
+
+def source_health(db, now: datetime = None, registry=SOURCE_REGISTRY, cached: bool = False) -> list:
+    """每个来源：最近一条、隔了几天、本月贡献了几条说法、是不是断档。给每晚体检和“我”页的来源一栏用。
+    cached=True（设置页、“我”页）：同一个库 10 分钟内复用上一次（11-07：设置页一次要算 42 秒，这一项算两遍占 6 秒）。"""
+    import time
+    if cached and registry is SOURCE_REGISTRY:
+        try:
+            key = db.conn.execute("PRAGMA database_list").fetchone()[2] or None
+        except Exception:
+            key = None
+        hit = _HEALTH_CACHE.get(key) if key else None
+        if hit and time.time() - hit[0] < STALE_TTL:
+            return [dict(x) for x in hit[1]]
+        out = source_health(db, now, registry)
+        if key:
+            _HEALTH_CACHE[key] = (time.time(), out)
+        return [dict(x) for x in out]
     ensure(db)
     now = now or datetime.now(timezone.utc)
     month = now.strftime("%Y-%m")
@@ -1684,9 +1976,13 @@ def source_health(db, now: datetime = None, registry=SOURCE_REGISTRY) -> list:
     return out
 
 
-def stale_sources(db, now: datetime = None) -> list:
-    """体检用：断档的来源，一句话一个。"""
-    return [f"{s['code']} {s['name']}：{s['days']} 天没有新记录（平时 {s['every']} 天内会有）" for s in source_health(db, now) if s["state"] == "stale"]
+STALE_TTL = 600  # 来源健康 10 分钟内复用
+
+
+def stale_sources(db, now: datetime = None, cached: bool = False) -> list:
+    """体检用：断档的来源，一句话一个。cached=True（“我”页）：同一个库 10 分钟内复用；体检照旧每次现算。"""
+    return [f"{s['code']} {s['name']}：{s['days']} 天没有新记录（平时 {s['every']} 天内会有）"
+            for s in source_health(db, now, cached=cached) if s["state"] == "stale"]
 
 
 

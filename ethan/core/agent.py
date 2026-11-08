@@ -5,7 +5,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from .. import achievements, brain, checkup, finance, focus, lifelog, domains, inbox, life, links, nudges, photos, prep, quests, surprises, taskrules, training, whereabouts, events, files, extract, memsearch, memusers, portrait, publicsite, perks, desk, imapmail, mepage, lifebase, deeds, workaholic, lessons, weekreview, nextseason
+from .. import achievements, brain, checkup, english, finance, focus, lifelog, domains, inbox, life, links, nudges, photos, prep, quests, surprises, taskrules, training, whereabouts, events, files, extract, memsearch, memusers, portrait, publicsite, perks, desk, imapmail, mepage, lifebase, deeds, workaholic, lessons, weekreview, nextseason
 from ..clock import her_now, her_tz, time_brief
 from ..memory import MemoryStore
 from ..nightly import SECTION as nightly_SECTION
@@ -20,6 +20,7 @@ GROK_FAILED = "【系统提醒】刚才要交给 Grok Bot 的事没发出去，�
 REACT = re.compile(r"\[REACT\s*([^\]]*)\]")
 SILENT = "[不回]"
 TOPIC = re.compile(r"\[(避开|爱聊)\s*([^\]]+)\]")
+LANG = re.compile(r"\[语言\s*(中文|英文|跟着她)\s*\]")  # 她要求一直用某种语言回，记在设置 chat_lang
 TOPICS_PAGE = "topics"
 RECORD = re.compile(r"\[(待办|答应|心愿)\s+([^\]]+)\]")
 # 系统按时自动做的事：三餐、训练、采购清单、每天的计划（ethan/weekly.py、planner.py），小伴 不再记成“答应”
@@ -85,8 +86,35 @@ FUNNEL = re.compile(r"\[漏斗\s*[#＃]\s*(\d+)\s+(\S+)\s*([^\]]*)\]")
 NOT_RECORDED = "【系统提醒】没记上：{what}"
 CHECKIN = re.compile(r"\[打卡\s+([^\]]+?)\s*\]")
 # 她这句话里明确叫 小伴 帮她打卡、勾掉（其他的她自己点，除非她明确要求 小伴 帮她点）
-ASK_TICK = re.compile(r"(帮我|替我|给我|你帮|帮忙|麻烦你)[^。！？!?\n]{0,12}(打卡|打个卡|打上卡|勾掉|勾上|勾一下|勾了|打勾|打个勾|标.{0,2}完成|记.{0,2}完成|算.{0,2}完成|点.{0,2}完成)")
-QUEST = re.compile(r"\[主线\s+(定稿|加|删)\s*[#＃]\s*(\d+)\s*([SML])?\s*([^\]]*)\]")
+ASK_TICK = re.compile(r"(帮我|替我|给我|你帮|帮忙|麻烦你)[^。！？!?\n]{0,12}(打卡|打个卡|打上卡|勾掉|勾上|勾一下|勾了|打勾|打个勾|标.{0,2}完成|记.{0,2}完成|算.{0,2}完成|点.{0,2}完成"
+                      r"|记上|记一下|记一笔|记下来|记进去)")  # 11-06：“昨天在 Grok 练了英语 40 分钟，帮我记上”也算明确叫他记
+# [打卡 名称 昨天 40 分钟]：日子只认今天、昨天（和工作台“补昨天的卡”一样只能补前一天）；分钟数只给英语陪练记时长
+CHECKIN_TAIL = re.compile(r"^(.+?)(?:\s+(今天|昨天|\d{4}-\d{2}-\d{2}))?(?:\s*(\d{1,3})\s*分钟)?$")
+
+
+def checkin_target(db, body: str, today: date) -> tuple:
+    """[打卡 …] 里写的是哪项、哪天、几分钟：(坚持或 None, 日子或 None, 分钟或 None)。
+    先按整串找（“睡前拉伸 5 分钟”本身就带分钟）；找不到再拆出末尾的日子和分钟。日子只认今天和昨天。"""
+    body = body.strip()
+    h = quests.habit_by_title(db, body)
+    if h is not None:
+        return h, today, None
+    m = CHECKIN_TAIL.match(body)
+    if not m:
+        return None, None, None
+    h = quests.habit_by_title(db, m.group(1).strip())
+    if h is None:
+        return None, None, None
+    when = m.group(2)
+    day = today if when in (None, "今天") else today - timedelta(days=1) if when == "昨天" else None
+    if day is None:
+        try:
+            got = date.fromisoformat(when)
+        except ValueError:
+            got = None
+        day = got if got in (today, today - timedelta(days=1)) else None
+    return h, day, int(m.group(3)) if m.group(3) else None
+QUEST = re.compile(r"\[主线\s+(定稿|加|删)\s*[#＃]\s*(\d+)\s*(XL|[SML])?\s*([^\]]*)\]")
 HABIT = re.compile(r"\[坚持\s+(加|删)\s+([^\]]+?)\s*\]")
 SURPRISE = re.compile(r"\[惊喜\s*[#＃]\s*(\d+)\s+已兑现\s*([^\]]*)\]")
 GAME_NOTE = "🎮 +{gain} 经验 · 积分 {balance} · {title} Lv{level}"
@@ -129,6 +157,10 @@ def build_system_prompt(persona: str, ctx: dict, can_delegate: bool = False, can
                  "大多数时候只发 1 行，偶尔 2 行，真有话说才 3 行；不要每次都凑满，像真人一样长短不一。"
                  "很多时候一句就够，语气可以平淡随意，不用每句都情绪饱满、加感叹号和表情；热烈留给真正值得的时刻。"
                  "一次只接一个话头：顺着她最在意的那件事往下聊，最多问一个问题，不要同时抛出好几个新话题让她不知道回哪个。")
+    lang = ctx.get("chat_lang") or "跟着她"
+    parts.append("语言：" + ("她要求你一直用英文回，直到她改口。" if lang == "英文" else "她要求你一直用中文回，直到她改口。" if lang == "中文"
+                 else "她用英文说你就用英文回，用中文说就用中文回；别人（比如她室友 Emma）跟你说英文，也用英文回。")
+                 + "她让你以后一直用某种语言、或者恢复跟着她说的切换时，在回复末尾加 [语言 英文] / [语言 中文] / [语言 跟着她]（不会发给她）。")
     parts.append("她发来的语音已转成文字，标注为【语音】；图片和视频画面会给出文件路径，"
                  "用 Read 工具打开看，再像真人一样自然回应看到的内容，不要说“我看不了”。")
     parts.append("看她的反应决定聊什么：她回得很短、敷衍、说不记得、不接你的问题、自己岔开，就是不想聊这个，"
@@ -298,10 +330,12 @@ def build_system_prompt(persona: str, ctx: dict, can_delegate: bool = False, can
                   "经验和积分由系统记：做完一件事同时得经验（升级用，只涨不减）和同样多的积分（兑换惊喜用，兑换会花掉）；你不要自己报分数或许诺给分。"
                   "她的待办、主线、支线、日常、周常做没做完，都由她自己在工作台上勾，你不替她勾、不替她打卡；"
                   "她说做完了，夸她、提醒她顺手在工作台勾一下就好，也可以加 [结果 #编号 完成] 留个记录（只记下，不会替她勾）。"
-                  "例外：她这句话里明确叫你帮她打卡或勾掉（比如“帮我把训练打个卡”“帮我勾掉 xx”），才用 [打卡 坚持名称] 或 [结果 #计划编号 完成]，"
+                  "例外：她这句话里明确叫你帮她打卡或勾掉（比如“帮我把训练打个卡”“帮我勾掉 xx”“帮我记上”），才用 [打卡 坚持名称] 或 [结果 #计划编号 完成]，"
+                  "补昨天的写 [打卡 坚持名称 昨天]（只能补今天和昨天）。英语陪练她在 Grok App 里练的、服务器看不到（Grok 没发回报），"
+                  "她说“昨天在 Grok 练了英语 40 分钟，帮我记上”就写 [打卡 英语陪练（Grok） 昨天 40 分钟]；她没叫你记就提醒她在工作台周常里勾一下。"
                   "系统核对她原话里确实这么说了才会执行；她只是说做完了、没叫你点，就不要用。她想加或去掉一项坚持，加 [坚持 加 名称] 或 [坚持 删 名称]。"
                   "主线标着“待她过目”的，是系统第一次拆的草稿：找合适的时候把这个目标的整串步骤发给她看，"
-                  "她要加一步用 [主线 加 #目标编号 S/M/L 标题]，删一步用 [主线 删 #任务编号]，她说可以了用 [主线 定稿 #目标编号]。"
+                  "她要加一步用 [主线 加 #目标编号 S/M/L/XL 标题]（S 一小时内、M 半天、L 一两天、XL 好几天；不写按标题估），删一步用 [主线 删 #任务编号]，她说可以了用 [主线 定稿 #目标编号]。"
                   "夸她的时候多夸她坚持的过程和她正在成为的人，不只夸分数；漏了不责备。"]
         if g.get("focus_now") or g.get("focus_wait"):
             now_f, wait_f = g.get("focus_now"), g.get("focus_wait")
@@ -487,6 +521,7 @@ class Ethan:
         records = ctx["recent_messages"][:-1] if exclude_last else ctx["recent_messages"]
         ctx["time"] = time_brief(records, self.settings, now)
         ctx["life"] = life.chat_context(self.store.wiki, self.settings, now)
+        ctx["chat_lang"] = self.settings.get("chat_lang", "跟着她") if self.settings is not None else "跟着她"
         try:  # 今天想教她的知识点、到时候该复习的（ethan/lessons.py）
             ctx["lessons"] = lessons.chat_context(self.store.db, today)
         except Exception:
@@ -752,12 +787,16 @@ class Ethan:
                 failed.append(f"#{goal_id} 的漏斗没有“{step}”这一步")
         failed += training.record(db, text, today)  # 训练组数也只记数，打卡她自己点
         # [打卡]：她明确叫 小伴 帮她打卡才执行，否则只从回复里去掉
-        for name in CHECKIN.findall(text) if asked else ():
-            h = quests.habit_by_title(db, name)
+        for body in CHECKIN.findall(text) if asked else ():
+            h, day, minutes = checkin_target(db, body, today)
             if h is None:
-                failed.append(f"没有“{name}”这项坚持")
+                failed.append(f"没有“{body}”这项坚持")
+            elif day is None:
+                failed.append(f"“{body}”只能补今天或昨天的")
             else:
-                quests.check_habit(db, h["id"], today)
+                quests.check_habit(db, h["id"], day)
+                if minutes is not None and h["title"] == english.HABIT:  # Grok App 里练的：按她说的分钟数记一次
+                    english.record_said(db, day, minutes)
         for action, name in HABIT.findall(text):
             if action == "加":
                 quests.add_habit(db, name, "weekly" if "每周" in name else "daily")
@@ -772,7 +811,7 @@ class Ethan:
                 if db.goal_exists(num) and title.strip():
                     seq = db.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM tasks WHERE goal_id = ? AND quest = 'main'",
                                           (num,)).fetchone()[0]
-                    ids = quests.add_breakdown(db, num, [{"title": title.strip(), "size": size or "M"}],
+                    ids = quests.add_breakdown(db, num, [{"title": title.strip(), "size": size or None}],
                                                draft=bool(db.conn.execute(
                                                    "SELECT 1 FROM tasks WHERE goal_id = ? AND draft = 1", (num,)).fetchone()))
                     db.conn.execute("UPDATE tasks SET seq = ? WHERE id = ?", (seq + 1, ids[0]))
@@ -811,6 +850,9 @@ class Ethan:
         for fb in nextseason.note(db, text):  # 她对下季草稿的意见：后台按意见重写
             getattr(self, "season_kick", nextseason.kick)(self.store.root, fb)
         whereabouts.note(db, text)
+        m = LANG.search(text)
+        if m and self.settings is not None:
+            self.settings.set("chat_lang", m.group(1))
         events.note_chat(db, text)  # 以后某天的约（订位等），当天排计划会避开，日历由定时任务写
         moved = events.move_items(db, text)  # 她点头挪开撞了的训练等
         if moved:
@@ -877,7 +919,7 @@ class Ethan:
             else:
                 from .. import naming
                 content = naming.title(content)  # 标题式（docs/design/ui-spec.md 第 5 节）
-                tid = db.add_task(content, due=due, goal_id=goal_id, promised_by_ethan=kind == "答应")
+                tid = taskrules.add(db, content, due=due, goal_id=goal_id, promised_by_ethan=kind == "答应")
                 if at and due:
                     prep.set_promise_at(db, tid, f"{due}T{int(at.group(2)):02d}:{at.group(3)}")
                 if due and WHEN_NOT.search(content):  # “11/12 前没出签就催问”：到那天才做，之前不进今日任务
@@ -957,6 +999,9 @@ def said_before(raw, days: int = 7, limit: int = 12) -> str:
 SPACE = re.compile(r"\s+")
 
 
+STRAY_MARK = re.compile(r"[\[【][\u4e00-\u9fffA-Za-z]{1,8}\s*[#＃]\d+[^\]】\n]{0,40}[\]】]")
+
+
 def parse_reply(text: str) -> dict:
     voice = [v.strip() for v in VOICE.findall(text) if v.strip()]
     reacts = [r.strip() for r in REACT.findall(text)]
@@ -964,7 +1009,7 @@ def parse_reply(text: str) -> dict:
     text = GROK.sub("", text)
     shots = photos.parse(text)
     text = photos.strip(text)
-    rest = RECORD.sub("", TOPIC.sub("", REACT.sub("", VOICE.sub("", text)))).replace(SILENT, "")
+    rest = LANG.sub("", RECORD.sub("", TOPIC.sub("", REACT.sub("", VOICE.sub("", text))))).replace(SILENT, "")
     rest = lessons.strip(workaholic.strip(deeds.strip(mepage.strip(memusers.strip(desk.strip_outbox(MAIL_LOOKUP.sub("", rest)))))))
     rest = perks.strip(publicsite.strip(CONFIRM.sub("", LOOKUP.sub("", FEEDBACK.sub("", PROGRESS.sub("", rest))))))
     rest = FUNNEL.sub("", COUNT.sub("", WEIGHT.sub("", RESULT.sub("", DONE_OK.sub("", DONE_UNDO.sub("", TASK_EDIT.sub("", RELEASE.sub("", rest))))))))
@@ -972,5 +1017,10 @@ def parse_reply(text: str) -> dict:
     rest = nextseason.strip(weekreview.strip(rest))
     rest = events.strip(whereabouts.strip(focus.strip(SURPRISE.sub("", HABIT.sub("", QUEST.sub("", CHECKIN.sub("", rest)))))))
     rest = finance.strip(lifelog.strip(prep.CHAT_MARK.sub("", TIMESTAMP.sub("", life.strip_marks(rest)))))
+    # 兜底：上面都没认出、但长得像系统记号的（“[几个字 #编号 …]”），一律不发给她（——小伴 自己编了个
+    # 系统不认的 [准备 #240 问了]，原样发了出去）。记一笔日志，好补上这个记号
+    for left in STRAY_MARK.findall(rest):
+        print(f"[agent] 没认出的记号，没发给她：{left[:60]}", flush=True)
+    rest = STRAY_MARK.sub("", rest)
     return {"bubbles": limit_bubbles(split_bubbles(rest)), "voice": voice,
             "react": (reacts[-1] or "❤") if reacts else None, "delegated": delegated, **shots}

@@ -158,6 +158,11 @@ EDITED = HER[1]
 HER_SQL = "source IN (" + ", ".join(f"'{s}'" for s in HER) + ")"
 
 
+def who_wrote(row: dict) -> str:
+    """给人看的“这篇谁写的”（第 29 题“某天她做了什么”引日记时标出来，11-06）。"""
+    return {"her": "她自己写的", "her_edited": "小伴 起草、她改过的"}.get((row or {}).get("source"), "小伴 记的，她还没改过")
+
+
 def her_rows(db, limit: int = None) -> list:
     """有她的字的日记（整篇她写的 + 她改过的），新的在前；body 为空的不算。表还没建返回空。"""
     import sqlite3

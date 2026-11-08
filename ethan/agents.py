@@ -527,6 +527,17 @@ def save_sessions(root, sessions: list, now: datetime = None) -> int:
     return len(rows)
 
 
+def last_report(root, agent: str) -> str:
+    """某个 agent 最近一次报到的时间（设置页分开显示 Claude、Codex）。
+    报到的键：Codex 是 codex:…，其余是 Claude 会话。"""
+    try:
+        data = json.loads((Path(root) / HOOKS_FILE).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    times = [str(s.get("updated_at") or "") for k, s in data.items() if isinstance(s, dict) and (k.startswith("codex") == (agent == "codex"))]
+    return max(times, default="")
+
+
 def load_sessions(root, now: datetime = None) -> dict:
     hooked = _hook_sessions(root, now)
     if hooked:

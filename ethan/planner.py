@@ -22,6 +22,7 @@ from .clock import her_now
 from .progress import year_progress
 from .travel import BUFFER_MIN, DEFAULT_MIN, depart_at, places, where
 from .clock import her_today
+from . import clock
 
 REMIND_BEFORE_DEPART = 60  # 出发前多久提醒
 OVERRIDES = """CREATE TABLE IF NOT EXISTS plan_overrides (day TEXT NOT NULL, title TEXT NOT NULL, action TEXT NOT NULL,
@@ -107,7 +108,7 @@ def weekly_adjust(db, today: date) -> dict:
     """每周一按体重趋势调一次热量（mias-os §3）：上周 7 天平均没比再上周降 → 少吃 100 千卡；降超过 1% → 加回 100。
     一周算一次，存进 nutrition_adjust；体重记录不够两周就不动。"""
     db.conn.execute("CREATE TABLE IF NOT EXISTS nutrition_adjust (week TEXT PRIMARY KEY, offset INTEGER NOT NULL, reason TEXT NOT NULL)")
-    monday = today - timedelta(days=today.weekday())
+    monday = clock.week_start(today)
     row = db.conn.execute("SELECT * FROM nutrition_adjust WHERE week = ?", (monday.isoformat(),)).fetchone()
     if row:
         return {"offset": row["offset"], "reason": row["reason"]}
@@ -266,7 +267,7 @@ PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的�
 支线 = 其他零散待办。训练、冷启动、三餐也由代码安排。你只负责三件事：
 
 只输出一个 JSON 对象，不要输出别的文字：
-{"breakdowns": [{"goal_id": 编号, "steps": [{"title": "具体要做的一步", "size": "S|M|L", "milestone": true|false, "hard": true|false}]}],
+{"breakdowns": [{"goal_id": 编号, "steps": [{"title": "具体要做的一步", "size": "S|M|L|XL", "milestone": true|false, "hard": true|false}]}],
  "ethan": [{"title": "小伴 要替她准备好、再交给她审批的东西", "goal_id": 目标编号或 null}],
  "events": [{"start": "HH:MM", "end": "HH:MM", "place": "地点名", "title": "去做什么", "goal_id": 目标编号或 null}],
  "review": {"目标编号": "今天的进展点评，一句话"},
@@ -275,7 +276,7 @@ PLANNER_PROMPT = """你是 Mia 的人生管理系统里的计划器。下面的�
 规则：
 1. breakdowns：只给 quests.needs_breakdown 里的目标拆，其他目标已经拆过了不要再拆。每个目标拆 6–20 步，
    从现在一直拆到在截止日前完成这个目标，按先后顺序，足够全面；每步具体到她能直接开始。
-   size：S 一小时内、M 半天左右、L 要好几天。关键的阶段节点 milestone 设 true（每个目标 1–4 个）。
+   size：按预计工作量定档，S 一小时内、M 半天、L 一两天、XL 好几天（分数 40/100/200/400）。关键的阶段节点 milestone 设 true（每个目标 1–4 个）。
    hard 设 true 的是“硬骨头”：她最可能拖、最难开始的那一步（比如第一次给陌生客户发消息），每个目标 1–3 个，完成多给 50% 积分。
    步骤只放她本人亲自要做的事；漏斗类目标按漏斗各步拆（列名单、联系、聊、报价、成交）。
    交给对应 agent 管的项目副本不会出现在 needs_breakdown 里，也不要替它们排任务。
@@ -337,7 +338,7 @@ def validate(plan: dict, facts: dict, goal_ids: set) -> list:
             if not isinstance(s, dict) or not s.get("title"):
                 errors.append(f"目标 {gid} 第 {n} 步缺少 title")
             elif s.get("size") not in quests.SIZE_POINTS:
-                errors.append(f"目标 {gid} 第 {n} 步 size 只能是 S、M、L")
+                errors.append(f"目标 {gid} 第 {n} 步 size 只能是 S、M、L、XL")
             elif ASK_HER_TO_PICK.search(s["title"]):
                 errors.append(f"目标 {gid} 第 {n} 步让她挑选，挑选由 小伴 直接拍板，这步不要放给她")
         if not any(isinstance(s, dict) and s.get("milestone") for s in steps):
@@ -437,7 +438,7 @@ def link_tasks(db, items: list, today: date):
             items.remove(it)
             continue
         it["title"] = naming.title(it["title"])  # 新建的待办名字写成标题式（docs/design/ui-spec.md 第 5 节）
-        it["task_id"] = db.add_task(it["title"], goal_id=it.get("goal_id"),  # 多数事没有硬截止，不默认截止今天
+        it["task_id"] = taskrules.add(db, it["title"], goal_id=it.get("goal_id"), size=it.get("size"),  # 多数事没有硬截止，不默认截止今天
                                     promised_by_ethan=it.get("priority") == "ethan" and not _is_ops(it["title"]))
         it["task_created"] = True
     keep = {it["task_id"] for it in items if it.get("task_id")}
@@ -712,8 +713,8 @@ def main():
         from .cards import make_card
         from .photos import OpenRouter
         key = os.environ.get("OPENROUTER_API_KEY")
-        make_card(args.data, store.db, today, store.db.latest_plan(today.isoformat()),
-                  maker=OpenRouter(key) if key else None, ledger=router.ledger, router=router,  # router：按今天的事编镜头
+        make_card(args.data, store.db, today, None,  # 今天的计划不进昨日卡，素材全按昨天取
+                  maker=OpenRouter(key) if key else None, ledger=router.ledger, router=router,  # router：按昨天的事编镜头
                   store=store)  # 昨天的日记漏写了先补写再出卡
     except Exception as e:
         print(f"[planner] 昨日卡没生成：{e}", flush=True)

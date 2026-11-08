@@ -6,6 +6,7 @@
 """
 
 import ast
+import functools
 import json
 import re
 import tempfile
@@ -24,14 +25,16 @@ def london(day, h, m=0):  # 2026-11 伦敦是冬令时，等于 UTC
     return datetime(2026, 11, day, h, m, tzinfo=timezone.utc)
 
 
+@functools.lru_cache(maxsize=None)
 def _funcs(path: Path) -> dict:
-    """{函数名: 源码}（含方法；嵌套的算在最外层的函数里）。"""
-    src = path.read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    """{函数名: 源码}（含方法；嵌套的算在最外层的函数里）。
+
+    按行切，不用 ast.get_source_segment：它每次都把整个文件重新切行，几百个函数就是平方级（服务器上一分多钟）。"""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     out = {}
-    for node in ast.walk(tree):
+    for node in ast.walk(ast.parse("".join(lines))):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            out.setdefault(node.name, ast.get_source_segment(src, node))
+            out.setdefault(node.name, "".join(lines[node.lineno - 1:node.end_lineno]))
     return out
 
 
@@ -214,11 +217,11 @@ class TickReplayTest(unittest.TestCase):
         eid = events.add(self.db, "2099-01-02", "15:00", "17:00", "The Devonshire 午餐", "Denman St", note="来自邮件")
         self.db.conn.execute("UPDATE future_events SET conflict = ? WHERE id = ?", ("伦敦最火Sunday Roast", eid))
         self.db.conn.commit()
-        self.assertEqual(nudges.hints(self.db, [], london(6, 0).date()), [])  # 还没问过：不挂
+        self.assertEqual(nudges.hints(self.db, london(6, 0).date()), [])  # 还没问过：不挂
         with self.only("_clash"):
             self.assertIn(f"clash:{eid}：已发送", proactive.tick(self.ethan, self.channel, now=london(6, 13)))
             self.assertNotIn(f"clash:{eid}", proactive.tick(self.ethan, self.channel, now=london(7, 13)))
-        got = nudges.hints(self.db, self.store.raw.recent(50), london(7, 0).date())
+        got = nudges.hints(self.db, london(7, 0).date())
         self.assertEqual([h["key"] for h in got], [f"clash:{eid}"])
         self.assertIn("The Devonshire 午餐", got[0]["text"])
         # 工作台首页拿得到，点 × 就不再挂
@@ -229,16 +232,19 @@ class TickReplayTest(unittest.TestCase):
             self.assertEqual(wb.hints(london(7, 0).date()), [])
         self.assertFalse(nudges.dismiss_hint(self.db, "sit")["ok"])  # 只有登记了 hint 的几类能点掉
 
-    def test_hint_gone_after_she_replies(self):
+    def test_hint_stays_until_settled(self):
+        """她回过话也照样挂，约不再撞了才收。"""
         eid = events.add(self.db, "2099-01-02", "15:00", "17:00", "午餐", "", note="")
         self.db.conn.execute("UPDATE future_events SET conflict = ? WHERE id = ?", ("别的约", eid))
         self.db.conn.commit()
         nudges.log_sent(self.db, f"clash:{eid}", london(6, 13))
         nudges.mark_told(self.db, [f"clash:{eid}"])
-        before = [{"role": "mia", "at": london(6, 12).isoformat(), "text": "嗯"}]
-        self.assertEqual(len(nudges.hints(self.db, before, london(6, 0).date())), 1)
-        after = before + [{"role": "mia", "at": london(6, 14).isoformat(), "text": "去这个吧"}]
-        self.assertEqual(nudges.hints(self.db, after, london(6, 0).date()), [])
+        self.store.raw.append("telegram", "mia", "嗯", at=london(6, 14))  # 她回过一句
+        self.assertEqual(len(nudges.hints(self.db, london(6, 0).date())), 1)  # 她回过话：照样挂
+        self.assertEqual(len(nudges.hints(self.db, london(9, 0).date())), 1)  # 过了几天还撞着：照样挂
+        self.db.conn.execute("UPDATE future_events SET conflict = NULL WHERE id = ?", (eid,))
+        self.db.conn.commit()
+        self.assertEqual(nudges.hints(self.db, london(9, 0).date()), [])  # 了结了（不再撞）：收起
 
 
 class GrokRelayQuietTest(unittest.TestCase):

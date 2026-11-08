@@ -55,7 +55,10 @@ def problems(root, db=None, now: datetime = None, runner=subprocess.run, service
     if db is not None:
         try:  # 连续登不上的邮箱（126）
             from . import imapmail
+            have = {a["name"] for a in imapmail.load_accounts()}
             for f in imapmail.failing(db):
+                if have and f["account"] not in have:  # 已经删掉的邮箱不再报（11-08：旧的 iCloud(CN) 删了还在报）
+                    continue
                 out.append({"what": f"邮箱 {f['account']}", "detail": f"从 {f['failed_since']} 起连续 {f['fail_count']} 次登不上：{f['last_error']}。"
                                                                      "重新生成授权码后马上用 --add 录进去"})
         except Exception:
@@ -74,7 +77,7 @@ def problems(root, db=None, now: datetime = None, runner=subprocess.run, service
     if db is not None:
         try:  # 来源断档：每个数据源按自己的频率判断（ontology-plan 1.10，lifebase.source_health）
             from . import lifebase
-            for b in lifebase.stale_sources(db, now):
+            for b in lifebase.stale_sources(db, now, cached=True):
                 out.append({"what": "数据来源", "detail": b})
         except Exception as e:
             out.append({"what": "数据来源", "detail": f"没查成：{type(e).__name__} {str(e)[:200]}"})

@@ -61,6 +61,13 @@ K = 60
 ABOUT_HER = ("她", "我", "mia", "经历", "偏好", "习惯", "喜欢", "讨厌", "爱好", "性格", "背景", "履历", "简历",
              "读过", "做过", "去过", "学过", "住过", "待过")
 SELF_BOOST, RELAY_DAMP = 2.0, 0.4
+DATE_BOOST = 3.0  # 问句说了哪天：那几天的记录加权（11-06）
+
+
+def asked_day(text: str, today: date):
+    """问句是在问某天做了什么 / 在哪：返回 (开始, 结束, 说日子的那几个字)；不是返回 None。"""
+    from .onto_query import day_question
+    return day_question(text, today)
 
 
 def ensure(db):
@@ -407,6 +414,8 @@ def refresh(db, root=None) -> int:
                   r["visibility"], r["importance"], decay=False, valid=valid,
                   know=r["kind"] if "kind" in r.keys() else None, read_by=r["read_by"] if "read_by" in r.keys() else None, dim=r["dimension"])
     for r in db.conn.execute("SELECT * FROM events"):
+        if r["title"] == lifebase.EVENT_GONE:  # 来源被删过的事件（含还有别的来源的）：不进索引，等重建（Codex 评审 11-07 第 4 条）
+            continue
         people = "、".join(json.loads(r["people"] or "[]"))
         n += _put(db, f"event:{r['id']}", "event", "她经历的事", r["title"],
                   " ".join(x for x in (r["summary"], f"和{people}" if people else "") if x), r["occurred_at"],
@@ -495,6 +504,20 @@ def search(db, queries, scene: str = "chat", limit: int = None, max_level: str =
     limit = limit or default_limit
     today = today or her_today()
     fused, wanted, total = {}, set(), None
+    # 问句里说了哪天（“昨天”“上周三”“11 月 3 号”，11-06）：那几个字是日期不是内容，不拿去字面匹配（以前“昨天”把
+    # 几个月前写着“昨天”的访谈原话拉了上来）；改成按日期多一路——那几天的记录按时间排进来，同一天的再加权
+    # 只在问“哪天做了什么 / 在哪”时这样（onto_query.day_question）；平常聊天里顺口说的“今天”不改
+    windows, said = [], list(queries)
+    for q in said:
+        got = asked_day(q, today)
+        if got:
+            windows.append((got[0].isoformat(), got[1].isoformat()))
+            queries = [x.replace(got[2], " ") if x == q else x for x in queries]
+    for lo, hi in windows:
+        rows = db.conn.execute("SELECT key FROM mem_docs WHERE valid = 1 AND substr(at, 1, 10) >= ? AND substr(at, 1, 10) <= ? "
+                               "ORDER BY at DESC LIMIT 30", (lo, hi)).fetchall()
+        for rank, r in enumerate(rows, start=1):
+            fused[r["key"]] = fused.get(r["key"], 0.0) + 1.0 / (K + rank)
     for q in [x for q in queries for x in expand(q)]:
         qt = list(dict.fromkeys(tokens(q, query=True)))
         if not qt:
@@ -552,13 +575,15 @@ def search(db, queries, scene: str = "chat", limit: int = None, max_level: str =
             recency = 1.0 if not d["decay"] else 0.5 + 0.5 * math.pow(0.5, _days(d["at"], today) / 90)
             score = base * recency * (0.8 + 0.1 * (d["importance"] - 1))
             score *= SELF_BOOST if key in mine else RELAY_DAMP if key in relay else 1.0
+            if day and any(lo <= day <= hi for lo, hi in windows):
+                score *= DATE_BOOST
             out.append({"key": key, "kind": d["kind"], "know": d.get("know"), "label": d["label"], "title": d["title"], "at": day,
                         "text": snippet(d["body"], wanted), "score": round(score, 6)})
         out.sort(key=lambda x: -x["score"])
         out = out[:limit]
     if log:
         db.conn.execute("INSERT INTO retrieval_log (at, scene, round, queries, keys, latency_ms, user, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (_now(), scene, round_no, json.dumps(list(queries), ensure_ascii=False),
+                        (_now(), scene, round_no, json.dumps(said, ensure_ascii=False),
                          json.dumps([x["key"] for x in out]), int((time.time() - started) * 1000), user, via))
         db.conn.commit()
     return out

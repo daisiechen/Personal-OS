@@ -101,7 +101,7 @@ class PlannerTest(unittest.TestCase):
         missing["breakdowns"] = missing["breakdowns"][1:]
         self.assertTrue(any("还没拆解" in e for e in validate(missing, facts, ids)))
         bad_size = json.loads(good_plan(self.db))
-        bad_size["breakdowns"][0]["steps"][0]["size"] = "XL"
+        bad_size["breakdowns"][0]["steps"][0]["size"] = "XXL"  # 11-06 起 XL 是合法的档（好几天）
         self.assertTrue(any("size" in e for e in validate(bad_size, facts, ids)))
         clash = json.loads(good_plan(self.db))
         clash["events"] = [{"start": "15:30", "end": "16:30", "place": "某工作室", "title": "试课"},

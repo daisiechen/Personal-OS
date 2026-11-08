@@ -296,6 +296,8 @@ def brief_for(store, item) -> str:
     ensure(store.db)
     row = _row(store.db, item["id"]) or {}
     parts = [f"这件事（#{item['id']}）：{item['title']}", f"属于目标：{item['goal'] or '没有挂目标'}"]
+    if item.get("detail"):  # 短标题之外的做法和要求（11-07 起标题只写短的）
+        parts.append(f"细节：{item['detail']}")
     from . import helpscope
     mine = helpscope.for_task(store.db, item["id"])
     if mine:  # 替她这周要做的哪件事提前准备（ethan/helpscope.py）
@@ -441,7 +443,7 @@ def review(store, router, now: datetime = None) -> dict:
             title = " ".join(str(a.get("title") or "").split())[:60]
             if (title and not ROUTINE.search(title) and not is_ops(title) and not similar_task(title, titles)
                     and not taskrules.already(db, title, "prep")):  # 统一查重：她的待办里有的、她删过的、最近做完的都不另加
-                added.append(db.add_task(title, promised_by_ethan=True))
+                added.append(taskrules.add(db, title, promised_by_ethan=True))
                 titles.append(title)
     db.conn.execute("INSERT OR REPLACE INTO prep_meta (key, value) VALUES ('review', ?)", (day,))
     db.conn.commit()

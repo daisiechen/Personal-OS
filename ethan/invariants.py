@@ -27,10 +27,10 @@ def badges_have_targets(wb, day) -> list:
     out = []
     b = wb.badges(day)
     if "map" in b:
-        from . import taskrules
-        waste = sum(1 for t in taskrules.rows(wb.db, "territory", day) if not t["territory"])
+        from datetime import datetime
+        waste = len(wb.territory_page("waste", datetime.combine(day, datetime.min.time()).replace(hour=12))["tasks"])  # 和点进去的荒原页对数，不是再算一遍
         if waste != b["map"]:
-            out.append(f"赛季红点 {b['map']}，荒原里有 {waste} 件")
+            out.append(f"赛季红点 {b['map']}，待归属里有 {waste} 件")
     if "main" in b:
         ready = sum(1 for x in prep.queue(wb.db) if x["state"] == "ready" and not x["secret"])
         if ready != b["main"]:

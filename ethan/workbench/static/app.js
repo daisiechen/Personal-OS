@@ -2,8 +2,17 @@
 "use strict";
 
 // 图片请求带不上 Authorization 头；Telegram 里 cookie 不一定在，就把令牌放进查询串（服务器只对 /img/ 认）
-const imgUrl = (u) => S.token ? u + "?s=" + encodeURIComponent(S.token) : u;
+const imgUrl = (u) => S.token ? u + (u.includes("?") ? "&" : "?") + "s=" + encodeURIComponent(S.token) : u;  // 卡图地址自带 ?v=（11-06）
 const S = { state: null, quests: null, page: "main", tab: "main", overlay: null, back: null, token: null, busy: false, showDone: false };
+// 进任何一页都从初始状态开始：
+// 切页面时，除了下面这些跨页的（登录、首页数据、没存的草稿、录音、庆祝弹层、撤销），S 里别的一律清掉——星图 / 格子、展开的卡、筛选、标签页、
+// 上回的数据都回到默认，这一页的数据重新拉。以后新加的页面状态不用再记得手动复原。
+const KEEP_ACROSS_PAGES = new Set(["state", "token", "busy", "page", "tab", "celebrating", "_cardShown", "_shownPage", "_ovShown", "listening",
+  "transcribing", "recStart", "pendingUndo", "askAt", "ethanDays", "diaryDraft", "noteDraft", "cardWishDraft", "deskDraft", "prepDraft", "planDirty"]);
+function resetView() {
+  for (const k of Object.keys(S)) if (!KEEP_ACROSS_PAGES.has(k)) delete S[k];
+  Object.assign(S, { quests: null, overlay: null, back: null, showDone: false });
+}
 const ICON = {
   home: "M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z",
   quest: "M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0-18zm0 5a4 4 0 1 0 0 8a4 4 0 0 0 0-8z",
@@ -19,7 +28,8 @@ const ICON = {
 // 卡册收成首页“第 N 天”右边的日记，成就并进世界页，导航里不再单列
 // 大脑并进“我”页的“全部记忆 → 收藏和资料”
 const MENU = [["main", "今日", "home"], ["map", "赛季", "map"],
-              ["me", "我", "me"], ["relations", "关系", "people"], ["team", "团队", "team"], ["settings", "设置", "gear"]];
+              ["me", "我", "me"], ["relations", "关系", "people"], ["settings", "设置", "gear"]];
+// 团队页从导航下掉：页面和接口先留着，agent 报到照常记，导航里不再有入口
 const READY = { relations: true, me: true, main: true, map: true, team: true, brain: true, cards: true, ach: true, settings: true };
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -38,7 +48,8 @@ function trace(step, info) {
   } catch (e) { /* 不影响页面 */ }
 }
 
-async function api(path, body, wait) {
+// 取数据遇到服务器一时出错（白屏那次是数据库被后台整理占着、10 秒没拿到）：GET 隔 1.5、3 秒再试两次，不直接白屏
+async function api(path, body, wait, tries = 0) {
   const headers = { "Content-Type": "application/json" };
   if (S.token) headers.Authorization = "Bearer " + S.token;
   const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), wait || 20000);  // 问一问要等模型，给长一点  // 20 秒没回就算连不上，不一直转
@@ -48,6 +59,10 @@ async function api(path, body, wait) {
                               body: body ? JSON.stringify(body) : undefined });
   } finally { clearTimeout(timer); }
   if (res.status === 401) { const e = new Error("401"); e.code = 401; throw e; }
+  if (res.status >= 500 && !body && tries < 2) {
+    await new Promise((r) => setTimeout(r, 1500 * (tries + 1)));
+    return api(path, body, wait, tries + 1);
+  }
   return res.json();
 }
 
@@ -85,8 +100,14 @@ async function load(quiet) {
   const want = [];
   if (page === "main" || /^(boss:|shop|side)/.test(overlay)) want.push(["quests", "/api/quests"]);
   if (page === "team") want.push(["team", "/api/team"]);
-  if (page === "map") want.push(["map", "/api/map"], ["season", "/api/season"], ["review", "/api/review"], ["ach", "/api/ach"]);
+  // 赛季页只拉这一页要用的（赛季页加载很慢）：大地图打开时再拉 map，成就页才拉 ach；回顾页早已不用，不再拉 review
+  if (page === "map") want.push(["season", "/api/season"]);
+  if (page === "map" && S.mapTab === "ach") want.push(["ach", "/api/ach"]);
+  if (page === "map" && overlay === "bigmap") want.push(["map", "/api/map"]);
   if (page === "settings") want.push(["settings", "/api/settings"]);
+  // 系统体检算得慢（3–10 秒）：另外拉、不等它，设置先画出来，体检到了再补上
+  if (page === "settings") api("/api/settings/system").then((v) => { if (S.page !== page) return; S.syscheck = v; if (S.state) render(); })
+    .catch((e) => { if (S.page !== page) return; S.syscheck = { error: e.message || "连不上服务器" }; if (S.state) render(); });
   if (page === "territory") want.push(["terr", "/api/territory?k=" + encodeURIComponent(S.tkey)]);
   if (page === "cards") want.push(["cards", "/api/cards"]);
   if (page === "me") want.push(["me", "/api/me"]);
@@ -103,6 +124,7 @@ async function load(quiet) {
     const st = await api("/api/state");
     if (!st || st.ok === false) { if (!quiet) showError((st && st.error) || "服务器没给数据"); return; }
     S.state = st;
+    uiLang = st.ui_lang === "en" ? "en" : "zh";
     await pageData;
     if (S.page !== page) return;
   } catch (e) {
@@ -141,8 +163,8 @@ function render() {
   const night = isNight(st);
   document.body.className = night ? "night" : "day";
   $("#nav").innerHTML = MENU.map(([k, label, icon]) =>
-    `<button type="button" class="${S.page === k || (k === "map" && ["territory", "ach"].includes(S.page)) || (k === "me" && S.page === "brain") || (k === "main" && S.page === "cards") ? "on" : ""}" data-act="go" data-page="${k}" ${READY[k] ? "" : "disabled title=\"第二、三批上线\""} aria-label="${label}">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[icon]}"></path></svg>${label}${navCount(st, k) ? `<i class="navdot" aria-label="${navCount(st, k)} 件要你处理">${navCount(st, k)}</i>` : ""}</button>`).join("");
+    `<button type="button" class="${S.page === k || (k === "map" && ["territory", "ach"].includes(S.page)) || (k === "me" && S.page === "brain") || (k === "main" && S.page === "cards") ? "on" : ""}" data-act="go" data-page="${k}" ${READY[k] ? "" : "disabled title=\"第二、三批上线\""} aria-label="${t(label)}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${ICON[icon]}"></path></svg>${t(label)}${navCount(st, k) ? `<i class="navdot" aria-label="${navCount(st, k)} 件要你处理">${navCount(st, k)}</i>` : ""}</button>`).join("");
   const pages = { relations: relationsPage, me: mePage, team: teamPage, map: mapPage, territory: territoryPage, brain: brainPage, cards: cardsPage, ach: achPage, settings: settingsPage };
   // 同一页里重画时（比如勾掉一件任务）留在原来滚到的位置，不跳回顶端（勾完还要接着勾）
   const keep = S._shownPage === S.page ? scrollSpots() : null;
@@ -191,9 +213,9 @@ function mainPage(night) {
   const card = st.card;
   const todo = st.today.filter((t) => !t.done), done = st.today.filter((t) => t.done);
   const cardThumb = card && card.image
-    ? (store("eo_card_" + st.day) ? `<img src="${imgUrl(card.image)}" alt="昨日卡：${esc(card.title)}"><span class="cap">${esc(card.rarity)} · ${esc(card.title)}</span>`
-      : `<span class="cardback"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3l2.2 5.6L20 9.3l-4.5 3.9L17 19l-5-3.1L7 19l1.5-5.8L4 9.3l5.8-.7z"></path></svg><b class="t-sm">昨日卡</b><span style="font-size:10px;color:#ABA8CC">点我翻开</span></span>`)
-    : `<span class="cardback"><span class="t-sm">昨日卡</span><span style="font-size:10px;color:#ABA8CC">${st.card_making ? "正在画……" : card && card.waiting ? "等日记补好再出" : "点一下现画"}</span></span>`;
+    ? (store("eo_card_" + st.day) ? `<img src="${imgUrl(card.image)}" alt="昨日卡：${esc(card.title)}"><span class="cap">${uiFixed(card.rarity)} · ${uiText(card.title, true)}</span>`
+      : `<span class="cardback"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M12 3l2.2 5.6L20 9.3l-4.5 3.9L17 19l-5-3.1L7 19l1.5-5.8L4 9.3l5.8-.7z"></path></svg><b class="t-sm">昨日卡</b><span class="cbhint">点我翻开</span></span>`)
+    : `<span class="cardback"><span class="t-sm">昨日卡</span><span class="cbhint">${st.card_making ? "正在画……" : card && card.waiting ? "等日记补好再出" : "点一下现画"}</span></span>`;
   return `
   <header class="hud">
     <button type="button" class="avatar" data-act="face" aria-label="头像：白天白天的我，夜里夜晚的我，点一下换另一面">
@@ -201,19 +223,19 @@ function mainPage(night) {
     <div class="hudgrid">
       <!-- 左边第一行名字和等级、第二行 Earth Online 第几天和日记、第三行经验；右边口号、今天工作、天气时间，和每日卡在一起 -->
       <!-- 升级还差多少和进度条放在等级旁边；第三行只放积分 -->
-      <div class="row u-center u-wrap"><span class="name">Mia</span><span class="lv">Lv.${p.level} ${esc(p.title)}</span>
+      <div class="row u-center u-wrap"><span class="name">Mia</span><span class="lv">Lv.${p.level} ${uiText(p.title, true)}</span>
         <span role="button" class="tap row muted t-sm u-g8" data-act="xphelp"><div class="bar" style="width:110px" title="这一级走了多少"><i style="width:${p.next_level_at > (p.level_at || 0) ? Math.max(0, Math.min(100, Math.round(100 * (p.earned - (p.level_at || 0)) / (p.next_level_at - (p.level_at || 0))))) : 0}%"></i></div>升级还差 ${Math.max(0, p.next_level_at - p.earned)}</span></div>
       <div class="slogan">${night ? "执行力不够强，是因为不够想。" : "Expect Nothing, Take Jumps!"}</div>
       <!-- 三次嫌日记、商店按钮不好看：不另放按钮，数字本身就是入口——天数点开日记，积分点开商店；前面小图标说明能点，悬停变金 -->
       <div><button type="button" class="hudlink" data-act="go" data-page="cards" aria-label="打开日记"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5z"></path><path d="M4 5.5v16"></path><path d="M9 8h7"></path></svg><span>Earth Online 第 <b>${p.day_n || 1}</b> 天</span><i aria-hidden="true">›</i></button></div>
-      ${st.work && st.work.has_data ? `<div class="muted right t-sm">今天工作 <b class="u-text t-lg">${st.work.hours}</b> 小时 · 工作狂指数 <b class="${st.work.light === "bad" ? "warnc" : st.work.light === "warn" ? "gold" : "okc"}" style="font-size:15px">${st.work.index}</b><span class="muted"> ${esc(st.work.label || "")} · 健康 20–49</span></div>` : '<div class="empty"></div>'}
+      ${st.work && st.work.has_data ? `<div class="muted right t-sm">今天工作 <b class="u-text t-lg">${st.work.hours}</b> 小时 · 工作狂指数 <b class="${st.work.light === "bad" ? "warnc" : st.work.light === "warn" ? "gold" : "okc"}" style="font-size:15px">${st.work.index}</b><span class="muted"> ${uiText(st.work.label || "", true)} · 健康 20–49</span></div>` : '<div class="empty"></div>'}
       <div class="row" style="gap:2px"><button type="button" class="hudlink" data-act="shop" aria-label="打开商店"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="9" width="17" height="11.5" rx="1.5"></rect><path d="M2.5 9h19M12 9v11.5M12 9c-1.8-3.6-6-3.8-5.3-1.2.4 1.3 3.3 1.4 5.3 1.2zm0 0c1.8-3.6 6-3.8 5.3-1.2-.4 1.3-3.3 1.4-5.3 1.2z"></path></svg><span>积分 <b>${p.balance}</b></span><i aria-hidden="true">›</i></button><button type="button" class="hudhelp" data-act="xphelp" aria-label="经验和积分怎么算">ⓘ</button></div>
       <div class="muted right t-sm">伦敦${st.weather ? " · " + esc(st.weather) : ""} · ${st.day.slice(5).replace("-", "月")}日 周${st.weekday} ${st.time}</div>
     </div>
-    <button type="button" class="cardthumb ${card && card.image && store("eo_card_" + st.day) ? RAR(card.rarity) : ""}" data-act="card" aria-label="昨日卡，点一下翻开">${cardThumb}</button>
+    <button type="button" class="cardthumb ${card && card.image && store("eo_card_" + st.day) ? rarity(card.rarity) : ""}" data-act="card" aria-label="昨日卡，点一下翻开">${cardThumb}</button>
   </header>
   <section class="panel season" aria-label="赛季进度">
-    <b class="nowrap">${esc(st.season.name)}</b><div class="bar"><i style="width:${st.season.pct}%"></i></div>
+    <b class="nowrap">${uiText(st.season.name, true)}</b><div class="bar"><i style="width:${st.season.pct}%"></i></div>
     <b role="button" class="tap" data-act="seasonhelp" title="赛季按时间走了多少">${st.season.pct}% <span class="muted u-fw4 t-xs">ⓘ</span></b><span class="muted nowrap">剩 ${st.season.days_left} 天</span>
   </section>
   ${askHints(st.hints)}
@@ -229,33 +251,33 @@ function mainPage(night) {
       <div class="tasklist">${todo.length ? todo.map(taskRow).join("") : `<p class="muted">${done.length ? "今天的都做完了！" : st.plan_ready ? "今天还空着，想做点什么就点“＋ 加 · 编辑”。" : "计划排好后，今天要做的会出现在这儿。"}</p>`}
       ${done.length ? `<button type="button" class="chip" style="align-self:flex-start" data-act="showdone">已完成 ${done.length} 件 ${S.showDone ? "▾ 收起" : "▸ 展开"}</button>${S.showDone ? done.map(taskRow).join("") : ""}` : ""}</div>
       <!-- 日常、周常的标题和“今日任务”一样大、一样粗（像备注一样容易忽略） -->
-      <div class="row subhead u-between"><span class="row u-g10 u-center"><h2>日常</h2>${st.habits.daily.some((h) => !h.yesterday) ? '<button type="button" class="btn small" data-act="makeup">补昨天的卡</button>' : ""}</span><span class="row u-g10">${st.habits.rest_day ? '<button type="button" class="btn small gold" data-act="restcancel" title="点一下取消今天的休整">休整中</button>' : `<button type="button" class="btn small" data-act="rest" ${st.habits.rest_left ? 'title="每周一次：今天做到 2 项日常就算满勤"' : 'disabled title="这周用过了"'}>休整</button>`}<span role="button" class="tap muted t-sm" data-act="streakhelp">连续全勤 <b class="u-text">${p.streak}</b> 天 ⓘ</span></span></div>
+      <div class="row subhead u-between"><span class="row u-g10 u-center"><h2>日常</h2>${[...st.habits.daily, ...st.habits.weekly].some((h) => !h.yesterday) ? '<button type="button" class="btn small" data-act="makeup">补昨天的卡</button>' : ""}</span><span class="row u-g10">${st.habits.rest_day ? '<button type="button" class="btn small gold" data-act="restcancel" title="点一下取消今天的休整">休整中</button>' : `<button type="button" class="btn small" data-act="rest" ${st.habits.rest_left ? 'title="每周一次：今天做到 2 项日常就算满勤"' : 'disabled title="这周用过了"'}>休整</button>`}<span role="button" class="tap muted t-sm" data-act="streakhelp">连续全勤 <b class="u-text">${p.streak}</b> 天 ⓘ</span></span></div>
       <div class="chips">
-        ${st.habits.daily.map((h) => `<button type="button" class="chip ${h.done ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.done ? 1 : ""}">${h.done ? "✓ " : ""}${esc(short(h.title))}</button>`).join("")}</div>
+        ${st.habits.daily.map((h) => `<button type="button" class="chip ${h.done ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.done ? 1 : ""}">${h.done ? "✓ " : ""}${uiText(short(h.title), true)}</button>`).join("")}</div>
       <div class="row subhead u-between"><h2>周常</h2><span class="muted t-sm">达标 +50，多做一次再 +20</span></div>
       <div class="chips">
-        ${st.habits.weekly.map((h) => { const ok = h.count >= h.target; return `<button type="button" class="chip ${ok ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.today ? 1 : ""}">${ok ? "✓ " : "○ "}${esc(short(h.title))} ${h.count}/${h.target}</button>`; }).join("")}
+        ${st.habits.weekly.map((h) => { const ok = h.count >= h.target; return `<button type="button" class="chip ${ok ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.today ? 1 : ""}"${GROK_HABIT.test(h.title) ? ' title="在 Grok App 里练的，服务器看不到：练完点一下，或者跟 小伴 说一声“帮我记上”"' : ""}>${ok ? "✓ " : "○ "}${uiText(short(h.title), true)} ${h.count}/${h.target}</button>`; }).join("")}
 </div>
       ${st.habits.rest_day ? `<div class="gold t-sm">今天休整：做到 2 项日常就算满勤</div>` : ""}
     </section>
     <section class="panel col" aria-label="副本" style="overflow:auto;min-height:0">
       <h2>赛季副本</h2>
       ${st.bosses.map((b) => `<button type="button" class="boss ${b.main ? "" : "alt"}" data-act="boss" data-id="${b.goal_id}" aria-label="${esc(b.name)}详情">
-        <div class="name"><b class="t-md">${b.main ? "★ " : ""}${esc(b.name)}${b.main ? "（主副本）" : ""}</b><span class="muted t-xs">${esc(b.line)}</span></div>
-        <div class="bar"><i style="width:${Math.round(100 * (b.frac || 0))}%"></i></div>
-        <div class="bossfoot"><span class="muted one">${b.next ? "下一步：" + esc(b.next) : b.steps_total ? "主线都做完了" : "还没拆步骤"}</span>${bossPill(b)}</div>${b.comment ? `<div class="muted one t-xs">${esc(b.comment)}</div>` : ""}</button>`).join("") || '<p class="muted">这个赛季还没开副本</p>'}
+        <div class="name"><b class="t-md">${b.main ? "★ " : ""}${uiText(b.name, true)}${b.main ? "（主副本）" : ""}</b><span class="muted t-xs">${uiText(b.line, true)}</span></div>
+        ${bossBar(b)}
+        <div class="bossfoot"><span class="muted one">${b.next ? "下一步：" + esc(b.next) : b.steps_total ? "主线都做完了" : "还没拆步骤"}</span>${bossPill(b)}</div>${b.comment ? `<div class="muted one t-xs">${uiText(b.comment, true)}</div>` : ""}</button>`).join("") || '<p class="muted">这个赛季还没开副本</p>'}
       ${sideMini()}
     </section>
   </div>
   <footer class="foot">  <!-- 左邮件和留言、中 小伴 的一天、右 小伴 在准备，和上面三栏一样宽 -->
     <button type="button" class="panel nowrap deskbtn ${(st.badges || {}).desk ? "gold" : "quiet"}" data-act="desk" aria-label="今日邮件和留言">邮件和留言${(st.badges || {}).desk ? ` <span class="rbadge">${st.badges.desk}</span>` : ""} ▸</button>
-    <button type="button" class="panel ethanline" data-act="ethanday" aria-label="看 小伴 的一天"><span class="gold">小伴</span>　${esc((st.card && st.card.line) || "今天也在。")}<span class="muted nowrap u-mlauto t-sm">他的一天 ▸</span></button>
+    <button type="button" class="panel ethanline" data-act="ethanday" aria-label="看 小伴 的一天"><span class="gold">小伴</span>　${uiText((st.card && st.card.line) || "今天也在。", true)}<span class="muted nowrap u-mlauto t-sm">他的一天 ▸</span></button>
     <button type="button" class="panel gold nowrap" data-act="prep">小伴 今天在准备 ${st.prep.filter((t) => t.state !== "pending" && prepShown(st, t)).length} 件${(st.badges || {}).main ? ` <span class="rbadge">${st.badges.main} 件等你看</span>` : ""}${st.parked_remind ? ` <span class="rbadge parkdot" aria-label="先放着的 ${st.parked_remind} 件今天还没看" title="点进去在“先放着”那栏">先放着 ${st.parked_remind}</span>` : ""} ▸</button>
   </footer>`;
 }
 
-// 首页小提示：约撞时间、计划撞了、路线排不开，小伴 只问一次，她没回就挂在这里一行，点 × 不再挂（3，nudges.hints）
-const askHints = (hs) => (hs || []).length ? `<section class="askhints" aria-label="小伴 问过、你还没回的">${hs.map((h) => `<div class="askhint"><span class="askwho">小伴 问过你</span><span class="asktext">${esc(h.text)}<span class="muted">，在聊天里回他一句就好</span></span><button type="button" class="askx" data-act="hintoff" data-key="${esc(h.key)}" aria-label="不再显示这条">×</button></div>`).join("")}</section>` : "";
+// 首页小提示：约撞时间、计划撞了、路线排不开，小伴 只问一次，事情没了结就一直挂在这里，了结了或点 × 才收（3：“事情没了结就一直挂着”，nudges.hints）
+const askHints = (hs) => (hs || []).length ? `<section class="askhints" aria-label="小伴 问过、你还没回的">${hs.map((h) => `<div class="askhint"><span class="askwho">小伴 问过你</span><span class="asktext">${uiText(h.text, true)}<span class="muted">，在聊天里回他一句就好</span></span><button type="button" class="askx" data-act="hintoff" data-key="${esc(h.key)}" aria-label="不再显示这条">×</button></div>`).join("")}</section>` : "";
 // 副本的任务列表：任务页和首页副本详情共用，编辑能力一样（弹窗里比任务页少的都加上）
 const stepList = (gid, steps, ed) => `<div class="steplist" data-goal="${gid}">${steps.map((s) => ed ? `<div class="step edit ${s.state}" data-stepid="${s.id}"><span class="grip" data-grip aria-label="按住拖动排序" title="按住拖动排序">⋮⋮</span><input type="text" value="${esc(s.title)}" data-steptitle="${s.id}" aria-label="任务名字">
           <button type="button" class="ib ${s.milestone ? "on" : ""}" data-act="stepnode" data-id="${s.id}" data-on="${s.milestone ? "" : 1}" title="标成节点（里程碑）">节点</button>
@@ -278,7 +300,7 @@ const sideTodayNote = (q) => (q.side_today ? `<p class="muted" style="font-size:
 const CADS = [["once", "一次性"], ["daily", "每天"], ["weekly", "每周"], ["per_milestone", "每阶段一次"]];
 const MSTATE = { done: ["达成", "ms-ok"], missed: ["没达成", "ms-miss"] };
 // 小伴 起草的阶段复盘：复盘排进待办那天早上写好，她看完再勾“复盘”
-const msDraft = (d) => `<div class="msdraft"><span class="muted">${d.by ? "小伴 起草的复盘" : "这一阶段的数"}</span><p>${esc(d.summary)}</p>${(d.suggest || []).length ? `<span class="muted">给下个阶段的建议</span><ul>${d.suggest.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : ""}</div>`;
+const msDraft = (d) => `<div class="msdraft"><span class="muted">${d.by ? "小伴 起草的复盘" : "这一阶段的数"}</span><p>${uiText(d.summary, true)}</p>${(d.suggest || []).length ? `<span class="muted">给下个阶段的建议</span><ul>${d.suggest.map((x) => `<li>${uiText(x, true)}</li>`).join("")}</ul>` : ""}</div>`;
 function milestoneView(gid, ms, ed) {
   const passed = ms.filter((m) => m.state === "past").length;
   const habits = (S.quests && S.quests.habits) || [];
@@ -288,14 +310,14 @@ function milestoneView(gid, ms, ed) {
   const head = (m) => ed
     ? `<div class="mshead"><input type="text" value="${esc(m.title)}" data-ms="${m.id}" data-msk="title" class="msname" aria-label="里程碑名字">
         <input type="date" value="${esc(m.due || "")}" data-ms="${m.id}" data-msk="due" aria-label="截止日">${m.target != null ? `<input type="text" inputmode="decimal" value="${m.target}" data-ms="${m.id}" data-msk="target" style="width:70px" aria-label="目标值">` : ""}</div>`
-    : `<div class="mshead"><b class="msname">${esc(m.title)}</b>${pill(m)}<span class="muted msmeta">${esc(meta(m))}</span></div>`;
+    : `<div class="mshead"><b class="msname">${uiText(m.title, true)}</b>${pill(m)}<span class="muted msmeta">${uiText(meta(m), false)}</span></div>`;
   const indent = (t) => t.depth ? `style="margin-left:${t.depth * 22}px;width:calc(100% - ${t.depth * 22}px)"` : "";
   const row = (t, m) => {
     if (ed) {  // 前置条件：按住 ⋮⋮ 拖到要等的那件上，就挂在它后面（可以一级级挂下去）；↰ 取消等待
       const hab = `<select data-stagehabit="${t.id}" aria-label="引用的日常周常"><option value="">不引用</option>${habits.map((h) => `<option value="${h.id}"${t.habit_id === h.id ? " selected" : ""}>引用：${esc(h.title)}</option>`).join("")}</select>`;
       return `<div class="step edit${t.depth ? " hung" : ""}" data-stepid="${t.id}" ${indent(t)}><span class="grip" data-grip aria-label="按住拖动：拖到另一件上就是等它做完" title="按住拖动排序；拖到另一件上 = 等它做完">⋮⋮</span><input type="text" value="${esc(t.title)}" data-steptitle="${t.id}" aria-label="任务名字">
         ${t.habit ? hab : `<select data-stagecad="${t.id}" aria-label="频次">${CADS.map(([v, l]) => `<option value="${v}"${t.cadence === v ? " selected" : ""}>${l}</option>`).join("")}</select>
-        ${t.cadence === "weekly" ? `<input type="number" min="1" max="7" value="${t.per_week || 1}" data-stageweek="${t.id}" class="wk" aria-label="每周几次">` : ""}${t.review ? "" : hab}`}
+        ${t.cadence === "weekly" ? `<input type="number" min="1" max="7" value="${t.per_week || 1}" data-stageweek="${t.id}" class="wk" aria-label="每周几次">` : ""}${t.cadence === "once" ? sizePick(t) : ""}${t.review ? "" : hab}`}
         ${t.depth ? `<button type="button" class="ib" data-act="unhang" data-id="${t.id}" title="不用等了">↰</button>` : ""}
         <button type="button" class="ib" data-act="stepdel" data-id="${t.id}" aria-label="删掉这个任务">✕</button></div>`;
     }
@@ -307,7 +329,7 @@ function milestoneView(gid, ms, ed) {
   return `<div class="row u-between"><b class="t-body">里程碑 ${passed} / ${ms.length}</b><button type="button" class="btn small ${ed ? "gold" : ""}" data-act="editgoal" data-id="${gid}">${ed ? "完成" : "✎ 编辑"}</button></div>
     <div class="mslist">${ms.map((m) => m.state === "now" || ed
       ? `<section class="ms ms-${m.state} ${m.state === "past" ? MSTATE[m.status][1] : ""}">${head(m)}${!ed && m.draft ? msDraft(m.draft) : ""}${tasks(m)}</section>`
-      : `<details class="ms ms-${m.state} ${m.state === "past" ? MSTATE[m.status][1] : ""}"><summary>${head(m)}</summary>${m.review ? `<p class="msreview">${esc(m.review)}</p>` : ""}${tasks(m)}</details>`).join("")}</div>
+      : `<details class="ms ms-${m.state} ${m.state === "past" ? MSTATE[m.status][1] : ""}"><summary>${head(m)}</summary>${m.review ? `<p class="msreview">${uiText(m.review, true)}</p>` : ""}${tasks(m)}</details>`).join("")}</div>
     ${ed ? `<form class="stepadd" data-form="msadd" data-goal="${gid}"><input type="text" name="title" required placeholder="加一个里程碑" aria-label="新里程碑"><input type="date" name="due" aria-label="截止日"><button class="btn gold">加上</button></form>` : ""}`;
 }
 
@@ -318,13 +340,13 @@ function stageItem(t, ctx) {
   const m = ctx.m, ind = ctx.ind;
   const on = t.cadence === "once" ? t.done : t.today;
   const mark = t.habit ? "↻" : on ? "✓" : t.blocked ? "⏸" : "○";
-  const info = `${t.cadence === "once" ? "" : `<span class="muted tinfo">${esc(t.cadence_name)}${t.per_week && t.cadence === "weekly" ? " " + t.per_week + " 次" : ""} · ${esc(t.progress)}</span>`}${t.blocked && t.depends ? `<span class="muted tinfo">等「${esc(t.depends)}」</span>` : ""}${t.review ? '<span class="gold tinfo">复盘</span>' : ""}${t.label ? `<span class="tklabel">${esc(t.label)}</span>` : ""}`;
+  const info = `${t.cadence === "once" ? "" : `<span class="muted tinfo">${uiText(t.cadence_name, true)}${t.per_week && t.cadence === "weekly" ? " " + t.per_week + " 次" : ""} · ${uiText(t.progress, true)}</span>`}${t.blocked && t.depends ? `<span class="muted tinfo">等「${uiText(t.depends, true)}」</span>` : ""}${t.review ? '<span class="gold tinfo">复盘</span>' : ""}${t.label ? `<span class="tklabel">${uiText(t.label, true)}</span>` : ""}`;
   if (m.state === "past" && t.review && on)  // 勾错的复盘还能撤销：里程碑重新打开
-    return `<button type="button" class="step tstep done" data-act="task" data-id="${t.id}" data-done="1" data-confirm="撤销会把这个里程碑重新打开，再点一次确认" ${ind}><span class="gold mark">✓</span><span class="tbody">${esc(t.title)}${info}</span><span class="muted tinfo">点两次撤销</span></button>`;
-  if (t.habit || m.state === "past" || t.carry) return `<div class="step locked tstep" ${ind}><span class="gold mark">${t.habit ? "↻" : on ? "✓" : "○"}</span><span class="tbody">${esc(t.title)}${info}</span>${t.habit ? `<span class="muted tinfo">在日常「${esc(t.habit)}」里打卡</span>` : t.carry ? '<span class="muted tinfo">到这个阶段自动带过来</span>' : ""}</div>`;
+    return `<button type="button" class="step tstep done" data-act="task" data-id="${t.id}" data-done="1" data-confirm="撤销会把这个里程碑重新打开，再点一次确认" ${ind}><span class="gold mark">✓</span><span class="tbody">${uiText(t.title, true)}${info}</span><span class="muted tinfo">点两次撤销</span></button>`;
+  if (t.habit || m.state === "past" || t.carry) return `<div class="step locked tstep" ${ind}><span class="gold mark">${t.habit ? "↻" : on ? "✓" : "○"}</span><span class="tbody">${uiText(t.title, true)}${info}</span>${t.habit ? `<span class="muted tinfo">在日常「${uiText(t.habit, false)}」里打卡</span>` : t.carry ? '<span class="muted tinfo">到这个阶段自动带过来</span>' : ""}</div>`;
   const confirm = t.review || m.state === "later";  // 结束阶段的复盘、以后阶段的任务：点两次才算（不小心勾了复盘）
   return `<button type="button" class="step tstep ${on ? "done" : t.blocked ? "locked" : "now"}" data-act="task" data-id="${t.id}" data-done="${on ? 1 : ""}" data-points="${t.points}"${confirm && !on ? ` data-confirm="${t.review ? "勾了这件就结束这个里程碑，再点一次确认" : "这是后面阶段的事，再点一次确认已经做了"}"` : ""} ${t.blocked && !on ? "disabled" : ""} ${ind}>
-    <span class="gold mark">${mark}</span><span class="tbody">${esc(t.title)}${info}</span>${t.points ? `<span class="gold tinfo">+${t.points}</span>` : ""}</button>`;
+    <span class="gold mark">${mark}</span><span class="tbody">${uiText(t.title, true)}${info}</span>${t.points ? `<span class="gold tinfo">+${t.points}</span>` : ""}</button>`;
 }
 
 const short = (t) => t.replace(/：.*$/, "").replace("练英语", "英语");
@@ -339,11 +361,17 @@ function timeline() {
   if (rows.length === 1) rows.push({ at: "", text: "今天不用出门", trip: null });
   // 赶不上、要早走、要挪训练的那一步标出来（提醒我早走的应该 highlight）
   return rows.map((r) => r.trip !== null
-    ? `<button type="button" class="tl trip ${r.warn ? "warn" : ""}" data-act="trip" data-i="${r.trip}"><span class="t">${esc(r.at)}</span><div class="b">${r.warn ? "⚠️ " : ""}${esc(r.text)} <span class="gold">▸</span></div></button>`
-    : `<div class="tl ${r.now ? "now" : ""} ${r.warn ? "warn" : ""}"><span class="t">${esc(r.at)}</span><div class="b">${r.warn ? "⚠️ " : ""}${esc(r.text)}</div></div>`).join("");
+    ? `<button type="button" class="tl trip ${r.warn ? "warn" : ""}" data-act="trip" data-i="${r.trip}"><span class="t">${uiText(r.at, false)}</span><div class="b">${r.warn ? "⚠️ " : ""}${uiText(r.text, true)} <span class="gold">▸</span></div></button>`
+    : `<div class="tl ${r.now ? "now" : ""} ${r.warn ? "warn" : ""}"><span class="t">${uiText(r.at, false)}</span><div class="b">${r.warn ? "⚠️ " : ""}${uiText(r.text, true)}</div></div>`).join("");
 }
 
 const prog = (t) => (t.progress ? ` <span class="prog">（${t.progress[0]}/${t.progress[1]}）</span>` : "");
+// 预计工作量定档（方案 A，和 ethan/quests.py 的 SIZE_POINTS 同一张表）：一次性的事按档给分，反复做的每次 +10 不看档
+const SIZES = [["S", "一小时内", 40], ["M", "半天", 100], ["L", "一两天", 200], ["XL", "好几天", 400]];
+// 档位下拉旁只在分数和档不一样时（节点 +300、硬骨头 ×1.5、邮件来的 0 分）另写实际的分
+const sizeCell = (t) => { const base = (SIZES.find(([k]) => k === (t.size || "S")) || SIZES[0])[2];
+  return `<span class="row u-g6 u-center">${sizePick(t)}${t.points !== base ? `<span class="gold t-xs">实得 +${t.points}</span>` : ""}</span>`; };
+const sizePick = (t) => `<select class="szpick" data-tsize="${t.id}" aria-label="预计工作量（定档）" title="按预计工作量定档：节点再 +300，硬骨头 ×1.5">${SIZES.map(([k, l, p]) => `<option value="${k}"${(t.size || "S") === k ? " selected" : ""}>${k} ${l} +${p}</option>`).join("")}</select>`;
 /* ---------- 任务行：所有列待办的地方共用一个组件（docs/design/tasks-and-schedule.md 第 8 节） ----------
    哪件出现在哪由后端 ethan/taskrules.py 定；这里只管长什么样、能点什么。各页面只传视图名，视图的展示参数都在 TASKVIEW 这一张表里，
    不在页面里另加条件。每个参数的来由见第 8 节“规则表”的前端部分。 */
@@ -353,34 +381,34 @@ const TASKVIEW = {
   other:   { look: "item", terr: true, points: true, doneBtn: true },      // “其他 → 全部”：能改归哪块领域
   later:   { look: "item", goal: true, points: true, doneBtn: true },      // 以后再做：写是哪个副本的
   dropped: { look: "item", goal: true, undrop: true, del: true },          // 你说算了的：只能恢复或删（第 1 条）
-  plan:    { look: "item", star: true, sub: true, terr: true, rename: true, postpone: true, del: true },  // 日历 · 改计划
+  plan:    { look: "item", star: true, sub: true, terr: true, size: true, rename: true, postpone: true, del: true },  // 日历 · 改计划；能改档
   step:    { look: "step", points: true },                                  // 老结构副本详情的主线步骤
   stage:   { look: "stage", points: true },                                 // 新结构副本详情的阶段任务
   terr:    { look: "tick" },                                                // 领域页：圆圈一点就完成，右边写副本或截止日
 };
-const tLabel = (t) => (t.label ? ` <span class="tklabel">${esc(t.label)}</span>` : "");  // 在等 / 11/12 起 / 推到明天（taskrules.label）
+const tLabel = (t) => (t.label ? ` <span class="tklabel">${uiText(t.label, true)}</span>` : "");  // 在等 / 11/12 起 / 推到明天（taskrules.label）
 const tDone = (t, v) => `<button type="button" class="btn" data-act="task" data-id="${t.id}" data-done="" data-points="${t.points}">${v.doneBtn ? "完成" : "✓"}</button>`;
 function taskItem(t, view, ctx) {
   const v = TASKVIEW[view];
   if (v.look === "card") {
     const row = `<button type="button" class="task ${t.done ? "done" : ""}" data-act="task" data-id="${t.id}" data-done="${t.done ? 1 : ""}" data-points="${t.points}">
-    <span class="dot">${t.done ? "✓" : ""}</span><span class="ttl">${esc(t.title)}${prog(t)}${tLabel(t)}${t.hard ? ' <span class="gold t-xs">硬骨头</span>' : ""}</span>
-    <span class="tag">${esc(t.tag)} · +${t.points}</span></button>`;
+    <span class="dot">${t.done ? "✓" : ""}</span><span class="ttl">${uiText(t.title, true)}${prog(t)}${tLabel(t)}${t.hard ? ' <span class="gold t-xs">硬骨头</span>' : ""}</span>
+    <span class="tag">${uiText(t.tag, false)} · +${t.points}</span></button>`;
     return t.done || !v.drag ? row : `<div class="trow" data-tid="${t.id}"><span class="drag" data-drag aria-label="拖动排序" title="按住拖动">⋮⋮</span>${row}</div>`;
   }
   if (v.look === "step") {
     const state = t.state === "done" || t.state === "now" ? t.state : view === "mini" ? "locked" : t.state || "locked";
     return `<button type="button" class="step ${state}" data-act="task" data-id="${t.id}" data-done="${state === "done" ? 1 : ""}" data-points="${t.points}">
         <span class="gold" style="width:18px;text-align:center">${state === "done" ? "✓" : state === "now" ? "▶" : "○"}</span>
-        <span class="u-grow">${esc(t.title)}${prog(t)}${tLabel(t)}${t.hard ? ' <span class="gold t-xs">硬骨头</span>' : ""}${t.milestone ? ' <span class="gold t-xs">节点</span>' : ""}</span>
+        <span class="u-grow">${uiText(t.title, true)}${prog(t)}${tLabel(t)}${t.hard ? ' <span class="gold t-xs">硬骨头</span>' : ""}${t.milestone ? ' <span class="gold t-xs">节点</span>' : ""}</span>
         <span class="gold t-xs">+${t.points}</span></button>`;
   }
   if (v.look === "stage") return stageItem(t, ctx);
-  if (v.look === "tick") return `<div class="item"><button type="button" class="tick" data-act="task" data-id="${t.id}" data-done="" aria-label="完成：${esc(t.title)}"></button><span class="grow">${esc(t.title)}${tLabel(t)}</span><span class="muted t-xs">${t.main ? "赛季副本" : t.due ? esc(t.due) : "其他"}</span></div>`;
-  const sub = v.sub ? `<span class="muted t-xs">${esc(t.sub)}${t.due ? " · " + esc(t.due.slice(5)) : ""}</span> ` : v.goal && t.goal ? ` <span class="muted t-xs">${esc(t.goal)}</span>` : "";
+  if (v.look === "tick") return `<div class="item"><button type="button" class="tick" data-act="task" data-id="${t.id}" data-done="" aria-label="完成：${esc(t.title)}"></button><span class="grow">${uiText(t.title, true)}${tLabel(t)}</span><span class="muted t-xs">${t.main ? "赛季副本" : t.due ? esc(t.due) : "其他"}</span></div>`;
+  const sub = v.sub ? `<span class="muted t-xs">${uiText(t.sub, true)}${t.due ? " · " + esc(t.due.slice(5)) : ""}</span> ` : v.goal && t.goal ? ` <span class="muted t-xs">${uiText(t.goal, false)}</span>` : "";
   return `<div class="item">${v.star ? `<button type="button" class="star ${t.star ? "on" : ""}" data-act="star" data-id="${t.id}" data-on="${t.star ? "" : 1}" aria-label="设为或取消今日任务">★</button>` : ""}
-    <span class="grow">${v.sub ? `<span class="u-blk">${esc(t.title)}${tLabel(t)}</span>${sub}` : `${esc(t.title)}${prog(t)}${tLabel(t)}${sub}`}${v.terr && v.sub ? terrPick(t.id, t.terr) : ""}</span>${v.terr && !v.sub ? terrPick(t.id, t.terr) : ""}
-    ${v.points ? `<span class="gold t-xs">+${t.points}</span>` : ""}${v.rename ? `<button type="button" class="x" data-act="rename" data-id="${t.id}" data-title="${esc(t.title)}" aria-label="改名字">✎</button>` : ""}${v.postpone ? `<button type="button" class="btn" data-act="postpone" data-id="${t.id}">推到明天</button>` : ""}${v.doneBtn ? tDone(t, v) : ""}${v.undrop ? `<button type="button" class="btn" data-act="undrop" data-id="${t.id}">恢复</button>` : ""}${v.del ? `<button type="button" class="x" data-act="deltask" data-id="${t.id}" aria-label="删除">×</button>` : ""}</div>`;
+    <span class="grow">${v.sub ? `<span class="u-blk">${uiText(t.title, true)}${tLabel(t)}</span>${sub}` : `${uiText(t.title, true)}${prog(t)}${tLabel(t)}${sub}`}${v.terr && v.sub ? terrPick(t.id, t.terr) : ""}</span>${v.terr && !v.sub ? terrPick(t.id, t.terr) : ""}
+    ${v.size && !t.repeat ? sizeCell(t) : ""}${v.points ? `<span class="gold t-xs">+${t.points}</span>` : ""}${v.rename ? `<button type="button" class="x" data-act="rename" data-id="${t.id}" data-title="${esc(t.title)}" aria-label="改名字">✎</button>` : ""}${v.postpone ? `<button type="button" class="btn" data-act="postpone" data-id="${t.id}">推到明天</button>` : ""}${v.doneBtn ? tDone(t, v) : ""}${v.undrop ? `<button type="button" class="btn" data-act="undrop" data-id="${t.id}">恢复</button>` : ""}${v.del ? `<button type="button" class="x" data-act="deltask" data-id="${t.id}" aria-label="删除">×</button>` : ""}</div>`;
 }
 const taskList = (items, view, empty, ctx) => (items || []).map((t) => taskItem(t, view, ctx)).join("") || (empty ? `<p class="muted t-sm"${["mini", "step", "terr"].includes(view) ? '' : ""}>${empty}</p>` : "");
 // 首页今日任务（不限件数）：没做完的在上面，做完的折在“已完成”里
@@ -395,6 +423,15 @@ function sideBody(q) {  // “其他 → 全部”：其他、以后再做、你
       ${dropped.length ? `<details class="tkfold"><summary>你说算了的 ${dropped.length} 件<span class="muted">（哪儿都不列了，在这里删掉或恢复）</span></summary><div class="col u-g4">${taskList(dropped, "dropped")}</div></details>` : ""}`;
 }
 
+// 估档清单（方案 A）：补估档时按标题估的档，过一遍，不对的直接改；都对就收起
+function sizeReview(list) {
+  if (!(list || []).length) return "";
+  return `<details class="tkfold szreview" open><summary>估档清单 ${list.length} 件<span class="muted">（按标题估的预计工作量，不对就改）</span></summary>
+    <div class="col u-g4">${list.map((x) => `<div class="item"><span class="grow"><span class="u-blk">${uiText(x.title, true)}</span><span class="muted t-xs">${uiText(x.why, true)}${x.old && x.old !== x.size ? `（原来 ${uiText(x.old, false)}）` : ""}</span></span>
+      ${sizeCell(x)}</div>`).join("")}
+    <button type="button" class="btn small" style="align-self:flex-start" data-act="sizeok">都对，收起</button></div></details>`;
+}
+
 function shopBody(q) {
     const TIER = { 小: ["t1", "银封"], 中: ["t2", "星封"], 大: ["t3", "金封"] };
     const have = Math.max(0, q.balance);
@@ -402,15 +439,15 @@ function shopBody(q) {
       <div class="grid3">${q.rewards.map((r) => { const [cls, seal] = TIER[r.tier] || ["t1", ""]; const gap = r.cost - have;
         const days = q.pace > 0 ? Math.ceil(gap / q.pace) : null;
         return `<section class="panel col shop ${cls} ${r.affordable ? "ready" : ""}">
-        <div class="row" style="justify-content:space-between;align-items:flex-start"><div><div class="seal">${esc(seal)}</div><h2 class="t-h">${esc(r.title)}</h2></div>
+        <div class="row" style="justify-content:space-between;align-items:flex-start"><div><div class="seal">${uiText(seal, false)}</div><h2 class="t-h">${uiText(r.title, true)}</h2></div>
           <svg class="gift" viewBox="0 0 48 48" aria-hidden="true"><rect x="7" y="20" width="34" height="22" rx="3"/><rect x="4" y="13" width="40" height="9" rx="2"/><path d="M24 13v29M24 13c-4-8-13-8-11-2 1 3 7 3 11 2zm0 0c4-8 13-8 11-2-1 3-7 3-11 2z"/></svg></div>
-        <div class="muted t-sm">${esc(r.note || "")}</div>
+        <div class="muted t-sm">${uiText(r.note || "", true)}</div>
         <div class="row t-md"><b class="cost">${r.cost}</b><span class="muted">积分 · 已攒 ${Math.min(have, r.cost)}</span></div>
         <div class="bar"><i style="width:${Math.min(100, Math.round(100 * have / r.cost))}%"></i></div>
         <span class="muted t-sm">${r.affordable ? "攒够了，随时可以拆" : days ? `还差 ${gap} 积分，照最近 7 天的速度约 ${days} 天` : `还差 ${gap} 积分`}</span>
         ${r.affordable ? `<button type="button" class="btn primary" data-act="redeem" data-id="${r.id}">拆开</button>`
           : `<button type="button" class="btn short" data-act="shortof" data-gap="${gap}">还没攒够</button>`}</section>`; }).join("")}</div>
-      <section class="panel col"><b>兑换记录</b>${q.history.map((h) => `<div class="hrow"><span class="muted u-none">${esc(h.at.slice(0, 10))}</span><b class="u-none">${esc(h.title)}</b>
+      <section class="panel col"><b>兑换记录</b>${q.history.map((h) => `<div class="hrow"><span class="muted u-none">${uiText(h.at.slice(0, 10), false)}</span><b class="u-none">${uiText(h.title, true)}</b>
           <span class="muted one u-min0">${h.status === "待策划" ? "小伴 在准备，会主动来找你揭晓；之后他会问你玩了没有，由他记兑现" : esc(h.note || "")}</span>
           ${h.status === "待策划" ? '<span class="hstate wait">待兑现</span>' : '<span class="hstate done">已兑现</span>'}</div>`).join("") || '<span class="muted">还没有兑换过</span>'}</section>`;
 }
@@ -418,7 +455,7 @@ function shopBody(q) {
 /* ---------- 领地地图和领地页（docs/design/territories.md；底图是她选的 Grok Imagine 第 2 张） ---------- */
 const TERRS = [["body", "健康"], ["career", "事业"], ["money", "财务"], ["social", "社交"], ["study", "学习"], ["academic", "学术"], ["life", "生活体验"]];
 // 待办归哪块领域：归过的随时能改。改了记她的锁，系统不改回；改完几秒内能撤销
-const terrPick = (id, cur) => `<select class="terrpick" data-change="domain" data-id="${id}" aria-label="改领域" title="归哪块领域，选了就改">${TERRS.map(([k, n]) => `<option value="${k}"${k === cur ? " selected" : ""}>${n}</option>`).join("")}<option value="waste"${!cur || cur === "waste" ? " selected" : ""}>${!cur || cur === "waste" ? "还没归类" : "放回荒原"}</option></select>`;
+const terrPick = (id, cur) => `<select class="terrpick" data-change="domain" data-id="${id}" aria-label="改领域" title="归哪块领域，选了就改">${TERRS.map(([k, n]) => `<option value="${k}"${k === cur ? " selected" : ""}>${n}</option>`).join("")}<option value="waste"${!cur || cur === "waste" ? " selected" : ""}>${!cur || cur === "waste" ? "还没归类" : "放回待归属"}</option></select>`;
 // 卡的稀有度：边框不同，超稀有及以上有流光
 // 每块领域一个小图标（只用一个字有点尴尬）
 const TICON = {
@@ -433,31 +470,36 @@ const TICON = {
 };
 const tIcon = (k) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${TICON[k] || TICON.waste}"></path></svg>`;
 const RAR = (r) => ({ 普通: "r1", 稀有: "r2", 超稀有: "r3", 传说: "r4" })[r] || "r1";
+// 卡带稀有度边框（卡册的卡、翻开的大卡、首页小卡共用 app.css 的 .rar，11-06 并成一份）
+const rarity = (r) => "rar " + RAR(r);
+const GROK_HABIT = /Grok/;  // 英语陪练（Grok）：Grok App 里的练习服务器看不到，靠 Grok 回报或她自己勾 / 跟 小伴 说（docs/design/english-practice.md）
 const LIGHT = { ok: "达标", warn: "副本落后", bad: "跌破保底", none: "等数据" };
 const SEVER = { bad: 0, warn: 1, none: 2, ok: 3 };
 // 标注位置：占底图宽高的百分比（按 map-night.jpg 量的）
-const MAPPOS = { body: [21, 40], career: [42, 17], money: [72, 22], social: [80, 47], waste: [84, 77], study: [62, 70], academic: [39, 74], life: [16, 66], capital: [49.5, 62] };
+const MAPPOS = { body: [21, 40], career: [42, 17], money: [72, 22], social: [80, 47], study: [62, 70], academic: [39, 74], life: [16, 66], capital: [49.5, 62] };
 
 // 世界页（进来先看总览分析，而不是一张不变的地图）：总览 = 本周回顾 + 各领域 + 缩小的地图（点开放大、再点进领域）；往期 = 过去几周、月度、赛季
-const wDots = (terrs) => `<span class="row u-g6 u-wrap">${terrs.map((t) => `<span class="pill p-${t.light}" title="${esc(t.name)}">${esc(t.name)}</span>`).join("")}</span>`;
+const wDots = (terrs) => `<span class="row u-g6 u-wrap">${terrs.map((t) => `<span class="pill p-${t.light}" title="${esc(t.name)}">${uiText(t.name, false)}</span>`).join("")}</span>`;
 const wTally = (terrs) => `<table class="htbl"><thead><tr><th>领域</th><th>绿</th><th>黄</th><th>红</th><th>灰</th></tr></thead><tbody>${terrs.map((t) =>
-    `<tr><td>${esc(t.name)}</td><td class="p-ok">${t.ok || ""}</td><td class="p-warn">${t.warn || ""}</td><td class="p-bad">${t.bad || ""}</td><td class="muted">${t.none || ""}</td></tr>`).join("")}</tbody></table>`;
+    `<tr><td>${uiText(t.name, false)}</td><td class="p-ok">${t.ok || ""}</td><td class="p-warn">${t.warn || ""}</td><td class="p-bad">${t.bad || ""}</td><td class="muted">${t.none || ""}</td></tr>`).join("")}</tbody></table>`;
 const weekCard = (w, open) => `<section class="panel col">
-      <div class="row u-between u-wrap"><h2>${w.live ? "本周回顾" : esc(w.week.slice(5)) + " 那周"}<span class="muted t-sm u-fw4"> ${esc(w.week.slice(5))}–${esc(w.end.slice(5))}</span></h2>
+      <div class="row u-between u-wrap"><h2>${w.live ? "本周回顾" : esc(w.week.slice(5)) + " 那周"}<span class="muted t-sm u-fw4"> ${uiText(w.week.slice(5), false)}–${uiText(w.end.slice(5), false)}</span></h2>
         <span class="muted t-sm">经验 <b class="u-text">+${w.points}</b> · 满勤 ${w.full_days}/${w.days} 天</span></div>
       ${open ? "" : wDots(w.territories)}
-      ${open ? `<div class="wk3">${w.territories.filter((t) => t.rows.some((x) => x.light !== "none" || x.log)).map((t) => `<div class="col u-g4"><b class="t-md">${esc(t.name)}</b>${t.rows.filter((x) => x.light !== "none" || x.log).map((x) => `<span class="t-sm">${esc(x.name)}：${esc(x.actual)} ${x.light !== "none" ? `<span class="pill p-${x.light}" style="font-size:10px">${LIGHT[x.light]}</span>` : ""}${x.log ? ` <button type="button" class="pen" data-act="lifelogopen" data-kind="${x.log}" title="记一笔">＋</button>` : ""}</span>`).join("")}</div>`).join("") || '<span class="muted t-sm">这周还没有能算的数据，接上就有了。</span>'}</div>` : ""}
-      ${w.bosses && w.bosses.length ? `<div class="col u-g6">${w.bosses.map((b) => `<div><span class="t-sm">${b.main ? "★ " : ""}${esc(b.name)} <span class="muted">${esc(b.status || b.line || "")}</span></span><div class="bar"><i style="width:${Math.round(100 * (b.frac || 0))}%"></i></div></div>`).join("")}</div>` : ""}
-      ${w.ethan ? `<details><summary class="gold t-md u-ptr">小伴 的周报</summary><div style="white-space:pre-wrap;font-size:13px;line-height:1.7;margin-top:6px">${esc(w.ethan)}</div></details>` : ""}</section>`;
-const mapTags = (m) => m.territories.map((t) => `<button type="button" class="mtag l-${t.light}" data-act="terr" data-k="${t.key}" style="left:${MAPPOS[t.key][0]}%;top:${MAPPOS[t.key][1]}%"><span class="lamp">${LIGHT[t.light]}</span><b class="tname">${tIcon(t.key)}${esc(t.name)}</b><small>${esc(t.line)}</small></button>`).join("") +
-  `<button type="button" class="mtag waste" data-act="terr" data-k="waste" style="left:${MAPPOS.waste[0]}%;top:${MAPPOS.waste[1]}%"><b>荒原</b><small>${m.waste ? m.waste + " 件没归类" : "没有没归类的"}</small></button>` +
+      ${open ? `<div class="wk3">${w.territories.filter((t) => t.rows.some((x) => x.light !== "none" || x.log)).map((t) => `<div class="col u-g4"><b class="t-md">${uiText(t.name, false)}</b>${t.rows.filter((x) => x.light !== "none" || x.log).map((x) => `<span class="t-sm">${uiText(x.name, false)}：${uiText(x.actual, true)} ${x.light !== "none" ? `<span class="pill p-${x.light}" style="font-size:10px">${LIGHT[x.light]}</span>` : ""}${x.log ? ` <button type="button" class="pen" data-act="lifelogopen" data-kind="${x.log}" title="记一笔">＋</button>` : ""}</span>`).join("")}</div>`).join("") || '<span class="muted t-sm">这周还没有能算的数据，接上就有了。</span>'}</div>` : ""}
+      ${w.bosses && w.bosses.length ? `<div class="col u-g6">${w.bosses.map((b) => `<div><span class="t-sm">${b.main ? "★ " : ""}${uiText(b.name, true)} <span class="muted">${uiText(b.status || b.line || "", true)}</span></span>${bossBar(b)}</div>`).join("")}</div>` : ""}
+      ${w.ethan ? `<details><summary class="gold t-md u-ptr">小伴 的周报</summary><div style="white-space:pre-wrap;font-size:13px;line-height:1.7;margin-top:6px">${uiText(w.ethan, false)}</div></details>` : ""}</section>`;
+const mapTags = (m) => m.territories.map((t) => `<button type="button" class="mtag l-${t.light}" data-act="terr" data-k="${t.key}" style="left:${MAPPOS[t.key][0]}%;top:${MAPPOS[t.key][1]}%"><span class="lamp">${LIGHT[t.light]}</span><b class="tname">${tIcon(t.key)}${uiText(t.name, false)}</b><small>${uiText(t.line, true)}</small></button>`).join("") +
   `<button type="button" class="mtag capital" data-act="go" data-page="brain" style="left:${MAPPOS.capital[0]}%;top:${MAPPOS.capital[1]}%"><b class="t-md">收藏和资料</b><small>${m.brain_ask ? m.brain_ask + " 条要你看" : "全部资料"}</small></button>`;
-const mapImg = () => `<img src="/static/map-${isNight(S.state) ? "night" : "day"}.jpg" alt="Earth Online 大陆：七个领域围着中央王城，东南角是荒原" width="1280" height="800">`;
+// 待归属（代码里叫 waste）不是第八块领域：
+// 赛季页“七块领地”标题旁、大地图标题旁各一个按钮，有就带红点；数和导航红点同一个视图（taskrules 的 waste）
+const pendBtn = (n) => `<button type="button" class="btn small pendbtn" data-act="terr" data-k="waste" title="不确定归哪块领域的待办，点开给它选领域">待归属${n ? ` <span class="rbadge" aria-label="${n} 件等你归">${n}</span>` : ""}</button>`;
+const mapImg = () => `<img src="/static/map-${isNight(S.state) ? "night" : "day"}.jpg" alt="Earth Online 大陆：七个领域围着中央王城" width="1280" height="800">`;
 
 // 赛季页（第二版，docs/design/season-page.md）：样稿 A 的通行证在上，小伴 总评和下赛季建议，
 // 样稿 C 的七块领地分数柱（一眼看出哪块好、哪块不好、比开季 / 上季怎么变），最后只留主副本一条关卡路线。往季回顾、成就是右上角按钮。
 // 赛季页右上角是两个按钮；往季回顾和成就页右上角是返回赛季（只能点导航回去）
-const seasonHead = (title, extra) => `<header class="row seasonhead"><h2 class="seasonname">${title}</h2>${extra || ""}
+const seasonHead = (title, extra) => `<header class="row seasonhead"><h2 class="pagetitle seasonname">${title}</h2>${extra || ""}
   <span class="row u-g8 u-mlauto">${S.mapTab ? backBtn("赛季", 'data-act="maptab" data-v=""') : `${S.season && S.season.draft ? '<button type="button" class="btn gold" data-act="maptab" data-v="draft">下季草稿</button>' : ""}
   <button type="button" class="btn" data-act="maptab" data-v="reviews">复盘记录</button>
   <button type="button" class="btn" data-act="maptab" data-v="history">往季回顾</button>
@@ -472,56 +514,28 @@ function mapPage() {
   const z = S.season;
   if (!z) return '<p class="loading">加载中……</p>';
   const sz = z.season;
-  return seasonHead(esc(sz.name), `<span class="muted">第 ${sz.week} 周</span>`) + seasonPass(z) + seasonVerdict(z) + seasonBoard(z) + seasonRoute(z.route);
+  return seasonHead(esc(sz.name), `<span class="muted">第 ${sz.week} 周</span>`) + seasonVerdict(z) + seasonBoard(z);
 }
 
-// 赛季通行证（样稿 A 上半部分）：等级、本季积分轨道、下一级 / 下一个成就 / 下一个奖励
-const n0 = (v) => Number(v || 0).toLocaleString();
-function seasonPass(z) {
-  const pf = (S.state && S.state.profile) || {}, sz = z.season, ps = z.pass;
-  const span = Math.max(1, (pf.next_level_at || 1) - (pf.level_at || 0)), into = Math.max(0, (pf.earned || 0) - (pf.level_at || 0));
-  const pct = (v) => Math.max(0, Math.min(100, 100 * v / ps.scale)).toFixed(1);
-  const today = Math.max(0, Math.min(100, 100 * ps.days_gone / ps.days_total)).toFixed(1);
-  const a = S.ach;
-  const near = a ? a.items.filter((i) => i.near > 0 && i.near < 1).sort((x, y) => y.near - x.near)[0] : null;
-  const lockedPlay = a ? a.rewards.plays.find((p) => !p.unlocked) : null;
-  const nx = [`<div class="nx"><span class="k">下一级</span><b>Lv.${(pf.level || 0) + 1}</b><span>还差 <span class="num gold">${n0((pf.next_level_at || 0) - (pf.earned || 0))}</span> 经验</span><div class="mini"><i style="width:${Math.round(100 * into / span)}%;background:var(--gold)"></i></div></div>`,
-    near ? `<button type="button" class="nx" data-act="maptab" data-v="ach"><span class="k">下一个成就</span><b>${esc(near.name)}${near.tier ? " " + { 铜: "银档", 银: "金档" }[near.tier] : " 铜档"}</b><span>${near.value ?? 0} / ${near.next} ${esc(near.unit || "")}</span><div class="mini"><i style="width:${Math.round(100 * near.near)}%"></i></div></button>`
-      : `<button type="button" class="nx" data-act="maptab" data-v="ach"><span class="k">下一个成就</span><b>去成就墙看看</b><span class="muted">还没有能算进度的</span></button>`,
-    lockedPlay ? `<button type="button" class="nx lock" data-act="maptab" data-v="ach"><span class="k">${esc(lockedPlay.tier)}级惊喜</span><b>？？？</b><span class="muted">拿到一个${esc(lockedPlay.tier)}级成就揭晓</span></button>`
-      : pf.next_reward ? `<div class="nx"><span class="k">下一个能换的奖励</span><b>${esc(pf.next_reward.title)}</b><span>还差 <span class="num gold">${n0(pf.next_reward.gap)}</span> 积分</span></div>` : ""];
-  return `<section class="spass" aria-label="赛季通行证">
-    <div class="passtop">
-      <div class="crest" aria-label="等级 ${pf.level || 0}"><svg viewBox="0 0 92 104" aria-hidden="true"><path d="M46 3 L87 20 V58 C87 80 68 95 46 101 C24 95 5 80 5 58 V20 Z" class="c1"/><path d="M46 11 L80 25 V58 C80 76 64 88 46 93 C28 88 12 76 12 58 V25 Z" class="c2"/></svg><small>LV</small><b>${pf.level || "—"}</b></div>
-      <div class="lvinfo"><h3>${esc(pf.title || "")}</h3><div class="expbar"><i style="width:${Math.round(100 * into / span)}%"></i></div>
-        <div class="expmeta"><span>经验 <span class="num">${n0(into)}</span> / <span class="num">${n0(span)}</span></span><span>升 Lv.${(pf.level || 0) + 1} 还差 <b class="gold num">${n0((pf.next_level_at || 0) - (pf.earned || 0))}</b></span></div></div>
-      <div class="clock"><div class="big num">${sz.days_left}<span>天</span></div><div class="sub">${sz.ended ? "赛季已收官" : `${Number(sz.end.slice(5, 7))} 月 ${Number(sz.end.slice(8))} 日收官`}</div></div>
-    </div>
-    <div class="track">
-      <div class="tracklabel"><b>本季积分</b><span class="num gold">${n0(ps.points)}</span></div>
-      <div class="rail" role="img" aria-label="本季积分 ${ps.points}，照这个节奏收官约 ${ps.projected}">
-        <i style="width:${pct(ps.points)}%"></i><em class="today" style="left:${today}%" title="今天在赛季里的位置"></em>
-        ${ps.ticks.map((t, i) => `<span class="tick ${t.got ? "got" : ""} ${i > 1 && !t.got ? "hide-s" : ""}" style="left:${pct(t.at)}%">${esc(t.label)}</span>`).join("")}
-        ${ps.projected > ps.points ? `<span class="tick proj ${pct(ps.projected) > 85 ? "edge" : ""}" style="left:${pct(ps.projected)}%">预计收官</span>` : ""}
-        <span class="you" style="left:${pct(ps.points)}%"></span>
-      </div>
-      <div class="railfoot"><span>${Number(sz.start.slice(5, 7))} 月 ${Number(sz.start.slice(8))} 日开季</span><span>本周 +${n0(ps.week)}</span><span>照这个节奏收官约 ${n0(ps.projected)}</span></div>
-    </div>
-    <div class="nexts">${nx.join("")}</div></section>`;
-}
-
-// 小伴 的一句话总评 + 下赛季建议（一直放出来，一目了然）
+// 小伴 的一句话总评 + 结论 + 下赛季建议（一直放出来，一目了然；11-06 加结论）
 function seasonVerdict(z) {
   const sg = z.suggest || {}, ethan = sg.by === "小伴";
   const cols = ethan ? [["保留", sg.keep], ["暂停", sg.pause], ["新开", sg.start]] : [["保持", sg.keep], ["收一收", sg.pause], ["补上", sg.start]];
   const shown = cols.filter(([, l]) => (l || []).length);
   return `<section class="sverdict2">
-    <div class="vline"><span class="k">小伴 的总评</span><p>${esc(z.line)}</p>
-      <span class="muted t-sm">${z.line_by ? `小伴 ${esc(z.line_at.slice(5))} 写` : "小伴 还没写，先按数字说一句"}${z.rewriting ? "　小伴 正在按这几天的情况重写，过一会儿刷新" : ""}</span></div>
+    <div class="vline"><span class="k">${z.line_by ? `小伴 的总评 · ${uiText(z.line_at.slice(5), false)}` : "总评"}${z.rewriting && !z.outdated ? "（正在按这几天的情况重写）" : ""}</span>
+      <p>${uiText(z.line, true)}${z.conclusion ? ` ${uiText(z.conclusion, false)}` : ""}</p>${seasonNoteAge(z)}</div>
     <div class="snext"><span class="k">下赛季建议</span>
-      ${shown.length ? `<div class="nextcols">${shown.map(([t, l]) => `<div><span class="muted">${t}</span>${l.map((x) => `<span>${esc(x)}</span>`).join("")}</div>`).join("")}</div>` : '<span class="muted">数字还不够，过一两周再拟</span>'}
-      ${sg.rule ? `<span class="srule">硬线：${esc(sg.rule)}</span>` : ""}
-      <span class="muted t-xs">${ethan ? "小伴 按这季的数据写的，要改跟他说" : `代码按这季的数字先拟；${esc(z.season.two_thirds.slice(5))} 以后 小伴 写正式的`}</span></div></section>`;
+      ${shown.length ? `<div class="nextcols">${shown.map(([t, l]) => `<div><span class="muted">${t}</span>${l.map((x) => `<span>${uiText(x, false)}</span>`).join("")}</div>`).join("")}</div>` : '<span class="muted">数字还不够，过一两周再拟</span>'}
+      ${sg.rule ? `<span class="srule">硬线：${uiText(sg.rule, false)}</span>` : ""}</div></section>`;
+}
+
+// 小伴 写完以后她又记了东西（补记了见朋友，总评还写着 0 次）：小字说清这几句是哪天写的、正在重写
+function seasonNoteAge(z) {
+  if (!z.outdated || !z.note_at) return "";
+  const next = z.rewriting ? "正在重写" : z.capped ? "今天重写的次数用完了，明天再写" : "过一会儿重写";
+  return `<small class="noteage">${z.hidden ? `小伴 ${uiText(z.note_at, false)}写的那几句带着当时的数，之后你又记了新的，先收起来，上面是按现在的数算的；${next}`
+    : `这几句是 ${uiText(z.note_at, false)}写的，之后有新记录，${next}`}</small>`;
 }
 
 // 七块领地分数柱（样稿 C）：柱高是现在的分数（0–100），细线是开季的分数，柱顶是比开季（有上一季时也比上季）涨了还是跌了
@@ -533,29 +547,19 @@ function seasonBoard(z) {
       <span class="wk">${d.delta == null ? '<span class="muted">—</span>' : dl(d.delta, "")}</span>${d.prev_delta != null ? `<span class="pv">${dl(d.prev_delta, "比上季")}</span>` : ""}
       <span class="pt num">${d.now ?? "?"}</span>
       <span class="well"><span class="pillar" style="height:${d.now == null ? 0 : Math.max(3, d.now)}%"></span>${d.start != null ? `<em class="was" style="bottom:${d.start}%" title="开季 ${d.start}"></em>` : ""}</span>
-      <span class="nm">${tIcon(d.key)}<span>${esc(d.name)}</span></span></button>`;
-  const waste = `<button type="button" class="colb fog" data-act="terr" data-k="waste" title="没归到领域的待办，点开选它属于哪块"><span class="wk muted">${z.waste || 0} 件</span><span class="pt num">?</span><span class="well"><span class="pillar"></span></span><span class="nm"><span>荒原</span></span></button>`;
-  const good = ds.filter((d) => d.now != null && !d.floor && d.now >= 70), bad = ds.filter((d) => d.floor || (d.delta || 0) < 0);
+      <span class="nm">${tIcon(d.key)}<span>${uiText(d.name, false)}</span></span></button>`;
+  // 每块一行（每块领地各自的状态是什么、接下来怎么调整）：先列要管的（跌破保底、在往下掉），再一般、状态好、没数据
+  const RANK = { floor: 0, down: 1, mid: 2, good: 3, none: 4 }, TAG = { floor: "跌破保底", down: "在往下掉", mid: "一般", good: "状态好", none: "没数据" };
   // 好的那几块：小伴 写了原因就用他的；没写就只说开季到现在（代码兜底的“离标准最远那一项”放在好的里面会误导）
-  const why = (d, good) => good && !d.why_by ? (d.start != null ? `开季 ${d.start} → 现在 ${d.now}` : `现在 ${d.now} 分`) : d.why;
-  const say = (d, good) => `<button type="button" class="sayrow" data-act="terr" data-k="${d.key}"><b class="${d.floor ? "dn-bad" : d.delta < 0 ? "dn" : "up"}">${esc(d.name)} ${d.now}</b><span>${esc(why(d, good))}</span></button>`;
-  return `<section class="board" aria-label="七块领地分数">
-    <div class="boardhead"><h3>七块领地</h3><span class="muted">柱高是现在的分数，细线是开季时的分数；40 以下算跌破保底</span></div>
-    <div class="tcols">${ds.map(col).join("")}${waste}</div>
-    ${bad.length || good.length ? `<div class="says">${bad.length ? `<div><span class="k dn">在往下掉</span>${bad.slice(0, 3).map((d) => say(d, false)).join("")}</div>` : ""}${good.length ? `<div><span class="k up">状态好</span>${good.slice(0, 2).map((d) => say(d, true)).join("")}</div>` : ""}</div>` : ""}</section>`;
-}
-
-// 主副本关卡（样稿 A 的路线，只留主副本这一条）
-function seasonRoute(r) {
-  if (!r || !r.milestones.length) return "";
-  const ms = r.milestones, nowI = ms.findIndex((m) => m.state === "now");
-  const fill = ms.length > 1 ? Math.max(0, (nowI < 0 ? ms.length - 1 : nowI)) / (ms.length - 1) : 0;
-  return `<section class="quest" aria-label="主副本关卡">
-    <div class="qhead"><h3><span class="gold">★</span> ${esc(r.title || r.name)}</h3><span class="muted">主副本</span>${r.due ? `<span class="end muted">终点 ${Number(r.due.slice(5, 7))} 月 ${Number(r.due.slice(8))} 日</span>` : ""}</div>
-    <ol class="route" style="--n:${ms.length};--fill:${fill}">
-      ${ms.map((m, i) => `<li class="stage ${m.state}"><span class="node num">M${i + 1}</span><span class="txt"><span class="t">${esc(m.title)}</span>${m.due ? `<span class="d">${Number(m.due.slice(5, 7))} 月 ${Number(m.due.slice(8))} 日${m.state === "now" ? "截止" : ""}</span>` : ""}
-        ${m.state === "now" && m.total ? `${m.total <= 10 ? `<span class="tpips" aria-label="${m.total} 步做了 ${m.done} 步">${Array.from({ length: m.total }, (_, k) => `<i class="${k < m.done ? "on" : ""}"></i>`).join("")}</span>` : ""}<span class="st">${m.done} / ${m.total} 步</span>` : m.state === "clear" ? '<span class="st ok">通关</span>' : m.state === "miss" ? '<span class="st muted">没达成，复盘过</span>' : ""}</span></li>`).join("")}
-    </ol></section>`;
+  const why = (d) => d.status === "none" ? "" : d.status === "good" && !d.why_by ? (d.start != null ? `开季 ${d.start} → 现在 ${d.now}` : `现在 ${d.now} 分`) : d.why;
+  const row = (d) => `<button type="button" class="sdrow s-${d.status}" data-act="terr" data-k="${d.key}">
+      <span class="sdname">${tIcon(d.key)}<b>${uiText(d.name, false)}</b><span class="num">${d.now ?? "—"}</span></span><span class="sdtag">${TAG[d.status] || ""}</span>
+      <span class="sdwhy">${why(d) ? esc(why(d)) : ""}${d.why_by && d.fact && d.status !== "good" ? `<small class="muted u-blk">${uiText(d.fact, false)}</small>` : ""}</span><span class="sdgo">${uiText(d.adjust || "", false)}</span></button>`;
+  const rows = [...z.domains].sort((a, b) => RANK[a.status] - RANK[b.status] || (a.now ?? 999) - (b.now ?? 999));
+  return `<section class="board" aria-label="七个领域的分数">
+    <div class="boardhead"><h3>七个领域</h3><span class="muted">柱高是现在的分数；柱子上的横线是开季时的分数；红色虚线是 40 分保底线，柱子低于它就算跌破保底</span><span class="u-mlauto">${pendBtn(z.waste)}</span></div>
+    <div class="tcols">${ds.map(col).join("")}</div>
+    <div class="sdlist"><div class="sdhead"><span>领域</span><span>状态</span><span>为什么</span><span>接下来怎么调</span></div>${rows.map(row).join("")}</div></section>`;
 }
 
 // 复盘记录：每周日 21:00 和 小伴 在聊天里复盘，这里只看结果
@@ -563,10 +567,10 @@ function reviewsPage() {
   const z = S.season;
   if (!z) return '<p class="loading">加载中……</p>';
   const list = z.reviews || [];
-  const li = (xs) => xs.map((x) => `<li>${esc(x)}</li>`).join("");
+  const li = (xs) => xs.map((x) => `<li>${uiText(x, true)}</li>`).join("");
   return seasonHead("复盘记录") + (list.length ? `<div class="col u-g10">${list.map((r) => `<section class="panel rvcard">
-      <div class="row u-between"><b>${esc(r.day.slice(5))} 复盘 · ${r.layers.map(esc).join(" + ")}</b>${r.status === "open" ? '<span class="pill p-none">还在聊</span>' : ""}</div>
-      ${r.summary ? `<p>${esc(r.summary)}</p>` : `<p class="muted">小伴 已经开场，你在聊天里答完就有记录</p>`}
+      <div class="row u-between"><b>${uiText(r.day.slice(5), false)} 复盘 · ${r.layers.map(esc).join(" + ")}</b>${r.status === "open" ? '<span class="pill p-none">还在聊</span>' : ""}</div>
+      ${r.summary ? `<p>${uiText(r.summary, true)}</p>` : `<p class="muted">小伴 已经开场，你在聊天里答完就有记录</p>`}
       ${r.points.length ? `<span class="muted">要点</span><ul>${li(r.points)}</ul>` : ""}
       ${r.changes.length ? `<span class="muted">定下的调整</span><ul>${li(r.changes)}</ul>` : ""}</section>`).join("")}</div>`
     : `<section class="pastempty"><b>还没有复盘</b><span class="muted">每周日 21:00 小伴 来找你复盘，聊完的结论会出现在这里；每月最后一个周日加月度，赛季最后一个周日加赛季。</span></section>`);
@@ -579,13 +583,13 @@ function draftPage() {
   if (!z) return '<p class="loading">加载中……</p>';
   const d = z.draft;
   if (!d) return seasonHead("下季草稿") + '<section class="pastempty"><b>还没有草稿</b><span class="muted">赛季最后一个周日复盘聊完，小伴 会起草下个赛季放在这里。</span></section>';
-  const task = (t) => `<li>${esc(t.title)}<span class="muted"> · ${t.review ? "复盘" : CADNAME[t.cadence] || ""}${t.cadence === "weekly" && t.per_week ? " " + t.per_week + " 次" : ""}${t.habit ? " · 引用 " + esc(t.habit) : ""}</span></li>`;
-  return seasonHead("下季草稿", `<span class="muted">${esc(d.name)}　${esc(d.start.slice(5))} – ${esc(d.end.slice(5))}</span>`) + `
-    <section class="panel rvcard"><p>${esc(d.summary)}</p>${d.rule ? `<span class="gold">硬线：${esc(d.rule)}</span>` : ""}
-      <span class="muted t-sm">小伴 ${esc(z.draft_at || "")} 写的。要改哪里直接跟他说，他改好这里就更新。</span></section>
-    <div class="draftgrid">${d.goals.map((g) => `<section class="panel rvcard"><b>${esc(g.title)}</b><span class="muted t-sm">${esc(g.domain || "")}${g.due ? " · 截止 " + esc(g.due.slice(5)) : ""}${g.from_goal ? " · 接着打" : " · 新开"}${g.agent ? " · 交给 agent" : ""}</span>
-      ${g.scope ? `<span class="t-md">管：${esc(g.scope)}</span>` : ""}
-      ${g.milestones.map((m) => `<div class="dms"><b class="t-md">${esc(m.title)}</b><span class="muted t-sm">${m.due ? esc(m.due.slice(5)) : ""}</span><ul>${m.tasks.map(task).join("")}</ul></div>`).join("")}</section>`).join("")}</div>
+  const task = (t) => `<li>${uiText(t.title, true)}<span class="muted"> · ${t.review ? "复盘" : CADNAME[t.cadence] || ""}${t.cadence === "weekly" && t.per_week ? " " + t.per_week + " 次" : ""}${t.habit ? " · 引用 " + esc(t.habit) : ""}</span></li>`;
+  return seasonHead("下季草稿", `<span class="muted">${uiText(d.name, false)}　${uiText(d.start.slice(5), false)} – ${uiText(d.end.slice(5), false)}</span>`) + `
+    <section class="panel rvcard"><p>${uiText(d.summary, true)}</p>${d.rule ? `<span class="gold">硬线：${uiText(d.rule, false)}</span>` : ""}
+      <span class="muted t-sm">小伴 ${uiText(z.draft_at || "", false)} 写的。要改哪里直接跟他说，他改好这里就更新。</span></section>
+    <div class="draftgrid">${d.goals.map((g) => `<section class="panel rvcard"><b>${uiText(g.title, true)}</b><span class="muted t-sm">${uiText(g.domain || "", false)}${g.due ? " · 截止 " + esc(g.due.slice(5)) : ""}${g.from_goal ? " · 接着打" : " · 新开"}${g.agent ? " · 交给 agent" : ""}</span>
+      ${g.scope ? `<span class="t-md">管：${uiText(g.scope, false)}</span>` : ""}
+      ${g.milestones.map((m) => `<div class="dms"><b class="t-md">${uiText(m.title, true)}</b><span class="muted t-sm">${m.due ? esc(m.due.slice(5)) : ""}</span><ul>${m.tasks.map(task).join("")}</ul></div>`).join("")}</section>`).join("")}</div>
     <div class="row u-end"><button type="button" class="btn gold" data-act="seasonopen" data-confirm="会结算这一季、建好上面的副本，没接着打的老副本先暂停。再点一次确认">按这个开下个赛季</button></div>`;
 }
 
@@ -596,8 +600,8 @@ function pastPage() {
   const past = z.past || [], years = [...new Set(past.map((x) => x.end.slice(0, 4)))];
   const shown = past.filter((x) => !S.pastYear || x.end.startsWith(S.pastYear));
   return seasonHead("往季回顾") + (past.length ? `<div class="row u-g6">${["", ...years].map((y) => `<button type="button" class="chip ${(S.pastYear || "") === y ? "on" : ""}" data-act="pastyear" data-v="${y}">${y || "全部"}</button>`).join("")}</div>
-    <div class="pastgrid">${shown.map((x) => `<div class="pastcard"><span class="pthumb">${mapImg()}</span><span class="pbody"><b>${esc(x.name)}</b><span class="muted t-sm">${esc(x.start)} – ${esc(x.end)}</span><span class="t-md">${esc(x.line || "")}</span>${(x.bosses || []).length ? `<span class="muted t-sm">${x.bosses.map((b) => `${esc(b.title.split("：")[0])} ${b.done}/${b.total}`).join(" · ")}</span>` : ""}</span></div>`).join("")}</div>`
-    : `<section class="pastempty"><b>还没有过完的赛季</b><span class="muted">${esc(z.season.name)}在 ${esc(z.season.end.slice(5))} 结束，结束后这里会有它的结算：一季一张卡，点开看整季的复盘。</span></section>`);
+    <div class="pastgrid">${shown.map((x) => `<div class="pastcard"><span class="pthumb">${mapImg()}</span><span class="pbody"><b>${uiText(x.name, false)}</b><span class="muted t-sm">${uiText(x.start, false)} – ${uiText(x.end, false)}</span><span class="t-md">${uiText(x.line || "", true)}</span>${(x.bosses || []).length ? `<span class="muted t-sm">${x.bosses.map((b) => `${uiText(b.title.split("：")[0], true)} ${b.done}/${b.total}`).join(" · ")}</span>` : ""}</span></div>`).join("")}</div>`
+    : `<section class="pastempty"><b>还没有过完的赛季</b><span class="muted">${uiText(z.season.name, false)}在 ${uiText(z.season.end.slice(5), false)} 结束，结束后这里会有它的结算：一季一张卡，点开看整季的复盘。</span></section>`);
 }
 
 
@@ -606,7 +610,20 @@ const clashNote = (e) => e.clash_with && e.clash_with.length ? `<span class="cla
 
 // ---------- 领域页的分析（七个详情页本质上都是这七个领域的分析） ----------
 // 分数：开季 → 现在、由哪几项组成、每天的走势；下面是这个领域最能说明问题的 1–2 个数的变化图
-function scorePanel(sc) {
+// 分数块的一项：
+// 名字一行写完不换行，进度条在名字后面；手机上放不下时进度条和数换到下一行，名字不拆。
+// “实现心愿”能点开看是哪条、哪天实现的。七个领域的“这个领域”和“健康线 · 本周”都是分开的两块（排版和框架保持一致，没让合并）
+function scoreItem(i, t) {
+  const wishes = i.name === "实现心愿" && t ? t.wishes_done || [] : null;
+  const val = i.score == null ? "还没有数据" : esc(i.actual) + " / " + esc(i.standard);
+  return `<div class="sitem"><span class="sname">${uiText(i.name, false)}<span class="muted"> · 占 ${i.weight}%</span></span>
+      <span class="bar"><i style="width:${i.score ?? 0}%"></i></span><span class="sval muted">${val}${wishes && wishes.length ? ` <button type="button" class="linkbtn gold" data-act="wishdone" aria-expanded="${S.wishOpen ? "true" : "false"}">是哪条 ${S.wishOpen ? "▾" : "▸"}</button>` : ""}</span>
+      ${wishes && wishes.length && S.wishOpen ? `<span class="swish">${wishes.map((w) => `<span class="swrow"><span class="grow">“${uiText(w.quote, false)}”<span class="muted u-blk t-xs">${uiText(w.day.slice(5), false)} 标成实现了</span></span>
+          <button type="button" class="btn small" data-act="wishreopen" data-id="${w.id}">${S.confirm === "wish:" + w.id ? "再点一次放回" : "不是我实现的，放回清单"}</button></span>`).join("")}
+        <span class="muted t-xs">心愿只在 Telegram 待办清单“我们的心愿”那栏点 ✓ 时记成实现。</span></span>` : ""}</div>`;
+}
+
+function scorePanel(sc, t) {
   if (!sc) return "";
   const h = sc.history || [], W = 220, H = 44;
   const spark = h.length > 1 ? (() => { const vs = h.map((x) => x.v), lo = Math.min(...vs, 0), hi = Math.max(...vs, 100);
@@ -615,42 +632,50 @@ function scorePanel(sc) {
       <h2>这个领域</h2><span class="muted t-sm">分数 0–100，按你自己的标准算（最近 30 天）</span></div>
     <div class="row" style="gap:18px;align-items:center;flex-wrap:wrap"><span class="bigscore">${sc.now ?? "—"}</span>
       <span class="col" style="gap:2px"><span class="muted t-sm">开季 ${sc.start ?? "—"} → 现在 ${sc.now ?? "—"}${sc.start != null && sc.now != null ? `（<span class="${sc.now < sc.start ? "dn" : "up"}">${sc.now < sc.start ? "↓" : "↑"}${Math.abs(sc.now - sc.start)}</span>）` : ""}</span>
-        <span class="t-md">${esc(sc.label || "")}</span></span>${spark}</div>
-    <div class="sitems">${sc.items.map((i) => `<div class="sitem"><span>${esc(i.name)}<span class="muted"> · 占 ${i.weight}%</span></span>
-      <span class="bar"><i style="width:${i.score ?? 0}%"></i></span><span class="muted">${i.score == null ? "还没有数据" : esc(i.actual) + " / " + esc(i.standard)}</span></div>`).join("")}</div></section>`;
+        <span class="t-md">${uiText(sc.label || "", true)}</span></span>${spark}</div>
+    <div class="sitems">${sc.items.map((i) => scoreItem(i, t)).join("")}</div></section>`;
 }
 
 function metricChart(c) {
-  const pts = c.points || [], W = 320, H = 130, pad = 22;
-  if (!pts.length || c.empty) return `<section class="panel col"><h2>${esc(c.title)}</h2><p class="muted t-sm">还没有数据${c.note ? "（" + esc(c.note) + "）" : ""}</p></section>`;
-  const top = Math.max(1, ...pts.map((p) => p.v), c.target || 0) * 1.15, step = (W - pad * 2) / pts.length;
-  const y = (v) => H - pad - v / top * (H - pad * 2);
+  // 点里带 n 的（学习页练英语：柱子是分钟，n 是这周练了几次）在日期下面再写一行“几次”
+  const pts = c.points || [], cnt = pts.some((p) => p.n != null), W = 320, H = cnt ? 144 : 130, pad = cnt ? 36 : 22;
+  if (!pts.length || c.empty) return `<section class="panel col"><h2>${uiText(c.title, true)}</h2><p class="muted t-sm">还没有数据${c.note ? "（" + esc(c.note) + "）" : ""}</p></section>`;
+  // auto_y：纵轴按数据定范围，不从 0 开始，只给折线图用
+  const vs = pts.map((p) => p.v), span = Math.max(...vs) - Math.min(...vs);
+  const lo = c.auto_y && c.kind === "line" ? Math.max(0, Math.floor(Math.min(...vs) - Math.max(span * 0.6, 3))) : 0;
+  const top = c.auto_y && c.kind === "line" ? Math.min(c.max ?? Infinity, Math.max(...vs) + Math.max(span * 0.4, 2)) + 0.0001
+    : Math.max(1, ...vs, c.target || 0) * 1.15, step = (W - pad * 2) / pts.length;
+  const y = (v) => H - pad - (v - lo) / (top - lo) * (H - pad * 2);
   const body = c.kind === "line"
     ? `<path d="${pts.map((p, i) => `${i ? "L" : "M"}${(pad + step * (i + .5)).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ")}" class="mline"/>${pts.map((p, i) => `<circle cx="${(pad + step * (i + .5)).toFixed(1)}" cy="${y(p.v).toFixed(1)}" r="2.5" class="${c.target != null && p.v > c.target ? "over" : "dotm"}"/>`).join("")}`
     : pts.map((p, i) => `<rect x="${(pad + step * i + step * .18).toFixed(1)}" y="${y(p.v).toFixed(1)}" width="${(step * .64).toFixed(1)}" height="${(H - pad - y(p.v)).toFixed(1)}" class="${c.target != null && p.v < c.target && i < pts.length - 1 ? "under" : "barm"}"/>`).join("");
-  return `<section class="panel col"><div class="row u-between u-base"><h2>${esc(c.title)}</h2><span class="muted t-sm">${c.target != null ? "标准 " + c.target + " " + esc(c.unit) : ""}</span></div>
+  return `<section class="panel col"><div class="row u-between u-base"><h2>${uiText(c.title, true)}</h2><span class="muted t-sm">${c.target != null ? "标准 " + c.target + " " + esc(c.unit) : ""}${lo ? `纵轴从 ${lo}${c.unit === "%" ? "%" : " " + esc(c.unit)} 起` : ""}</span></div>
     <svg viewBox="0 0 ${W} ${H}" class="mchart" role="img" aria-label="${esc(c.title)}">${c.target != null ? `<line x1="${pad}" x2="${W - pad}" y1="${y(c.target)}" y2="${y(c.target)}" class="tline"/>` : ""}${body}
-      ${pts.map((p, i) => i % Math.ceil(pts.length / 7) === 0 ? `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="lbl">${esc(p.x)}</text>` : "").join("")}
-      ${pts.map((p, i) => `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${(y(p.v) - 4).toFixed(1)}" text-anchor="middle" class="lbl">${p.v || ""}</text>`).join("")}</svg>
-    ${c.note ? `<span class="muted t-xs">${esc(c.note)}</span>` : ""}</section>`;
+      ${pts.map((p, i) => i % Math.ceil(pts.length / 7) === 0 ? `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${H - (cnt ? 20 : 6)}" text-anchor="middle" class="lbl">${esc(p.x)}</text>` : "").join("")}
+      ${cnt ? pts.map((p, i) => `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="lbl">${p.n} 次</text>`).join("") : ""}
+      ${pts.map((p, i) => `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${(y(p.v) - 4).toFixed(1)}" text-anchor="middle" class="lbl">${p.v || ""}${p.v && c.unit === "%" ? "%" : ""}</text>`).join("")}</svg>
+    ${c.note ? `<span class="muted t-xs">${uiText(c.note, true)}</span>` : ""}</section>`;
 }
 
 // 财务：每日开销（默认最近 7 天，能选起止日期，给区间总额和保底平均线）
+// 金额统一：两位小数、千分位，正负由调用处说
+const moneyNum = (v) => Math.abs(Number(v) || 0).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 function spendChart(sp) {
   if (!sp) return "";
   const pts = sp.points, W = 320, H = 140, pad = 24;
   const top = Math.max(1, ...pts.map((p) => p.v), sp.floor_avg || 0) * 1.15, step = (W - pad * 2) / Math.max(1, pts.length);
   const y = (v) => H - pad - v / top * (H - pad * 2);
   const inp = "background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:4px 6px;font-size:12px";
+  const m = (v) => sp.cur + moneyNum(v);
   return `<section class="panel col"><div class="row u-between u-center u-wrap u-g8"><h2>每日开销</h2>
       <span class="row u-g6 u-center"><input type="date" value="${esc(sp.start)}" data-spend="start" style="${inp}"><span class="muted">至</span><input type="date" value="${esc(sp.end)}" data-spend="end" style="${inp}"></span></div>
-    <div class="row" style="gap:16px;align-items:baseline;flex-wrap:wrap"><span><span class="muted t-sm">这段时间一共</span> <b style="font-size:20px">${sp.cur}${sp.total.toLocaleString()}</b></span>
-      <span class="muted t-sm">平均每天 ${sp.cur}${sp.avg.toLocaleString()}${sp.floor_avg ? ` · 保底每天 ${sp.cur}${sp.floor_avg.toLocaleString()}` : " · 还没定每月预算"}</span></div>
+    <div class="row" style="gap:16px;align-items:baseline;flex-wrap:wrap"><span><span class="muted t-sm">这段时间一共</span> <b style="font-size:20px">${m(sp.total)}</b></span>
+      <span class="muted t-sm">平均每天 ${m(sp.avg)}${sp.floor_avg ? ` · 每天预算 ${m(sp.floor_avg)}` : " · 还没定每月预算"}</span></div>
     <svg viewBox="0 0 ${W} ${H}" class="mchart" role="img" aria-label="每日开销">
       ${sp.floor_avg ? `<line x1="${pad}" x2="${W - pad}" y1="${y(sp.floor_avg)}" y2="${y(sp.floor_avg)}" class="tline"/>` : ""}
       ${pts.map((p, i) => `<rect x="${(pad + step * i + step * .15).toFixed(1)}" y="${y(p.v).toFixed(1)}" width="${(step * .7).toFixed(1)}" height="${(H - pad - y(p.v)).toFixed(1)}" class="spendbar"/>`).join("")}
       ${pts.map((p, i) => i % Math.ceil(pts.length / 7) === 0 ? `<text x="${(pad + step * (i + .5)).toFixed(1)}" y="${H - 6}" text-anchor="middle" class="lbl">${esc(p.x.slice(5))}</text>` : "").join("")}</svg>
-    <span class="muted t-xs">${sp.floor_avg ? "每根柱子是那天花了多少；虚线是保底平均线（每月预算按天折）" : "每根柱子是那天花了多少。定了每月预算以后会画保底平均线"}</span></section>`;
+    <span class="muted t-xs">${sp.floor_avg ? "每根柱子是那天花了多少；虚线是每天预算（每月预算 ÷ 当月天数），柱子高过虚线就是那天花超了" : "每根柱子是那天花了多少。定了每月预算以后会画每天预算的虚线"}</span></section>`;
 }
 
 function weightChart(ws) {
@@ -673,64 +698,76 @@ function territoryPage() {
   if (!t) return '<p class="loading">加载中……</p>';
   const back = backBtn(S.terrBack === "bigmap" ? "地图" : ({ brain: "资料", main: "今日", quests: "任务" })[S.terrBack] || "赛季", 'data-act="terrback"');
   if (t.key === "waste") {
-    return `<header class="row u-wrap"><h2 class="t-xl">荒原</h2><span class="pill p-none">${t.tasks.length} 件没归类</span><span class="u-mlauto">${back}</span></header>
-      <span class="muted t-md">还没找到家的待办都在这。小伴 按标题先猜了一块，你点头或改掉，归好的就回到那块领域。归错了：几秒内点底下的“撤销”，过后在下面“最近归好的”里再改。</span>
-      <section class="panel col scrollbox tall">${t.tasks.map((x) => `<div class="item"><span class="grow">${esc(x.title)}${x.due ? `<span class="muted u-blk t-xs">${esc(x.due)}</span>` : ""}</span>
-        ${x.guess ? `<span class="muted" style="font-size:11px;color:var(--accent)">小伴 猜：${esc(TERRS.find((r) => r[0] === x.guess)[1])}</span>` : ""}
-        <select data-change="domain" data-id="${x.id}" aria-label="归到哪个领域"><option value="">归到……</option>${TERRS.map(([k, n]) => `<option value="${k}"${k === x.guess ? " selected" : ""}>${n}</option>`).join("")}</select>
-        ${x.guess ? `<button type="button" class="btn gold" data-act="domain-ok" data-id="${x.id}" data-k="${x.guess}">确认</button>` : ""}</div>`).join("") || '<p class="muted">荒原清空啦，每件事都有家了。</p>'}</section>
+    return `<header class="row u-wrap"><h2 class="pagetitle">待归属</h2><span class="pill p-none">${t.tasks.length} 件还没定领域</span><span class="u-mlauto">${back}</span></header>
+      <span class="muted t-md">不确定归哪块领域的待办都在这。小伴 按标题先猜了一块，你点头或改掉，归好的就回到那块领域。归错了：几秒内点底下的“撤销”，过后在下面“最近归好的”里再改。</span>
+      <section class="panel col scrollbox tall">${t.tasks.map((x) => `<div class="item wstrow"><span class="grow">${uiText(x.title, true)}${x.due ? `<span class="muted u-blk t-xs">${uiText(x.due, false)}</span>` : ""}</span>
+        ${x.guess ? `<span class="muted" style="font-size:11px;color:var(--accent)">还没归类 · 小伴 猜是${uiText(TERRS.find((r) => r[0] === x.guess)[1], false)}</span>` : ""}
+        <select data-change="domain" data-id="${x.id}" aria-label="归到哪个领域"><option value="">${x.guess ? "改成别的……" : "归到……"}</option>${TERRS.map(([k, n]) => `<option value="${k}">${n}</option>`).join("")}</select>
+        ${x.guess ? `<button type="button" class="btn gold" data-act="domain-ok" data-id="${x.id}" data-k="${x.guess}">归到${uiText(TERRS.find((r) => r[0] === x.guess)[1], false)}</button>` : ""}</div>`).join("") || '<p class="muted">待归属清空啦，每件事都有家了。</p>'}</section>
       ${(t.recent || []).length ? `<section class="panel col"><div class="row u-between u-wrap"><h2>最近归好的</h2><span class="muted t-xs">归错了在这里改，你改的系统不会改回去</span></div>
-        ${t.recent.map((x) => `<div class="item"><span class="grow">${esc(x.title)}<span class="muted u-blk t-xs">${esc(x.at)} 归的</span></span>${terrPick(x.id, x.terr)}</div>`).join("")}</section>` : ""}`;
+        ${t.recent.map((x) => `<div class="item"><span class="grow">${uiText(x.title, true)}<span class="muted u-blk t-xs">${uiText(x.at, false)} 归的</span></span>${terrPick(x.id, x.terr)}</div>`).join("")}</section>` : ""}`;
   }
   const summary = t.light === "warn" ? `${t.rows.filter((r) => r.light === "warn").map((r) => r.name).join("、")}落后于副本标准，保底线守住了。`
     : t.light === "bad" ? `${t.rows.filter((r) => r.light === "bad").map((r) => r.name).join("、")}跌破了保底线。`
     : t.light === "ok" ? "这周都在线上。" : "这块还没有数据来源，接上一个亮一个。";
-  const rows = t.rows.map((r) => `<tr><td>${esc(r.name)}${r.note ? `<span class="muted u-blk t-xs">${esc(r.note)}</span>` : ""}</td><td>${esc(r.quest)}</td><td>${esc(r.floor)}${r.edit === "budget" ? ` <button type="button" class="pen" data-act="budgetedit" aria-label="改每月预算" title="改每月预算">✎</button>` : ""}</td><td>${esc(r.actual)}${r.log ? ` <button type="button" class="pen" data-act="lifelogopen" data-kind="${r.log}" aria-label="记一笔" title="记一笔">＋</button>` : ""}</td><td><span class="pill p-${r.light}">${r.light === "none" && r.actual && r.actual !== "—" ? "不判灯" : LIGHT[r.light]}</span></td></tr>`).join("");
+  const rows = t.rows.map((r) => `<tr><td>${uiText(r.name, true)}${r.note ? `<span class="muted u-blk t-xs">${uiText(r.note, true)}</span>` : ""}</td><td>${uiText(r.quest, true)}</td><td>${uiText(r.floor, true)}${r.edit === "budget" ? ` <button type="button" class="pen" data-act="budgetedit" aria-label="改每月预算" title="改每月预算">✎</button>` : ""}</td><td>${uiText(r.actual, true)}${r.log ? ` <button type="button" class="pen" data-act="lifelogopen" data-kind="${r.log}" aria-label="记一笔" title="记一笔">＋</button>` : ""}</td><td><span class="pill p-${r.light}">${r.light === "none" && r.actual && r.actual !== "—" ? "不判灯" : LIGHT[r.light]}</span></td></tr>`).join("");
   const bosses = t.bosses.map((b, i) => `<div class="bossrow"><button type="button" class="boss ${b.main ? "" : "alt"}" data-act="boss" data-id="${b.goal_id}">
-      <div class="name"><b class="t-md">${b.main ? "★ " : ""}${esc(b.name)}${b.main ? "（主副本）" : ""}</b><span class="muted t-xs">${esc(b.line)}</span></div>
-      <div class="bar"><i style="width:${Math.round(100 * (b.frac || 0))}%"></i></div>
+      <div class="name"><b class="t-md">${b.main ? "★ " : ""}${uiText(b.name, true)}${b.main ? "（主副本）" : ""}</b><span class="muted t-xs">${uiText(b.line, true)}</span></div>
+      ${bossBar(b)}
       <div class="gold t-xs">${b.next ? "下一步：" + esc(b.next) : ""} ▸</div></button>${i > 0 ? `<button type="button" class="up" data-act="goal-up" data-id="${b.goal_id}" aria-label="${esc(b.name)}往前挪" title="排到前面">↑ 提前</button>` : ""}</div>`).join("") || '<p class="muted t-sm">这个赛季没有副本，只看健康线。</p>';
-  const habits = t.habits.map((h) => h.kind === "daily"
-    ? `<button type="button" class="chip ${h.done ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.done ? 1 : ""}">${h.done ? "✓ " : ""}${esc(short(h.title))}</button>`
-    : `<button type="button" class="chip ${h.count >= h.target ? "on" : ""}" data-act="habit" data-id="${h.id}" data-done="${h.today ? 1 : ""}">${esc(short(h.title))} ${h.count}/${h.target}</button>`).join("");
-  const tasks = taskList(t.tasks, "terr", "没有待办");
   const ex = t.explore;
-  const money = (v, c) => (c === "GBP" ? "£" : c === "CNY" ? "¥" : c + " ") + Math.abs(v).toFixed(2);
-  const bp = t.budget || {}, yuan = (v) => "¥" + Number(v).toLocaleString();
-  // 预算平时收起来，点开再改（没必要固定占位置）
-  const extra = t.key === "money" ? spendChart(t.spend) + `<section class="panel col"><h2>最近的账</h2><div class="scrollbox">${(t.transactions || []).map((x) => `<div class="item"><span class="grow">${esc(x.merchant || "（没认出商户）")}
-        <span class="muted u-blk t-xs">${esc(x.day.slice(5))} · ${esc({ monzo: "Monzo", cmb: "招行", bocom: "交行", chat: "小伴 记的" }[x.source] || x.source)}${x.category === "refund" ? " · 退款" : x.category === "transfers" ? " · 转账，不算花销" : x.category === "unparsed" ? " · 没认出来，不算钱" : x.category === "ignored" ? " · 你标了不算" : ""}</span></span>
-        <b style="color:${x.amount > 0 ? "var(--ok, #6fcf97)" : "inherit"};${x.category === "ignored" ? "text-decoration:line-through;opacity:.5" : ""}">${x.amount > 0 ? "+" : x.amount < 0 ? "−" : ""}${money(x.amount, x.currency)}</b>
-        ${x.category === "unparsed" ? "" : `<button type="button" class="btn" data-act="money-ignore" data-id="${x.id}" data-on="${x.category === "ignored" ? "" : 1}">${x.category === "ignored" ? "算回来" : "不算"}</button>`}</div>`).join("") || '<p class="muted t-sm">还没有记录</p>'}</div></section>`
-    : t.key === "body" ? `<section class="panel col"><h2>体重</h2>${weightChart(t.weights)}<span class="muted t-xs">金线是 7 天平均体重，虚线是本赛季阶段目标。</span></section>`
-    : t.key === "life" && ex ? `<section class="panel col"><div class="row u-between"><h2>探索地图</h2><button type="button" class="btn small" data-act="exploreopen">✎ 编辑</button></div><div class="row" style="gap:18px;flex-wrap:wrap">
+  const parts = {
+    score: scorePanel(t.score, t),
+    health: `<section class="panel col"><div class="row u-between u-wrap"><h2>健康线 · 本周</h2><span class="muted t-xs">自动计算，不用打卡</span></div>
+        <div class="u-ox"><table class="htbl fixed"><colgroup><col class="w25"><col class="w21"><col class="w20"><col class="w16"><col class="w18"></colgroup><thead><tr><th>项</th><th>副本标准</th><th>保底</th><th>本周</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>`,
+    charts: (t.charts || []).map(metricChart).join("") + (DOMAIN_CHARTS[t.key] ? DOMAIN_CHARTS[t.key](t) : ""),
+    bosses: `<section class="panel col"><h2>副本</h2>${bosses}</section>`,
+    // 探索地图在副本和资料之间（生活体验）；没上传过表格时写一句怎么加，不再显示 undefined
+    explore: t.key !== "life" ? "" : `<section class="panel col"><div class="row u-between"><h2>探索地图</h2><button type="button" class="btn small" data-act="exploreopen">✎ 编辑</button></div>${ex ? `<div class="row exrow">
         <span><b class="big2">${ex.countries}</b> <span class="muted">个国家已点亮</span></span><span><b class="big2">${ex.china}</b> <span class="muted">处国内去过</span></span>
-        <span><b class="big2">${ex.goals_done}</b><span class="muted"> / ${ex.goals_total} 条人生 Goal 完成，${ex.goals_doing} 条进行中</span></span></div></section>` : "";
-  return `<header class="row u-wrap u-g12"><span class="crest">${tIcon(t.key)}</span>
-      <span class="u-min0"><h2 class="t-xl">${esc(t.name)} <span class="pill p-${t.light}" style="font-size:12px;vertical-align:3px">${LIGHT[t.light]}</span></h2>
-      <span class="muted t-md">${summary}</span></span><span style="margin-left:auto;align-self:flex-start">${back}</span></header>
-    <div class="cols2">
-      <div class="col">${scorePanel(t.score)}${(t.charts || []).map(metricChart).join("")}<section class="panel col"><div class="row u-between u-wrap"><h2>健康线 · 本周</h2><span class="muted t-xs">自动计算，不用打卡</span></div>
-        <div style="overflow-x:auto"><table class="htbl fixed"><colgroup><col style="width:25%"><col style="width:21%"><col style="width:20%"><col style="width:16%"><col style="width:18%"></colgroup><thead><tr><th>项</th><th>副本标准</th><th>保底</th><th>本周</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></section>${extra}</div>
-      <div class="col"><section class="panel col"><h2>副本</h2>${bosses}</section>
-        <!-- 领域页只留副本列表和资料，日常和待办首页有 -->
-        <section class="panel col"><div class="row u-between"><h2>资料</h2><button type="button" class="btn" data-act="brain-terr" data-k="${t.key}">看这块的全部资料 ▸</button></div>
-          <div class="scrollbox">${(t.brain || []).map((x) => `<div class="item"><span class="grow">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title)}
-            <span class="muted u-blk t-xs">${esc(x.kind_label)}${x.source ? " · " + esc(x.source) : ""}</span></span></div>`).join("") || '<p class="muted t-sm">这块还没有资料</p>'}</div></section></div></div>`;
+        <span><b class="big2">${ex.goals_done}</b><span class="muted"> / ${ex.goals_total} 条人生 Goal 完成，${ex.goals_doing} 条进行中</span></span></div>` : '<span class="muted t-sm">还没有探索地图，点“编辑”加地方，或在设置页上传表格。</span>'}</section>`,
+    // 领域页只留副本列表和资料，日常和待办首页有
+    brain: `<section class="panel col"><div class="row u-between"><h2>资料</h2><button type="button" class="btn" data-act="brain-terr" data-k="${t.key}">看这块的全部资料 ▸</button></div>
+          <div class="scrollbox">${(t.brain || []).map((x) => `<div class="item"><span class="grow">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${uiText(x.title, true)}</a>` : esc(x.title)}
+            <span class="muted u-blk t-xs">${uiFixed(x.kind_label)}${x.source ? " · " + esc(x.source) : ""}</span></span></div>`).join("") || '<p class="muted t-sm">这块还没有资料</p>'}</div></section>`,
+  };
+  const head = `<header class="row u-wrap u-g12"><span class="crest">${tIcon(t.key)}</span>
+      <span class="u-min0"><h2 class="pagetitle">${uiText(t.name, true)} <span class="pill p-${t.light} pill-h">${LIGHT[t.light]}</span></h2>
+      <span class="muted t-md">${summary}</span></span><span class="u-mlauto u-selfstart">${back}</span></header>`;
+  return domainPage(head, parts);
 }
+
+// 领域详情页只有这一个骨架：
+// 标题 → 这个领域（分数）→ 健康线 → 图表 → 副本 → 探索地图 → 资料。宽屏左列放前三块、右列放后三块，手机上按同样顺序排成一列。
+// 各领域只在 DOMAIN_CHARTS 里给自己的图（图表块里排在通用指标图后面），不另排顺序（docs/design/territories.md“领域页的统一顺序”）
+const DOMAIN_ORDER = ["score", "health", "charts", "bosses", "explore", "brain"];
+const domainPage = (head, parts) => `${head}<div class="cols2"><div class="col">${DOMAIN_ORDER.slice(0, 3).map((k) => parts[k]).join("")}</div>
+    <div class="col">${DOMAIN_ORDER.slice(3).map((k) => parts[k]).join("")}</div></div>`;
+const DOMAIN_CHARTS = {
+  // 健康：只留体重（训练、0 点前睡不要图）
+  body: (t) => `<section class="panel col"><h2>体重</h2>${weightChart(t.weights)}<span class="muted t-xs">金线是 7 天平均体重，虚线是本赛季阶段目标。</span></section>`,
+  // 财务：每日开销 + 最近的账（每一笔都看得到）
+  money: (t) => {
+    const money = (v, c) => (c === "GBP" ? "£" : c === "CNY" ? "¥" : c === "EUR" ? "€" : c + " ") + moneyNum(v);
+    return spendChart(t.spend) + `<section class="panel col"><div class="row u-between u-wrap"><h2>最近的账</h2><span class="muted t-xs">金额是花出去的钱；绿色带 + 的是退款或收入——退款冲回原来那笔消费的那一周，收入不算花销</span></div><div class="scrollbox">${(t.transactions || []).map((x) => `<div class="item"><span class="grow">${uiText(x.merchant || "（没认出商户）", false)}
+        <span class="muted u-blk t-xs">${uiText(x.day.slice(5), false)} · ${esc({ monzo: "Monzo", cmb: "招行", bocom: "交行", chat: "小伴 记的" }[x.source] || x.source)}${x.category === "refund" ? (x.refund_of ? ` · 退款，冲回 ${uiText((x.count_day || "").slice(5), false)} ${uiText(x.refund_merchant || "", false)} 那笔` : " · 退款，原消费不在记录里，不算进花销") : x.amount > 0 && !x.category ? " · 收入，不算花销" : x.category === "transfers" ? " · 转账，不算花销" : x.category === "unparsed" ? " · 没认出来，不算钱" : x.category === "ignored" ? " · 你标了不算" : ""}</span></span>
+        <b class="${x.amount > 0 ? "u-ok" : ""}${x.category === "ignored" ? " u-struck" : ""}">${x.amount > 0 ? "+" : ""}${money(x.amount, x.currency)}</b>
+        ${x.category === "unparsed" ? "" : `<button type="button" class="btn" data-act="money-ignore" data-id="${x.id}" data-on="${x.category === "ignored" ? "" : 1}">${x.category === "ignored" ? "算回来" : "不算"}</button>`}</div>`).join("") || '<p class="muted t-sm">还没有记录</p>'}</div></section>`;
+  },
+};
 
 /* ---------- 回顾：领地地图的第二个标签（数字全由代码算，ethan/review.py） ---------- */
 function reviewPage() {
   const r = S.review;
-  const head = `<header class="row u-wrap"><h2 class="t-xl">世界</h2>${mapTabs()}</header>`;
+  const head = `<header class="row u-wrap"><h2 class="pagetitle">世界</h2>${mapTabs()}</header>`;
   if (!r) return head + '<p class="loading">加载中……</p>';
   const past = r.weeks.slice(1);
   return head + `
-    <section class="panel col"><div class="row u-between u-wrap"><h2>${esc(r.season.name)} · 赛季结算</h2><span class="muted">剩 ${r.season.days_left} 天</span></div>
-      <span class="muted t-sm">从 ${esc(r.season.start)} 算起，已过完 ${r.season.weeks} 周 · 赛季累计经验 ${r.season.points}（含本周）· 满勤 ${r.season.full_days} 天</span>
+    <section class="panel col"><div class="row u-between u-wrap"><h2>${uiText(r.season.name, false)} · 赛季结算</h2><span class="muted">剩 ${r.season.days_left} 天</span></div>
+      <span class="muted t-sm">从 ${uiText(r.season.start, false)} 算起，已过完 ${r.season.weeks} 周 · 赛季累计经验 ${r.season.points}（含本周）· 满勤 ${r.season.full_days} 天</span>
       ${r.season.weeks ? wTally(r.season.territories) : '<span class="muted t-sm">第一周还没过完，过完就有结算。本周的回顾在“总览”里。</span>'}</section>
     ${past.length ? `<h2 style="font-size:16px">过去几周</h2>${past.map((w) => weekCard(w, false)).join("")}` : ""}
-    ${r.months.length > 1 || (r.months[0] && r.months[0].weeks > 1) ? `<section class="panel col"><h2>月度</h2>${r.months.map((m) => `<div class="col u-g4"><b>${esc(m.month)}</b><span class="muted t-sm">${m.weeks} 周 · 经验 ${m.points} · 满勤 ${m.full_days} 天</span>${wTally(m.territories)}</div>`).join("")}</section>` : ""}
+    ${r.months.length > 1 || (r.months[0] && r.months[0].weeks > 1) ? `<section class="panel col"><h2>月度</h2>${r.months.map((m) => `<div class="col u-g4"><b>${uiText(m.month, false)}</b><span class="muted t-sm">${m.weeks} 周 · 经验 ${m.points} · 满勤 ${m.full_days} 天</span>${wTally(m.territories)}</div>`).join("")}</section>` : ""}
     <form class="panel col" data-form="review"><h2>给这周的复盘说一句</h2>
       <span class="muted t-sm">哪里不顺、下周想怎么调，随口写一句，小伴 排下周时照着改。</span>
       <textarea name="note" rows="2" placeholder="比如：这周训练太满，下周少排一次" style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit"></textarea>
@@ -747,36 +784,36 @@ function settingsPage() {
                   system_inference: "系统推的", agent_relay: "转述", unknown: "来源没记" };
   const m = c.memory;
   const memPanel = m ? `<section class="panel col"><div class="row u-between"><h2>记忆</h2><button type="button" class="btn" data-act="go" data-page="me">去“我”页看 ▸</button></div>
-      ${m.on_hold ? `<p class="hbad">记忆暂停中：${esc(m.on_hold)}。除了你本人，谁都查不到记忆，等你确认后放开。</p>` : ""}
-      <div class="item"><span class="grow">关于你的记忆<span class="muted u-blk t-xs">${Object.entries(m.by_source || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${esc(SAIDN[k] || k)} ${n}`).join("　")}</span></span><b class="t-h">${m.facts}</b></div>
+      ${m.on_hold ? `<p class="hbad">记忆暂停中：${uiText(m.on_hold, false)}。除了你本人，谁都查不到记忆，等你确认后放开。</p>` : ""}
+      <div class="item"><span class="grow">关于你的记忆<span class="muted u-blk t-xs">${Object.entries(m.by_source || {}).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${uiFixed(SAIDN[k] || k)} ${n}`).join("　")}</span></span><b class="t-h">${m.facts}</b></div>
       <div class="item"><span class="grow">文件整理<span class="muted u-blk t-xs">你发过的文件每晚整理 15 份：已整理 ${m.files.done} / ${m.files.files}，其中关于你的 ${m.files.about_her} 份，记下 ${m.files.facts} 条</span></span><span class="pill ${m.files.files && m.files.done >= m.files.files ? "p-ok" : "p-none"}">${!m.files.files ? "还没有文件" : m.files.done >= m.files.files ? "整理完了" : "整理中"}</span></div>
       <div class="item"><span class="grow">按意思找（语义检索）<span class="muted u-blk t-xs">${m.semantic ? "开着：换个说法也能找到" : "还没开：服务器装好模型、量过内存后打开"}</span></span><span class="pill ${m.semantic ? "p-ok" : "p-none"}">${m.semantic ? "开着" : "没开"}</span></div>
     </section>` : "";
-  const sys = c.system || {};
+  const sys = S.syscheck || {};
   const tab = S.setTab || "set";
   const seg = `<span class="modeseg" role="group" aria-label="设置页"><button type="button" class="${tab === "set" ? "on" : ""}" data-act="settab" data-v="set" aria-pressed="${tab === "set"}">设置</button><button type="button" class="${tab === "sys" ? "on" : ""}" data-act="settab" data-v="sys" aria-pressed="${tab === "sys"}">系统体检${sys.bad ? ` <i class="navdot inline">${sys.bad}</i>` : ""}</button></span>`;
-  const head = `<header class="row sethead"><h2 class="t-xl">设置</h2>${seg}</header>`;
+  const head = `<header class="row sethead"><h2 class="pagetitle">设置</h2>${seg}</header>`;
   if (tab === "sys") return head + sysPage(c);
   return head + `
     <div class="cols2 fitbody">
       <div class="col">
-        <section class="panel col"><h2>提醒</h2>
+        <section class="panel col"><div class="row u-between"><h2>提醒</h2><span class="modeseg" role="group" aria-label="语言"><button type="button" data-act="ui-lang" data-v="zh" aria-pressed="${uiLang === 'zh'}">中文</button><button type="button" data-act="ui-lang" data-v="en" aria-pressed="${uiLang === 'en'}">English</button></span></div>
           <div class="item"><span class="grow">小伴 主动找你<span class="muted u-blk t-xs">早报、提醒、想你了来找你</span></span>
             <span class="pill ${c.prefs.proactive ? "p-ok" : "p-none"}">${c.prefs.proactive ? "开着" : "关着"}</span>
             <button type="button" class="btn" data-act="setpro" data-v="${c.prefs.proactive ? "" : "1"}">${c.prefs.proactive ? "关掉" : "打开"}</button></div>
-          <form class="item" data-form="quiet"><span class="grow">免打扰时段<span class="muted u-blk t-xs">这段时间他不主动发消息（${esc(c.prefs.timezone)}）</span></span>
+          <form class="item" data-form="quiet"><span class="grow">免打扰时段<span class="muted u-blk t-xs">这段时间他不主动发消息（${uiText(c.prefs.timezone, false)}）</span></span>
             <input name="quiet" value="${esc(c.prefs.quiet)}" style="width:130px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px"><button class="btn">保存</button></form>
         </section>
         <section class="panel col fitscroll"><h2>这套系统好不好用</h2>
-          <button type="button" class="item sysjump" data-act="settab" data-v="sys"><span class="grow">${sys.bad ? `<b class="sysbad">${sys.bad} 处要看</b>` : "系统体检：一切正常"}<span class="muted u-blk t-xs">定时任务、来源、后台整理、部署、内存、红点自检都在这一页 ▸</span></span></button>
+          <button type="button" class="item sysjump" data-act="settab" data-v="sys"><span class="grow">${!S.syscheck ? "系统体检：正在查……" : sys.bad ? `<b class="sysbad">${sys.bad} 处要看</b>` : "系统体检：一切正常"}<span class="muted u-blk t-xs">定时任务、来源、后台整理、部署、内存、红点自检都在这一页 ▸</span></span></button>
           ${(c.metrics || []).length ? `<h3 class="smh">本周</h3><div class="smet">${c.metrics.map((m) => `<div class="sm ${m.better === null ? "" : m.better ? "up" : "down"}">
-            <b>${m.this_week}</b><span>${esc(m.name)}</span><small>上周 ${m.last_week}${m.better === null ? "" : m.better ? " · 变好了" : " · 变差了"}</small></div>`).join("")}</div>
+            <b>${m.this_week}</b><span>${uiText(m.name, false)}</span><small>上周 ${m.last_week}${m.better === null ? "" : m.better ? " · 变好了" : " · 变差了"}</small></div>`).join("")}</div>
           <span class="muted t-xs">从聊天和后台记录自动算，变差了开发会话去修，不用你盯。</span>` : ""}
           <h3 class="smh">每天该有的</h3>
-          ${[...c.health].sort((a, b) => a.ok - b.ok).map((h) => `<div class="item"><span class="grow">${esc(h.name)}<span class="muted u-blk t-xs">${esc(h.detail)}</span></span>${fine(h.ok)}</div>`).join("")}
+          ${[...c.health].sort((a, b) => a.ok - b.ok).map((h) => `<div class="item"><span class="grow">${uiText(h.name, false)}<span class="muted u-blk t-xs">${uiText(h.detail, true)}</span></span>${fine(h.ok)}</div>`).join("")}
         </section>
       </div>
-      <div class="col">${memPanel}<section class="panel col fitscroll"><h2>数据连接</h2>${c.connections.map((x) => `<div class="item"><span class="grow">${esc(x.name)}<span class="muted u-blk t-xs">${esc(x.detail)}${!x.ok && x.fix ? " · 怎么接：" + esc(x.fix) : ""}</span></span>${!x.ok && x.link ? `<a class="btn gold" href="${esc(x.link)}">去授权</a>` : ""}${ok(x.ok)}</div>`).join("")}</section></div>
+      <div class="col">${memPanel}<section class="panel col fitscroll"><h2>数据连接</h2>${c.connections.map((x) => `<div class="item"><span class="grow">${uiText(x.name, false)}<span class="muted u-blk t-xs">${uiText(x.detail, true)}${!x.ok && x.fix ? " · 怎么接：" + esc(x.fix) : ""}</span></span>${!x.ok && x.link ? `<a class="btn gold" href="${esc(x.link)}">去授权</a>` : ""}${ok(x.ok)}</div>`).join("")}</section></div>
     </div>`;
 }
 
@@ -788,8 +825,9 @@ function meter(done, total, cls = "") {
   return `<span class="bar sysbar ${cls}" role="img" aria-label="${done} / ${total}"><i style="width:${pct}%"></i></span>`;
 }
 function sysPage(c) {
-  const y = c.system || {};
-  if (y.error) return `<section class="panel"><p class="hbad">体检没算出来：${esc(y.error)}</p></section>`;
+  const y = S.syscheck;
+  if (!y) return '<p class="loading">正在体检……</p>';
+  if (y.error) return `<section class="panel"><p class="hbad">体检没算出来：${uiText(y.error, false)}</p></section>`;
   const jobs = y.jobs || [], d = y.deploy || {}, mem = y.memory, bl = y.backlog, src = y.sources || [], feeds = y.feeds || [], checks = y.checks || [];
   const badJobs = jobs.filter((j) => !j.ok), stale = src.filter((s) => s.state === "stale"), badChecks = checks.filter((x) => !x.ok);
   const badFeeds = feeds.filter((f) => !f.ok);
@@ -800,13 +838,13 @@ function sysPage(c) {
     ...(mem && mem.level === "critical" ? ["服务器内存快用完了"] : []), ...badChecks.map((x) => `红点自检「${x.name}」对不上`),
     ...badFeeds.map((f) => f.name), ...(y.other || []).map((o) => o.what)];
   const verdict = issues.length
-    ? `<p class="sysverdict bad"><b>${issues.length} 处要看：</b>${esc(issues.slice(0, 4).join("；"))}${issues.length > 4 ? " 等" : ""}。巡检每 3 小时看一次，能修的自己修，要你做的会告诉你。</p>`
+    ? `<p class="sysverdict bad"><b>${issues.length} 处要看：</b>${uiText(issues.slice(0, 4).join("；"), false)}${issues.length > 4 ? " 等" : ""}。巡检每 3 小时看一次，能修的自己修，要你做的会告诉你。</p>`
     : `<p class="sysverdict">${jobs.length} 个定时任务、${src.filter((s) => s.state !== "not_connected").length} 个数据来源都正常，上次上线成功。</p>`;
   const row = (cls, name, mid, right) => `<div class="sysrow ${cls}"><span class="sname">${name}</span><span class="smid">${mid}</span>${right}</div>`;
   const jobRows = [...jobs].sort((a, b) => a.ok - b.ok).map((j) => {
     const st = JOBST[j.state] || ["p-none", j.state];
-    return row(j.ok ? "" : "bad", `${esc(j.name)}<small>${esc(j.every)}</small>`,
-      j.ok ? (j.state === "running" ? esc(j.detail) : `<span>上次 ${esc(j.last || "—")}</span><span>下次 ${esc(j.next || "—")}</span>`) : esc(j.detail),
+    return row(j.ok ? "" : "bad", `${uiText(j.name, false)}<small>${uiText(j.every, false)}</small>`,
+      j.ok ? (j.state === "running" ? esc(j.detail) : `<span>上次 ${uiText(j.last || "—", false)}</span><span>下次 ${uiText(j.next || "—", true)}</span>`) : esc(j.detail),
       `<span class="pill ${st[0]}">${st[1]}</span>`);
   }).join("");
   const memPct = mem ? Math.round(mem.available_mb * 100 / mem.total_mb) : 0;
@@ -816,17 +854,17 @@ function sysPage(c) {
     : '<p class="muted t-sm">这台机器读不到内存（不是服务器）</p>';
   const blBox = bl ? `
       <div class="sysprog${bl.talks_stuck ? " bad" : ""}"><div class="row"><span class="grow">微信对话</span><b>${bl.wechat.done} / ${bl.wechat.total}</b></div>${meter(bl.wechat.done, bl.wechat.total)}
-        <small class="muted">${bl.talks_left ? `还有 ${bl.talks_left} 份对话等整理` : "都整理完了"}${bl.last_digest ? ` · 最近一次进展 ${esc(bl.last_digest)}` : ""}${bl.talks_stuck ? " · 超过 2 小时没动" : ""}${bl.talks_given_up ? ` · ${bl.talks_given_up} 份试了 3 次没成，放弃了` : ""}</small></div>
+        <small class="muted">${bl.talks_left ? `还有 ${bl.talks_left} 份对话等整理` : "都整理完了"}${bl.last_digest ? ` · 最近一次进展 ${uiText(bl.last_digest, false)}` : ""}${bl.talks_stuck ? " · 超过 2 小时没动" : ""}${bl.talks_given_up ? ` · ${bl.talks_given_up} 份试了 3 次没成，放弃了` : ""}</small></div>
       <div class="sysprog${bl.people_stuck ? " bad" : ""}"><div class="row"><span class="grow">人物卡</span><b>${bl.people.done} / ${bl.people.total}</b></div>${meter(bl.people.done, bl.people.total)}
-        <small class="muted">${bl.people.left ? `还有 ${bl.people.left} 张要整理${bl.talks_left ? "（等对话整理完）" : ""}` : "都整理完了"}${bl.last_people ? ` · 最近一次进展 ${esc(bl.last_people)}` : ""}${bl.people_stuck ? " · 超过 2 小时没动" : ""}</small></div>` : '<p class="muted">没查成</p>';
+        <small class="muted">${bl.people.left ? `还有 ${bl.people.left} 张要整理${bl.talks_left ? "（等对话整理完）" : ""}` : "都整理完了"}${bl.last_people ? ` · 最近一次进展 ${uiText(bl.last_people, false)}` : ""}${bl.people_stuck ? " · 超过 2 小时没动" : ""}</small></div>` : '<p class="muted">没查成</p>';
   // 订阅额度一行：最近 5 小时按 API 价折算用了多少、门槛、后台是否在让路（ethan/bgwork.py budget）
   const q = y.quota, qk = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n || 0);
-  const quotaRow = q ? `<small class="muted sysquota">订阅近 5 小时：$${q.used_usd.toFixed(2)}（${q.calls} 次${q.tokens_known ? `，缓存读 ${qk(q.tokens.cache_read_tokens)} / 写 ${qk(q.tokens.cache_write_tokens)} token` : ""}），预计 $${q.projected_usd.toFixed(2)}，门槛 $${q.limit_usd}${q.util && Object.keys(q.util).length ? ` · Claude 报：${q.util.five_hour != null ? `5 小时 ${Math.round(q.util.five_hour * 100)}%` : ""}${q.util.seven_day != null ? ` 7 天 ${Math.round(q.util.seven_day * 100)}%` : ""}` : ""} · 后台${q.paid_block ? `<b>停了</b>：${esc(q.paid_block.reason)}，${esc(q.paid_block.until_local || q.paid_block.until)} 恢复` : q.yielding ? "<b>在让路</b>（额度快到门槛，等窗口滑过去）" : "照常整理"}</small>` : "";
-  const depBox = d.has ? `<div class="sysdep ${d.ok ? "" : "bad"}"><div class="row u-g8 u-base"><code class="dcommit">${esc(d.commit)}</code><span class="pill ${d.ok ? "p-ok" : "p-bad"}">${d.ok ? "已上线" : "没上成"}</span><span class="muted u-mlauto t-sm">${esc(d.at)}</span></div>
-      <span class="dsub">${esc(d.subject || "")}</span>
-      ${d.ok ? "" : `<small>卡在「${esc(d.step)}」，已退回原版本${d.failed_tests.length ? "。没过的测试：" + d.failed_tests.map((t) => `<code>${esc(t)}</code>`).join(" ") : ""}</small>`}
-      ${d.migrations ? `<small class="${d.migrations_ok ? "muted" : "sysbadt"}">数据改动：${esc(d.migrations.slice(-120))}</small>` : ""}
-      <small class="${d.check_ok ? "muted" : "sysbadt"}">${d.checked ? `每 2 分钟看一次 main，上次 ${esc(d.checked)}` : "每 2 分钟看一次 main"}${d.check_error ? "：" + esc(d.check_error) : ""}</small></div>`
+  const quotaRow = q ? `<small class="muted sysquota">订阅近 5 小时：$${q.used_usd.toFixed(2)}（${q.calls} 次${q.tokens_known ? `，缓存读 ${qk(q.tokens.cache_read_tokens)} / 写 ${qk(q.tokens.cache_write_tokens)} token` : ""}），预计 $${q.projected_usd.toFixed(2)}，门槛 $${q.limit_usd}${q.util && Object.keys(q.util).length ? ` · Claude 报：${q.util.five_hour != null ? `5 小时 ${Math.round(q.util.five_hour * 100)}%` : ""}${q.util.seven_day != null ? ` 7 天 ${Math.round(q.util.seven_day * 100)}%` : ""}` : ""} · 后台${q.paid_block ? `<b>停了</b>：${uiText(q.paid_block.reason, true)}，${uiText(q.paid_block.until_local || q.paid_block.until, false)} 恢复` : q.yielding ? "<b>在让路</b>（额度快到门槛，等窗口滑过去）" : "照常整理"}</small>` : "";
+  const depBox = d.has ? `<div class="sysdep ${d.ok ? "" : "bad"}"><div class="row u-g8 u-base"><code class="dcommit">${uiText(d.commit, false)}</code><span class="pill ${d.ok ? "p-ok" : "p-bad"}">${d.ok ? "已上线" : "没上成"}</span><span class="muted u-mlauto t-sm">${uiText(d.at, false)}</span></div>
+      <span class="dsub">${uiText(d.subject || "", false)}</span>
+      ${d.ok ? "" : `<small>卡在「${uiText(d.step, false)}」，已退回原版本${d.failed_tests.length ? "。没过的测试：" + d.failed_tests.map((t) => `<code>${uiText(t, false)}</code>`).join(" ") : ""}</small>`}
+      ${d.migrations ? `<small class="${d.migrations_ok ? "muted" : "sysbadt"}">数据改动：${uiText(d.migrations.slice(-120), false)}</small>` : ""}
+      <small class="${d.check_ok ? "muted" : "sysbadt"}">${d.checked ? `每 2 分钟看一次 main，上次 ${uiText(d.checked, false)}` : "每 2 分钟看一次 main"}${d.check_error ? "：" + esc(d.check_error) : ""}</small></div>`
     : '<p class="muted t-sm">还没有部署记录</p>';
   const srcRows = [...src].sort((a, b) => (b.state === "stale") - (a.state === "stale") || (a.state === "not_connected") - (b.state === "not_connected")).map((x) => {
     const st = { ok: ["p-ok", "正常"], stale: ["p-bad", "断了"], not_connected: ["p-none", "没接上"] }[x.state] || ["p-none", x.state];
@@ -837,7 +875,7 @@ function sysPage(c) {
   const feedRows = feeds.map((f) => row(f.ok ? "" : "bad", esc(f.name), esc(f.detail), f.ok ? "" : '<span class="pill p-bad">要看</span>')).join("");
   // 对得上的收成一排小牌子，对不上的单独一行写清哪里不对
   const checkRows = badChecks.map((x) => row("bad", esc(x.name), x.items.map(esc).join("；"), '<span class="pill p-bad">不对</span>')).join("")
-    + (checks.length > badChecks.length ? `<div class="syschips">${checks.filter((x) => x.ok).map((x) => `<span class="pill p-ok">✓ ${esc(x.name)}</span>`).join("")}</div>` : "");
+    + (checks.length > badChecks.length ? `<div class="syschips">${checks.filter((x) => x.ok).map((x) => `<span class="pill p-ok">✓ ${uiText(x.name, false)}</span>`).join("")}</div>` : "");
   const other = (y.other || []).map((o) => row("bad", esc(o.what), esc(o.detail), '<span class="pill p-bad">要看</span>')).join("");
   return `${verdict}
     <div class="sysgrid fitbody">
@@ -853,7 +891,7 @@ function sysPage(c) {
         <section class="panel col syschk"><h2>红点自检 <small class="muted">${checks.length ? (badChecks.length ? `${badChecks.length} 项对不上` : "都对得上") : ""}</small></h2>${checkRows || '<p class="muted t-sm">没跑</p>'}</section>
       </div>
     </div>
-    <p class="muted sysat">体检于 ${esc(y.at || "")}（本地时间）· 和每 3 小时的巡检看同一份</p>`;
+    <p class="muted sysat">体检于 ${uiText(y.at || "", false)}（本地时间）· 和每 3 小时的巡检看同一份</p>`;
 }
 
 /* ---------- 日记：每天一张昨日卡，就是那一天的日记（原来的卡册） ---------- */
@@ -862,13 +900,19 @@ function dayNOf(day) {
   if (!n || !st.day) return null;
   return n - Math.round((new Date(st.day + "T12:00:00") - new Date(day + "T12:00:00")) / 86400000);
 }
+// 副本进度条只在这一处画：依据由服务器 stages.boss_progress 定（指标 → 里程碑 → 步骤），
+// 旁边小字写“按里程碑 1/4”，不让人以为是指标；什么依据都没有就不画。首页、领域页、周回顾、副本详情都用它
+const bossBar = (b, cls = "") => {
+  const p = b.prog || (b.frac != null ? { frac: b.frac, label: "" } : null);  // 存下来的老周回顾没有 prog
+  return p && p.frac != null ? `<div class="bossbar ${cls}"><div class="bar"><i style="width:${Math.round(100 * p.frac)}%"></i></div>${p.label ? `<span class="barby">${uiText(p.label, true)}</span>` : ""}</div>` : "";
+};
 // 进度状态单独上色（金色用得太多，“落后”显不出来）：落后用警示色加粗，领先、达成用绿色，正常不上色
 function bossPill(b) {
   // 每个副本右下角同一个样子（一个写“正常”、两个只有小箭头很奇怪）：有指标的写领先/正常/落后，没指标的写主线走到第几步
   const st = (b.status || "").replace(/[^\u4e00-\u9fa5]/g, "");
-  const txt = st || (b.steps_total ? `${b.steps_done}/${b.steps_total} 步` : "待拆步骤");
+  const txt = st || (b.prog ? b.prog.short : b.steps_total ? `${b.steps_done}/${b.steps_total} 步` : "") || "待拆步骤";
   const cls = st === "落后" ? "lag" : st === "领先" || st === "达成" ? "ok" : "";
-  return `<span class="bosspill ${cls}">${esc(txt)} ›</span>`;
+  return `<span class="bosspill ${cls}">${uiText(txt, false)} ›</span>`;
 }
 
 function statusHtml(text) {
@@ -896,11 +940,11 @@ function albumView(c) {
   // 卡册：能筛、按稀有度从高到低一行一档；月份多了用下拉
   const f = S.cardF || (S.cardF = { r: "", k: "", m: "" });
   const months = [...new Set(c.cards.map((x) => x.day.slice(0, 7)))].sort().reverse();
-  const chip = (field, v, label) => `<button type="button" class="chip ${f[field] === v ? "on" : ""}" data-act="cardf" data-f="${field}" data-v="${v}">${label}</button>`;
+  const chip = (field, v, label) => `<button type="button" class="chip ${f[field] === v ? "on" : ""}" data-act="cardf" data-f="${field}" data-v="${v}">${t(label)}</button>`;
   const shown = c.cards.map((x, i) => ({ ...x, i })).filter((x) => (!f.r || x.rarity === f.r) && (!f.k || x.kind === f.k) && (!f.m || x.day.startsWith(f.m)));
-  const one = (x) => `<button type="button" class="ccard ${RAR(x.rarity)}" data-act="cardopen" data-i="${x.i}">
+  const one = (x) => `<button type="button" class="ccard ${rarity(x.rarity)}" data-act="cardopen" data-i="${x.i}">
       <img src="${imgUrl(x.image)}" alt="${esc(x.day)} 的卡：${esc(x.title)}" loading="lazy">
-      <span class="cap"><b>${esc(x.title)}</b><span>${dayLabel(x.day).n} · ${esc(x.day.slice(5))}</span></span></button>`;
+      <span class="cap"><b>${uiText(x.title, true)}</b><span>${dayLabel(x.day).n} · ${uiText(x.day.slice(5), false)}</span></span></button>`;
   const rows = ["传说", "超稀有", "稀有", "普通"].map((r) => [r, shown.filter((x) => x.rarity === r).sort((a, b) => (a.day < b.day ? 1 : -1))]).filter(([, l]) => l.length)
     .map(([r, l]) => `<section class="col u-g8"><h2 class="t-lg">${r} <span class="muted u-fw4 t-sm">${l.length} 张</span></h2><div class="cardgrid">${l.map(one).join("")}</div></section>`).join("");
   const queued = (c.wishes || []).length;
@@ -924,13 +968,13 @@ function bookView(c) {
     <article class="spread${turn}" aria-label="${L.n} ${L.date} 的日记">
       <div class="leaf left">
         <button type="button" class="snap ${RAR(x.rarity)}" data-act="cardopen" data-i="${x.i}" aria-label="看大卡"><img src="${imgUrl(x.image)}" alt="${esc(x.day)} 的卡：${esc(x.title)}"><i class="tape a"></i><i class="tape b"></i></button>
-        <p class="snapcap">${esc(x.title)}${x.rarity && x.rarity !== "普通" ? ` · ${esc(x.rarity)}` : ""}</p>
-        ${x.line ? `<p class="margin">小伴：${esc(x.line)}</p>` : ""}
+        <p class="snapcap">${uiText(x.title, true)}${x.rarity && x.rarity !== "普通" ? ` · ${uiText(x.rarity, false)}` : ""}</p>
+        ${x.line ? `<p class="margin">小伴：${uiText(x.line, true)}</p>` : ""}
       </div>
       <div class="leaf right">
         <header class="pagehead"><b>${L.n}</b><span>${L.date}</span>${S.diaryEdit === x.day ? "" : `<span class="dtools">${x.diary ? `<button type="button" class="pen ${S.diaryTool === "hl" ? "on" : ""}" data-act="diarytool" data-v="hl" title="荧光笔：点了以后在句子上划一下" aria-pressed="${S.diaryTool === "hl"}">🖍</button><button type="button" class="pen ${S.diaryTool === "note" ? "on" : ""}" data-act="diarytool" data-v="note" title="批注：划一句写评论，小伴 只改这一句" aria-pressed="${S.diaryTool === "note"}">💬</button>` : ""}<button type="button" class="pen" data-act="diaryedit" data-day="${esc(x.day)}" aria-label="改这一天的日记" title="改这一天的日记">✎</button></span>`}</header>
         ${S.diaryEdit === x.day ? diaryEditor(x) : `<div class="ink ${S.diaryTool ? "tool-" + S.diaryTool : ""}" data-day="${esc(x.day)}">${x.diary ? diaryHtml(x.diary, x.marks, x.notes) : `<p>${x.diary_mine ? "这一天你留空了。" : x.day === (S.state && S.state.day) ? "今天的日记今晚自动写好；也可以点右上角 ✎ 自己先写。" : "这一天的日记正在补写，过一会儿再来看；也可以点右上角 ✎ 自己写。"}</p>`}</div>`}
-        ${(x.notes || []).length && S.diaryEdit !== x.day ? `<div class="dnotes">${x.notes.map((n) => `<div class="dnote ${n.status}"><span>💬 ${esc(n.note)}</span><span class="muted">${n.status === "done" ? `小伴 改成了：${esc(n.new_text || "（删掉了这句）")}` : n.status === "failed" ? esc(n.new_text || "没改成") : "小伴 在改……"}</span></div>`).join("")}</div>` : ""}
+        ${(x.notes || []).length && S.diaryEdit !== x.day ? `<div class="dnotes">${x.notes.map((n) => `<div class="dnote ${n.status}"><span>💬 ${uiText(n.note, true)}</span><span class="muted">${n.status === "done" ? `小伴 改成了：${uiText(n.new_text || "（删掉了这句）", false)}` : n.status === "failed" ? esc(n.new_text || "没改成") : "小伴 在改……"}</span></div>`).join("")}</div>` : ""}
         <footer class="pagefoot">${list.length - at} / ${list.length}</footer>
       </div>
     </article>
@@ -944,7 +988,7 @@ function resetOverlayState() {
   if (S.overlay === null && S.noteDraft) { S.noteDraft = null; if (S.diaryTool === "note") { S.diaryTool = null; setTimeout(render, 0); } }  // 批注框关了（取消）也退出批注模式
   if (S.planDirty) {  // 删了一个约还要点“让 AI 重排”——改了日程就自动重排，不用按钮
     S.planDirty = false;
-    send("plan.replan", {}).then((r) => { if (!r.ok) return showUndo("待办没重排上：" + r.msg); showUndo("日程改了，小伴 在按新日程重排今天的待办"); load(true); });
+    save("plan.replan", {}, { fail: "待办没重排上", say: "日程改了，小伴 在按新日程重排今天的待办" }).then((r) => { if (r) load(true); });
   }
   if (S.editGoal != null) { S.editGoal = null; flushSteps(true); }  // 关副本详情弹窗时编辑自动存上并收起
   S.goalEdit = null; S.goalEditWhat = null; S.deskTab = null; S.prepTab = ""; S.prepOpen = null;
@@ -962,11 +1006,8 @@ function leaveEdits() {
     const x = (S.cards && S.cards.cards || []).find((c) => c.day === day);
     S.diaryEdit = null; S.diaryDraft = null;
     if (text != null && (!x || text.trim() !== (x.diary || "").trim()))
-      send("diary.save", { day, text }).then((r) => {
-        if (r.ok) return showUndo("日记的改动保存好了");
-        if (!S.diaryEdit) { S.diaryEdit = day; S.diaryDraft = text; }  // 没存上：草稿留着，回到日记还在编辑
-        showUndo("日记没存上：" + r.msg);
-      });
+      save("diary.save", { day, text }, { fail: "日记没存上", say: "日记的改动保存好了",
+        onFail: () => { if (!S.diaryEdit) { S.diaryEdit = day; S.diaryDraft = text; } } });  // 没存上：草稿留着，回到日记还在编辑
   }
 }
 
@@ -986,7 +1027,7 @@ const stepAddForm = (gid) => `<form class="stepadd" data-form="stepadd" data-goa
 
 // 全站统一的返回键（日记、商店、领域页的返回要一个样子）：左上角、标题前面，“‹ 回到哪”。规范见 docs/design/workbench.md 第“组件规范”节
 const BACK_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"></path></svg>';
-const backBtn = (label, attrs) => `<button type="button" class="backbtn" ${attrs} aria-label="返回${esc(label)}">${BACK_SVG}<span>${esc(label)}</span></button>`;
+const backBtn = (label, attrs) => `<button type="button" class="backbtn" ${attrs} aria-label="返回${esc(label)}">${BACK_SVG}<span>${uiFixed(label)}</span></button>`;
 
 function diaryHtml(text, marks, notes) {
   // 日记是纯文字：一段一个 <p>，段落之间空一整行，去掉 markdown 记号，字和横线才能一行对一行
@@ -1103,11 +1144,11 @@ async function diaryMic() {
 }
 
 async function diarySend(action, payload) {
-  const res = await send(action, payload);
-  if (!res.ok) { showUndo(res.msg); return false; }
+  const res = await save(action, payload, { done: "存好了" });
+  if (!res) return false;
   S.diaryEdit = null; S.diaryDraft = null; S.diaryHeard = "";
   try { S.cards = await api("/api/cards"); } catch (e) { /* 已经存上了，下次进来再拉 */ }
-  render(); showUndo(res.msg || "存好了");
+  render();
   return true;
 }
 
@@ -1156,22 +1197,22 @@ function achPage() {
       <div class="playgrid">${r.plays.map((p) => p.waiting
         ? `<div class="play t-${p.tier} glow"><span class="medal m-${p.tier}">${p.tier}级</span><b>🎁 已解锁，等 小伴 揭晓</b><span class="muted t-sm">下次和他聊天，他会亲口告诉你</span></div>`
         : p.unlocked
-        ? `<div class="play t-${p.tier} open"><span class="medal m-${p.tier}">${p.tier}级</span><b style="font-size:16px">${esc(p.name)}</b><span style="font-size:13px;line-height:1.6">${esc(p.note)}</span>${p.at ? `<span class="muted" style="font-size:11px;margin-top:auto">${esc(p.at.slice(0, 10))} 解锁</span>` : ""}</div>`
+        ? `<div class="play t-${p.tier} open"><span class="medal m-${p.tier}">${p.tier}级</span><b style="font-size:16px">${uiText(p.name, true)}</b><span style="font-size:13px;line-height:1.6">${uiText(p.note, true)}</span>${p.at ? `<span class="muted" style="font-size:11px;margin-top:auto">${uiText(p.at.slice(0, 10), false)} 解锁</span>` : ""}</div>`
         : `<div class="play locked"><span class="medal m-${p.tier}">${p.tier}级</span><b>？？？</b><span class="muted t-sm">拿到一个${p.tier}级成就揭晓</span></div>`).join("")}</div></section>`;
   }
   // 成就页（通过样稿：现在的成就 + 样稿 C 的六边形徽章，按七块领域分组）
   const level = (i) => i.tier || (i.done ? "达成" : "");
   const degree = (i) => i.steps ? ((["铜", "银", "金"].indexOf(i.tier) + 1) + (i.next != null && i.source ? (i.frac || 0) : 0)) / i.steps.length : (i.done ? 1 : 0);
   const hex = (i) => {
-    if (i.riddle && !i.done) return `<div class="hexb riddle" title="${esc(i.riddle)}"><span class="hx"><b>?</b></span><span class="hn">？？？</span><span class="hs">${esc(i.riddle)}</span></div>`;
+    if (i.riddle && !i.done) return `<div class="hexb riddle" title="${esc(i.riddle)}"><span class="hx"><b>?</b></span><span class="hn">？？？</span><span class="hs">${uiText(i.riddle, true)}</span></div>`;
     const lv = level(i), pct = Math.round(100 * degree(i));
     const sub = i.steps ? (i.source ? `${i.value == null ? "—" : i.value}${i.value == null ? "" : i.unit}${i.next == null ? " · 全部达成" : ` / ${i.next}${i.unit}`}` : esc(i.hint || "等记录")) : (lv ? "已达成" : esc(i.hint || "还没做到"));
     return `<div class="hexb ${lv ? "got t-" + (lv === "达成" ? "金" : lv) : ""}" title="${esc(i.desc || "")}"><span class="hx" style="--p:${pct}"><b>${achIcon(i.key)}</b>${lv && lv !== "达成" ? `<i class="tier">${lv}</i>` : ""}</span>
-      <span class="hn">${esc(i.name)}</span><span class="hs">${lv ? sub : `${pct ? pct + "% · " : ""}${sub}`}</span></div>`;
+      <span class="hn">${uiText(i.name, true)}</span><span class="hs">${lv ? sub : `${pct ? pct + "% · " : ""}${sub}`}</span></div>`;
   };
   const groups = [["body", "健康"], ["career", "事业"], ["life", "生活体验"], ["study", "学习"], ["social", "社交"], ["academic", "学术"], ["money", "财务"], [null, "不分领域"]];
   return head + `
-    <section class="legendhero" aria-label="传说级成就">${a.legend.map((l) => `<div class="legendcard ${l.done ? "got" : ""}"><span class="lcrown" aria-hidden="true">♛</span><b>${esc(l.name)}</b><span>${esc(l.desc)}</span><small>${l.done ? "已达成" : "传说 · 未解锁"}</small></div>`).join("")}</section>
+    <section class="legendhero" aria-label="传说级成就">${a.legend.map((l) => `<div class="legendcard ${l.done ? "got" : ""}"><span class="lcrown" aria-hidden="true">♛</span><b>${uiText(l.name, true)}</b><span>${uiText(l.desc, true)}</span><small>${l.done ? "已达成" : "传说 · 未解锁"}</small></div>`).join("")}</section>
     ${groups.map(([k, n]) => { const rows = a.items.filter((i) => (i.domain || null) === k).sort((x, y) => degree(y) - degree(x)); const got = rows.filter((i) => i.done || i.tier).length;
       return rows.length ? `<section class="achdom"><div class="row u-g10 u-base"><h2>${k ? tIcon(k) : ""}${n}</h2><span class="muted t-sm">${got} / ${rows.length}</span></div><div class="hexgrid">${rows.map(hex).join("")}</div></section>` : ""; }).join("")}`;
 }
@@ -1185,23 +1226,23 @@ function brainPage() {
   const b = S.brain, q = S.bq || { tab: "all" };
   if (!b) return '<p class="loading">加载中……</p>';
   const c = b.counts, n = (v) => (v ? ` <span class="cnt">${v}</span>` : ` <span class="cnt">0</span>`);
-  const tabs = BRAIN_TABS.map(([k, label]) => `<button type="button" class="chip ${q.tab === k || (!q.tab && k === "all") ? "on" : ""} ${k === "ask" && c.tabs.ask ? "hot" : ""}" data-act="bq" data-f="tab" data-v="${k}">${k === "ask" && c.tabs.ask ? '<i class="reddot"></i>' : ""}${label}${n(c.tabs[k])}</button>`).join("");
-  const kchip = (k, label) => `<button type="button" class="chip ${(q.kind || "") === k ? "on" : ""}" data-act="bq" data-f="kind" data-v="${k}">${esc(label)}${n(c.kinds[k])}</button>`;
-  const kinds = `<div class="chips">${kchip("", "全部类型")}${b.groups.map(([g, ks]) => `<span class="kgroup">${esc(g)}</span>${ks.map((k) => kchip(k, b.kinds[k])).join("")}`).join("")}</div>`;
+  const tabs = BRAIN_TABS.map(([k, label]) => `<button type="button" class="chip ${q.tab === k || (!q.tab && k === "all") ? "on" : ""} ${k === "ask" && c.tabs.ask ? "hot" : ""}" data-act="bq" data-f="tab" data-v="${k}">${k === "ask" && c.tabs.ask ? '<i class="reddot"></i>' : ""}${t(label)}${n(c.tabs[k])}</button>`).join("");
+  const kchip = (k, label) => `<button type="button" class="chip ${(q.kind || "") === k ? "on" : ""}" data-act="bq" data-f="kind" data-v="${k}">${uiFixed(label)}${n(c.kinds[k])}</button>`;
+  const kinds = `<div class="chips">${kchip("", "全部类型")}${b.groups.map(([g, ks]) => `<span class="kgroup">${uiText(g, false)}</span>${ks.map((k) => kchip(k, b.kinds[k])).join("")}`).join("")}</div>`;
   const terrs = `<select data-change="bq-k" aria-label="按领域筛"><option value="">全部领域（${c.terrs[""] || 0}）</option>${b.territories.map((t) => `<option value="${t.key}"${q.k === t.key ? " selected" : ""}>${esc(t.name)}（${c.terrs[t.key] || 0}）</option>`).join("")}<option value="waste"${q.k === "waste" ? " selected" : ""}>还没归类（${c.terrs.waste || 0}）</option></select>`;
   const card = (x) => `<button type="button" class="panel bcard ${x.status === "ask" ? "ask" : ""}" data-act="bopen" data-id="${x.id}">
-      <span class="row u-between u-g8"><span class="row u-g6">${x.status === "ask" ? '<i class="reddot"></i>' : ""}<span class="pill p-none">${esc(x.kind_label)}</span>${x.fresh ? '<span class="newtag">新</span>' : ""}</span>
-        <span class="muted one t-xs">${esc(x.source || "")}${x.happened_at ? " · " + esc(String(x.happened_at).slice(0, 10)) : ""}</span></span>
-      <b class="clamp2 btitle">${esc(x.title)}</b>
-      ${x.status === "ask" && x.extra && x.extra.ask ? `<span class="askline clamp2">要你定：${esc(x.extra.ask)}</span>`
-        : `<span class="muted clamp2 bsum">${esc((x.extra && x.extra.ai_summary) || (x.summary !== x.title ? x.summary : "") || "")}</span>`}
-      <span class="muted one bfoot t-xs">${esc([x.territory_name || "还没归类", BSTATUS[x.status], ...(x.tags || []).slice(0, 3)].filter(Boolean).join(" · "))}</span></button>`;
+      <span class="row u-between u-g8"><span class="row u-g6">${x.status === "ask" ? '<i class="reddot"></i>' : ""}<span class="pill p-none">${uiFixed(x.kind_label)}</span>${x.fresh ? '<span class="newtag">新</span>' : ""}</span>
+        <span class="muted one t-xs">${uiText(x.source || "", false)}${x.happened_at ? " · " + esc(String(x.happened_at).slice(0, 10)) : ""}</span></span>
+      <b class="clamp2 btitle">${uiText(x.title, true)}</b>
+      ${x.status === "ask" && x.extra && x.extra.ask ? `<span class="askline clamp2">要你定：${uiText(x.extra.ask, false)}</span>`
+        : `<span class="muted clamp2 bsum">${uiText((x.extra && x.extra.ai_summary) || (x.summary !== x.title ? x.summary : "") || "", true)}</span>`}
+      <span class="muted one bfoot t-xs">${uiText([x.territory_name || "还没归类", BSTATUS[x.status], ...(x.tags || []).slice(0, 3)].filter(Boolean).join(" · "), false)}</span></button>`;
   const empty = q.tab === "ask" ? "没有要你处理的，小伴 都整理好了。" : q.tab === "new" ? "小伴 都整理完了。你发给他的链接、Grok 每天凌晨整理的收藏会先到这里。" : "这里是空的。";
   // 返回键在右上角，回到从哪进来的那一页（从财务页进来只能回“我”）
   const back = S.brainBack && S.brainBack.page === "territory"
     ? backBtn(({ body: "健康", career: "事业", money: "财务", social: "社交", study: "学习", academic: "学术", life: "生活体验" })[S.brainBack.tkey] || "领域", 'data-act="brainback"')
     : backBtn("我", 'data-act="go" data-page="me"');
-  return `<header class="row u-wrap u-g10"><h2 class="t-xl">收藏和资料</h2>
+  return `<header class="row u-wrap u-g10"><h2 class="pagetitle">收藏和资料</h2>
       <input type="search" class="bsearch" data-input="brain-q" value="${esc(q.q || "")}" placeholder="搜标题、内容、标签……" aria-label="搜索">${terrs}<span class="u-mlauto">${back}</span></header>
     <div class="chips">${tabs}</div>${kinds}
     <span class="muted" style="font-size:12px;line-height:1.6">这些都交给 小伴 打理：他写摘要、贴标签、分领域，常用的放<b>在用</b>（聊天、排计划、找新体验会用上），偶尔翻翻的放<b>备查</b>。他拿不准、得你拍板的放<b>要你看</b>，带红点。点开看全文。</span>
@@ -1221,24 +1262,37 @@ function brainDetail(x) {
          ${x.status !== "archived" ? `<button type="button" class="btn" data-act="brain-set" data-id="${x.id}" data-status="archived" data-was="${x.status}">放进备查</button>` : ""}
          <button type="button" class="x" data-act="brain-set" data-id="${x.id}" data-status="trash" data-was="${x.status}" aria-label="放进回收站">×</button>`;
     return `<section class="sheet small col u-g10" aria-label="资料详情">
-      <div class="row u-between u-g8"><span class="pill p-none">${esc(x.kind_label)}</span><button type="button" class="btn" data-act="close">关闭</button></div>
+      <div class="row u-between u-g8"><span class="pill p-none">${uiFixed(x.kind_label)}</span><button type="button" class="btn" data-act="close">关闭</button></div>
       <div class="row u-between u-g8">
-        <span class="muted t-xs">${esc(x.source || "")}${x.happened_at ? " · " + esc(String(x.happened_at).slice(0, 10)) : ""}</span></div>
-      <b style="font-size:18px;line-height:1.5">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.title)}</a>` : esc(x.title)}</b>
-      ${x.status === "ask" && x.extra && x.extra.ask ? `<span class="askline">小伴 拿不准，要你定：${esc(x.extra.ask)}<br><span class="muted t-xs">定了就点下面“放进在用 / 备查”，或者直接在聊天里告诉他。</span></span>` : ""}
-      ${x.note ? `<span class="t-sm">你当时说：${esc(x.note)}</span>` : ""}
-      ${x.extra && x.extra.ai_summary ? `<span class="t-md"><span class="gold">小伴：</span>${esc(x.extra.ai_summary)}</span>` : ""}
+        <span class="muted t-xs">${uiText(x.source || "", false)}${x.happened_at ? " · " + esc(String(x.happened_at).slice(0, 10)) : ""}</span></div>
+      <b style="font-size:18px;line-height:1.5">${x.url ? `<a href="${esc(x.url)}" target="_blank" rel="noopener">${uiText(x.title, true)}</a>` : esc(x.title)}</b>
+      ${x.status === "ask" && x.extra && x.extra.ask ? `<span class="askline">小伴 拿不准，要你定：${uiText(x.extra.ask, false)}<br><span class="muted t-xs">定了就点下面“放进在用 / 备查”，或者直接在聊天里告诉他。</span></span>` : ""}
+      ${x.note ? `<span class="t-sm">你当时说：${uiText(x.note, true)}</span>` : ""}
+      ${x.extra && x.extra.ai_summary ? `<span class="t-md"><span class="gold">小伴：</span>${uiText(x.extra.ai_summary, true)}</span>` : ""}
+      ${x.photo ? photoRef(x) : ""}
       ${x.kind === "knowledge" ? `<div class="prepresult md" style="max-height:none">${md(x.summary)}</div>`
-        : x.summary && x.summary !== x.title ? `<span class="muted" style="font-size:13px;line-height:1.7;white-space:pre-wrap">${esc(x.summary)}</span>` : ""}
-      ${x.extra && x.extra.topic ? `<span class="chip" style="align-self:flex-start;cursor:default;font-size:11px">专题：${esc(x.extra.topic)}</span>` : ""}
-      ${place && place.name ? `<span class="t-sm">📍 ${esc([place.name, place.area, place.price, place.hours].filter(Boolean).join(" · "))}</span>` : ""}
-      ${x.extra && x.extra.use ? `<span class="gold t-sm">可以怎么用：${esc(x.extra.use)}</span>` : ""}
+        : x.summary && x.summary !== x.title ? `<span class="muted" style="font-size:13px;line-height:1.7;white-space:pre-wrap">${uiText(x.summary, true)}</span>` : ""}
+      ${x.extra && x.extra.topic ? `<span class="chip" style="align-self:flex-start;cursor:default;font-size:11px">专题：${uiText(x.extra.topic, true)}</span>` : ""}
+      ${place && place.name ? `<span class="t-sm">📍 ${uiText([place.name, place.area, place.price, place.hours].filter(Boolean).join(" · "), false)}</span>` : ""}
+      ${x.extra && x.extra.use ? `<span class="gold t-sm">可以怎么用：${uiText(x.extra.use, true)}</span>` : ""}
       <div class="row u-g6 u-wrap">
         <select data-change="brain-terr" data-id="${x.id}" aria-label="归到哪个领域"><option value="">还没归类</option>${b.territories.map((t) => `<option value="${t.key}"${x.territory === t.key ? " selected" : ""}>${esc(t.name)}</option>`).join("")}</select>
         <input class="tags btags" data-change="brain-tags" data-id="${x.id}" value="${esc((x.tags || []).join("，"))}" placeholder="加标签，用逗号隔开" aria-label="标签">
       </div>
       <div class="row u-g6 u-end u-center">${acts}</div></section>`;
   }
+}
+
+// 她发的照片：看原图。她本人清楚的自拍收照片时自动当昨日卡的形象参考（“为什么我还要自己去第二大脑里面把自拍设为形象参考呢？”），
+// 她也能手动设（最优先）或点“不当参考了”（以后也不自动用）。
+function photoRef(x) {
+  const tip = x.avatar_ref === "manual" ? "这张是你设的形象参考，画昨日卡时先照它画你的脸"
+    : "小伴 认出这是你本人的照片，自动当形象参考了：画昨日卡时照它画你的脸";
+  return `<div class="photoref row u-g10">
+    <img src="${imgUrl(x.photo)}" alt="你发的照片" loading="lazy">
+    <span class="col u-g6">${x.avatar_ref
+      ? `<span class="gold t-sm">${tip}</span><button type="button" class="btn small" data-act="avatarref" data-id="${x.id}" data-off="1">不当参考了</button>`
+      : `<span class="muted t-sm">没自动当形象参考（看不出是你本人清楚的照片，或你取消过）。是你本人的话可以手动设，以后画昨日卡先照它画你。</span><button type="button" class="btn gold small" data-act="avatarref" data-id="${x.id}">设为形象参考</button>`}</span></div>`;
 }
 
 // 很小的 Markdown：标题、列表、粗体，先转义再排版（小伴 写的成品和知识卡用）
@@ -1255,7 +1309,7 @@ function md(text) {
     if (/^\s*```/.test(l)) {  // 代码块
       const body = [];
       for (n++; n < lines.length && !/^\s*```/.test(lines[n]); n++) body.push(lines[n]);
-      out.push(`<pre class="mdpre">${esc(body.join("\n"))}</pre>`);
+      out.push(`<pre class="mdpre">${uiText(body.join("\n"), false)}</pre>`);
       continue;
     }
     if (/^\s*\|.*\|\s*$/.test(l) && n + 1 < lines.length && /^\s*\|?\s*:?-{2,}/.test(lines[n + 1])) {  // 表格
@@ -1272,7 +1326,7 @@ function md(text) {
     const li = l.match(/^(\s*)[-*•]\s+(.*)$/);
     if (li) { out.push(`<div class="mdli" style="padding-left:${Math.min(3, Math.floor(li[1].length / 2)) * 14 + 4}px">· ${inline(li[2])}</div>`); continue; }
     const ol = l.match(/^(\s*)(\d+[.、)])\s*(.*)$/);
-    if (ol) { out.push(`<div class="mdli" style="padding-left:${Math.min(3, Math.floor(ol[1].length / 2)) * 14 + 4}px">${esc(ol[2])} ${inline(ol[3])}</div>`); continue; }
+    if (ol) { out.push(`<div class="mdli" style="padding-left:${Math.min(3, Math.floor(ol[1].length / 2)) * 14 + 4}px">${uiText(ol[2], false)} ${inline(ol[3])}</div>`); continue; }
     out.push(l.trim() ? `<div class="mdp">${inline(l)}</div>` : '<div style="height:6px"></div>');
   }
   return out.join("");
@@ -1285,7 +1339,7 @@ function teamPage() {
   const name = (a) => t.names[a] || a;
   const hours = (sec) => (sec >= 3600 ? (sec / 3600).toFixed(1) + " 小时" : Math.round(sec / 60) + " 分钟");
   const board = t.scoreboard.map((r) => `<section class="panel col agent">
-      <div class="row u-between u-base"><h2>${esc(name(r.agent))}</h2>
+      <div class="row u-between u-base"><h2>${uiText(name(r.agent), false)}</h2>
         <span class="muted t-sm">${r.open ? `进行中 ${r.open} 件` : "没有进行中的活"}</span></div>
       <div class="row" style="align-items:baseline;gap:14px"><span><b class="big">${r.efficiency ?? "—"}</b><span class="muted t-sm"> 效率分</span></span>
         <span><b class="t-h">${r.output}</b><span class="muted t-sm"> 产出分</span></span></div>
@@ -1310,8 +1364,8 @@ function teamCard(x, key) {
   const t = S.team, name = (a) => t.names[a] || a, hours = teamHours;
   const st = { queued: "queued", running: "running", review: "review", accepted: "done", failed: x.status === "dropped" ? "dropped" : "failed" }[key] || "";
   return `<div class="item tcard st-${st}"><i class="pulse" aria-hidden="true"></i>
-      <button type="button" class="grow linkish topen" data-act="acard" data-id="${x.id}" aria-label="看这件活的详情"><span class="clamp2">${esc(x.title)}</span>
-        <span class="muted one u-blk t-xs">${esc(name(x.agent))}${x.project && !x.project.startsWith("Grok 回报") ? " · " + esc(x.project) : ""} · ${x.size} 点${x.reworks ? ` · 返工 ${x.reworks}` : ""}${x.work_seconds ? " · " + hours(x.work_seconds) : ""}</span>
+      <button type="button" class="grow linkish topen" data-act="acard" data-id="${x.id}" aria-label="看这件活的详情"><span class="clamp2">${uiText(x.title, true)}</span>
+        <span class="muted one u-blk t-xs">${uiText(name(x.agent), false)}${x.project && !x.project.startsWith("Grok 回报") ? " · " + esc(x.project) : ""} · ${x.size} 点${x.reworks ? ` · 返工 ${x.reworks}` : ""}${x.work_seconds ? " · " + hours(x.work_seconds) : ""}</span>
         ${key === "failed" ? `<span class="muted one u-blk t-xs">${x.status === "dropped" ? "你叫停的" : "没干成"}${x.review_note ? "：" + esc(x.review_note) : ""}</span>` : ""}</button>
       ${key === "review" ? `<div class="row tacts">${judge(`data-id="${x.id}"`)}${archBtn(x.id)}</div>`
         : key === "failed" ? `<div class="row tacts">${archBtn(x.id)}</div>`
@@ -1324,18 +1378,18 @@ function teamBody(t, board, card) {
   // 每张卡一眼看出在干啥：会话卡多一行它最近说的话
   // 只有 Grok 的卡能点开：所有卡统一一个样子，都能点开看详情（准备员的打开那一件）
   const liveCard = (x) => `<div class="item tcard st-${x.state}"><i class="pulse" aria-hidden="true"></i>
-      <button type="button" class="grow linkish topen" ${x.prep ? `data-act="prepgo" data-id="${x.prep}"` : `data-act="alive" data-i="${(t.live || []).indexOf(x)}"`} aria-label="看这件活的详情"><span class="clamp2">${esc(x.title)}</span>
-        <span class="muted one u-blk t-xs">${esc(name(x.agent))} · ${esc(x.sub)}${x.at ? " · " + ago(x.at) : ""}</span>
-        ${x.summary ? `<span class="one tsum">${esc(x.summary)}</span>` : ""}</button>
+      <button type="button" class="grow linkish topen" ${x.prep ? `data-act="prepgo" data-id="${x.prep}"` : `data-act="alive" data-i="${(t.live || []).indexOf(x)}"`} aria-label="看这件活的详情"><span class="clamp2">${uiText(x.title, true)}</span>
+        <span class="muted one u-blk t-xs">${uiText(name(x.agent), false)} · ${uiText(x.sub, true)}${x.at ? " · " + ago(x.at) : ""}</span>
+        ${x.summary ? `<span class="one tsum">${uiText(x.summary, true)}</span>` : ""}</button>
       ${x.state === "review" && x.key ? judge(`data-key="${esc(x.key)}" data-agent="${esc(x.agent)}" data-title="${esc(x.title)}"`) : ""}</div>`;
   const LIVE_COL = { queued: "queued", running: "running", review: "review" };
   const cols = t.columns.map((c) => {
     const extra = (t.live || []).filter((x) => LIVE_COL[x.state] === c.key);
     const shown = extra.slice(0, 12);
-    return `<section class="panel col tcol col-${c.key}"><div class="row u-between"><h2>${esc(c.label)}</h2><span class="muted">${c.tasks.length + extra.length}</span></div>
+    return `<section class="panel col tcol col-${c.key}"><div class="row u-between"><h2>${uiText(c.label, true)}</h2><span class="muted">${c.tasks.length + extra.length}</span></div>
       <div class="tlist">${c.tasks.map((x) => card(x, c.key)).join("")}${shown.map(liveCard).join("")}${extra.length > shown.length ? `<span class="muted t-xs">还有 ${extra.length - shown.length} 件</span>` : ""}
       ${c.tasks.length + extra.length ? "" : '<p class="muted t-sm">暂无</p>'}</div></section>`; }).join("");
-  return `<header class="row u-wrap"><h2 class="t-xl">团队</h2><span class="muted">最近 7 天 · 效率分按同样大小的活比，满分 100</span>
+  return `<header class="row u-wrap"><h2 class="pagetitle">团队</h2><span class="muted">最近 7 天 · 效率分按同样大小的活比，满分 100</span>
       <button type="button" class="btn u-mlauto" data-act="tarchive">归档 ${(t.archive || []).length}</button></header>
     <div class="grid4">${board}</div>
     <span class="muted t-sm">效率分 = 质量 40%（返工一次减半）+ 成本 20% + 速度 20%（都和同样大小的活比）+ 你的打分 20%。通过的活打个 1–5 分（3 分是一般），打完自动进右上角“归档”，7 天没打就当 3 分。失败是系统判的（报错、验收没过、超时），你叫停的算“放弃”，不扣分。</span>
@@ -1351,27 +1405,27 @@ function ago(iso) {
 // 训练详情：每个动作一张卡，左边小人循环演示（moves.js），金色是发力部位
 function trainView(t) {
   const reps = (e) => (e.reps[0] !== e.reps[1] ? `${e.reps[0]}–${e.reps[1]}` : `${e.reps[0]}`) + " " + e.unit + (e.per_side ? "（每侧）" : "");
-  return `<div class="row u-g8 u-wrap"><b class="t-lg">${esc(t.focus)}</b>${t.trip ? `<span class="muted t-sm">${esc(t.trip)}</span>` : ""}</div>
-    <section class="meal"><b class="gold t-md">热身 ${t.warmup.minutes} 分钟</b><ol class="steps">${t.warmup.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ol></section>
+  return `<div class="row u-g8 u-wrap"><b class="t-lg">${uiText(t.focus, true)}</b>${t.trip ? `<span class="muted t-sm">${uiText(t.trip, true)}</span>` : ""}</div>
+    <section class="meal"><b class="gold t-md">热身 ${t.warmup.minutes} 分钟</b><ol class="steps">${t.warmup.items.map((i) => `<li>${uiText(i, false)}</li>`).join("")}</ol></section>
     ${t.exercises.map((e, n) => `<section class="meal move-card">
       <svg class="move" data-move="${esc(e.id)}" viewBox="0 0 200 160" role="img" aria-label="${esc(e.name)}动作演示">${typeof figureSVG === "function" ? figureSVG(e.id, 0) : ""}</svg>
       <div class="col u-g6 u-min0">
-        <b class="t-lg">${n + 1}. ${esc(e.name)}</b>
-        <span class="row u-g6 u-wrap"><span class="pill p-none">${e.sets} 组 × ${reps(e)}</span>${e.weight ? `<span class="pill p-none">${e.weight} kg</span>` : ""}${e.muscles ? `<span class="muted t-sm">练${esc(e.muscles)}</span>` : ""}</span>
-        <ul class="steps cues">${e.cues.map((c) => `<li>${esc(c)}</li>`).join("")}</ul>
-        <span style="font-size:12px;color:var(--warn)">别：${esc(e.mistake)}</span>
-        ${e.note ? `<span class="muted t-sm">${esc(e.note)}</span>` : ""}</div></section>`).join("")}
+        <b class="t-lg">${n + 1}. ${uiText(e.name, false)}</b>
+        <span class="row u-g6 u-wrap"><span class="pill p-none">${e.sets} 组 × ${reps(e)}</span>${e.weight ? `<span class="pill p-none">${e.weight} kg</span>` : ""}${e.muscles ? `<span class="muted t-sm">练${uiText(e.muscles, true)}</span>` : ""}</span>
+        <ul class="steps cues">${e.cues.map((c) => `<li>${uiText(c, false)}</li>`).join("")}</ul>
+        <span style="font-size:12px;color:var(--warn)">别：${uiText(e.mistake, true)}</span>
+        ${e.note ? `<span class="muted t-sm">${uiText(e.note, true)}</span>` : ""}</div></section>`).join("")}
     <span class="muted t-sm">疼痛超过 3 分（满分 10）就停这个动作。练完把每组重量和次数告诉 小伴。</span>`;
 }
 
 function mealsView(m) {
   return `<div class="row u-g8 u-wrap"><span class="pill p-none">约 ${m.kcal} 千卡</span><span class="pill p-none">蛋白质 ${m.protein} 克</span></div>
-    ${m.note ? `<p class="muted" style="font-size:13px;margin:0">${esc(m.note)}</p>` : ""}
+    ${m.note ? `<p class="muted" style="font-size:13px;margin:0">${uiText(m.note, true)}</p>` : ""}
     ${m.meals.map((x) => `<section class="meal"><div class="row u-between u-base u-wrap">
-        <b class="t-lg"><span class="gold">${esc(x.meal)}</span>　${esc(x.name)}</b>
+        <b class="t-lg"><span class="gold">${uiText(x.meal, true)}</span>　${uiText(x.name, false)}</b>
         <span class="muted t-sm">${x.kcal ? x.kcal + " 千卡" : ""}${x.protein ? " · 蛋白质 " + x.protein + " 克" : ""}${x.minutes ? " · " + x.minutes + " 分钟" : ""}</span></div>
-      ${x.items.length ? `<div class="chips">${x.items.map((i) => `<span class="chip" style="cursor:default">${esc(i)}</span>`).join("")}</div>` : ""}
-      ${x.steps.length ? `<ol class="steps">${x.steps.map((i) => `<li>${esc(i)}</li>`).join("")}</ol>` : ""}</section>`).join("")}`;
+      ${x.items.length ? `<div class="chips">${x.items.map((i) => `<span class="chip" style="cursor:default">${uiText(i, false)}</span>`).join("")}</div>` : ""}
+      ${x.steps.length ? `<ol class="steps">${x.steps.map((i) => `<li>${uiText(i, false)}</li>`).join("")}</ol>` : ""}</section>`).join("")}`;
 }
 
 /* ---------- 弹层 ---------- */
@@ -1391,6 +1445,7 @@ function renderOverlay() {
   S._ovShown = S.overlay;
   const now = box.querySelector(".sheet");
   if (now && top) now.scrollTop = top;
+  localizeVisible();
 }
 function renderOverlayInner() {
   const box = $("#overlay"), st = S.state;
@@ -1399,29 +1454,34 @@ function renderOverlayInner() {
   if (S.overlay.startsWith("me-")) { box.innerHTML = meOverlay(); return; }  // “我”页的五个弹层
   if (S.overlay === "card") {
     const c = st.card;
-    box.innerHTML = `<button type="button" class="bigcard" data-act="close" aria-label="收起昨日卡">
-      <span class="img ${RAR(c.rarity)}"><img src="${imgUrl(c.image)}" alt="昨日卡：${esc(c.title)}"></span>
-      <span class="txt"><span class="muted t-md">${dayNOf(c.day) > 0 ? "第 " + dayNOf(c.day) + " 天 · " : ""}${esc(c.day)}</span><span style="font-size:28px;font-weight:700">${esc(c.title)}</span>
-        <span style="align-self:flex-start;font-size:13px;padding:3px 12px;border-radius:12px;border:1px solid #E2BE6A;color:#E2BE6A">${esc(c.rarity)}</span>
-        <span class="t-body u-lh17">${esc(c.reason)}</span><span style="font-size:14px;line-height:1.7;color:#E2BE6A">小伴：${esc(c.line)}</span>
-        <span style="font-size:12px;color:#ABA8CC">点任意处收起</span></span></button>`;
+    // 同一张图重画弹层时（点了重画、轮询进度）不再翻一遍牌；换上新图才翻（重画完原地换成新图）
+    const still = S._cardShown === c.image;
+    S._cardShown = c.image;
+    box.innerHTML = `<button type="button" class="bigcard ${still ? "still" : ""} ${c.redoing ? "redoing" : ""}" data-act="close" aria-label="收起昨日卡">
+      <span class="img ${rarity(c.rarity)}"><img src="${imgUrl(c.image)}" alt="昨日卡：${esc(c.title)}">${c.redoing ? '<span class="redoveil" aria-hidden="true"></span>' : ""}</span>
+      <span class="txt"><span class="muted t-md">${dayNOf(c.day) > 0 ? "第 " + dayNOf(c.day) + " 天 · " : ""}${uiText(c.day, false)}</span><span style="font-size:28px;font-weight:700">${uiText(c.title, true)}</span>
+        <span class="brar">${uiText(c.rarity, false)}</span>
+        <span class="t-body u-lh17">${uiText(c.reason, true)}</span><span class="bline">小伴：${uiText(c.line, true)}</span>
+        ${redoButton(c)}
+        <span class="bhint">点任意处收起</span></span></button>`;
   } else if (S.overlay === "plan") {
     const pl = st.planner;
-    box.innerHTML = `<section class="sheet" aria-label="计划"><div class="row u-between u-g8 u-wrap"><h2 class="t-h">计划 · ${esc(st.day.slice(5))} 周${st.weekday}</h2>
+    box.innerHTML = `<section class="sheet" aria-label="计划"><div class="row u-between u-g8 u-wrap"><h2 class="t-h">计划 · ${uiText(st.day.slice(5), false)} 周${st.weekday}</h2>
         <span class="row u-g8">${pl.replanning ? '<span class="muted t-sm">小伴 在按新日程重排……</span>' : ""}<button type="button" class="btn" data-act="close">关闭</button></span></div>
       <div class="plancols">
         <section class="col"><div class="row u-between"><h2>待办</h2><span class="muted t-xs">★ = 今日任务，不限件数</span></div>
+          ${sizeReview(pl.size_review)}
           ${taskList(pl.todos, "plan", "没有待办")}
-          ${(pl.skipped || []).length ? `<div class="col u-g4 u-mt6"><b class="t-md">今天没排进</b>${pl.skipped.map((x) => `<span class="t-sm">· ${esc(x.title)}<span class="muted">：${esc(x.why)}</span></span>`).join("")}</div>` : ""}
+          ${(pl.skipped || []).length ? `<div class="col u-g4 u-mt6"><b class="t-md">今天没排进</b>${pl.skipped.map((x) => `<span class="t-sm">· ${uiText(x.title, true)}<span class="muted">：${uiText(x.why, true)}</span></span>`).join("")}</div>` : ""}
           <button type="button" class="btn gold" data-act="addtodo">＋ 加待办</button>
         </section>
         <section class="col"><div class="row u-between"><h2>日程</h2><span class="muted t-xs">和苹果日历对得上</span></div>
           ${pl.events.map((e) => e.id ? `<div class="item"><label style="font-size:10px">开始<input type="time" value="${esc(e.start)}" data-change="time" data-id="${e.id}"></label>
-            <span class="grow"><span class="u-blk">${esc(e.title)}</span><span class="muted t-xs">${esc(e.place)}${e.leave ? " · " + esc(e.leave) + " 出发" : ""}</span>${clashNote(e)}</span>
+            <span class="grow"><span class="u-blk">${uiText(e.title, true)}</span><span class="muted t-xs">${uiText(e.place, false)}${e.leave ? " · " + esc(e.leave) + " 出发" : ""}</span>${clashNote(e)}</span>
             ${e.mine ? `<button type="button" class="btn small" data-act="evrelease" data-title="${esc(e.title)}" title="你改过这个时间；点了撤销你的改动，交回系统重排">撤销改动</button>` : ""}
             <button type="button" class="x" data-act="delevent" data-id="${e.id}" aria-label="删除这个日程">×</button></div>`
-            : `<div class="item ${e.clash_with && e.clash_with.length ? "clash" : ""}"><b class="evtime">${esc(e.start)}–${esc(e.end || "")}</b>
-            <span class="grow"><span class="u-blk">${esc(e.title)}</span><span class="muted t-xs">${esc(e.place ? e.place + " · " : "")}${esc(e.source)}</span>${clashNote(e)}</span>
+            : `<div class="item ${e.clash_with && e.clash_with.length ? "clash" : ""}"><b class="evtime">${uiText(e.start, false)}–${uiText(e.end || "", false)}</b>
+            <span class="grow"><span class="u-blk">${uiText(e.title, true)}</span><span class="muted t-xs">${uiText(e.place ? e.place + " · " : "", false)}${uiText(e.source, false)}</span>${clashNote(e)}</span>
             ${e.fid ? `<button type="button" class="x" data-act="delfuture" data-id="${e.fid}" aria-label="删除这个约">×</button>`
               : e.href ? `<button type="button" class="x" data-act="delown" data-href="${esc(e.href)}" aria-label="从苹果日历里删掉">×</button>` : ""}</div>`).join("") || '<p class="muted">今天没有日程</p>'}
           <button type="button" class="btn gold" data-act="addevent">＋ 加日程</button>
@@ -1431,18 +1491,19 @@ function renderOverlayInner() {
     const c = S.cardView;
     // 过去某天的卡：一起看那天的日记摘要，点按钮展开整篇
     box.innerHTML = `<button type="button" class="bigcard" data-act="close" aria-label="收起">
-      <span class="img ${RAR(c.rarity)}"><img src="${imgUrl(c.image)}" alt="昨日卡：${esc(c.title)}"></span>
-      <span class="txt"><span class="muted t-md">${dayNOf(c.day) > 0 ? "第 " + dayNOf(c.day) + " 天 · " : ""}${esc(c.day)}</span>
-        <span style="font-size:28px;font-weight:700">${esc(c.title)}</span>
-        <span style="align-self:flex-start;font-size:13px;padding:3px 12px;border-radius:12px;border:1px solid #E2BE6A;color:#E2BE6A">${esc(c.rarity)}</span>
-        <span class="t-body u-lh17">${esc(c.reason)}</span><span style="font-size:14px;line-height:1.7;color:#E2BE6A">小伴：${esc(c.line)}</span>
-        ${c.diary ? `<span class="cday"><b class="t-md">这一天</b><span class="t-body u-lh17">${esc(c.diary.length > 90 ? c.diary.slice(0, 90) + "……" : c.diary)}</span>
+      <span class="img ${rarity(c.rarity)}"><img src="${imgUrl(c.image)}" alt="昨日卡：${esc(c.title)}"></span>
+      <span class="txt"><span class="muted t-md">${dayNOf(c.day) > 0 ? "第 " + dayNOf(c.day) + " 天 · " : ""}${uiText(c.day, false)}</span>
+        <span style="font-size:28px;font-weight:700">${uiText(c.title, true)}</span>
+        <span class="brar">${uiText(c.rarity, false)}</span>
+        <span class="t-body u-lh17">${uiText(c.reason, true)}</span><span class="bline">小伴：${uiText(c.line, true)}</span>
+        ${c.diary ? `<span class="cday"><b class="t-md">这一天</b><span class="t-body u-lh17">${uiText(c.diary.length > 90 ? c.diary.slice(0, 90) + "……" : c.diary, false)}</span>
           <span class="btn" role="button" tabindex="0" data-act="carddiary">看当天的日记</span></span>` : ""}
-        <span style="font-size:12px;color:#ABA8CC">点任意处收起</span></span></button>`;
+        ${st.card && c.made === st.card.day ? redoButton(st.card) : ""}
+        <span class="bhint">点任意处收起</span></span></button>`;
   } else if (S.overlay === "carddiary") {  // 盖在卡上看当天日记，点空白回到卡
     const c = S.cardView || {};
     box.innerHTML = `<section class="sheet small col u-g10" aria-label="${esc(c.day)} 的日记">
-      <span class="muted t-md">${esc(c.day)} · 这一天的日记 · 点空白处回到卡片</span>
+      <span class="muted t-md">${uiText(c.day, false)} · 这一天的日记 · 点空白处回到卡片</span>
       <div class="md" style="font-size:14px;line-height:1.8">${md(c.diary || "")}</div></section>`;
   } else if (S.overlay === "celebrate") {
     const all = S.celebrating || [];
@@ -1454,8 +1515,8 @@ function renderOverlayInner() {
       <span class="burst" aria-hidden="true">${Array.from({ length: 18 }, (_, i) => `<i style="--a:${i * 20}deg;--d:${(i % 3) * 0.12}s"></i>`).join("")}</span>
       <span class="trophy" aria-hidden="true">${list.length ? "🏆" : "🎁"}</span>
       ${list.length ? `<span class="muted" style="font-size:13px;letter-spacing:.2em">${top.hidden ? "隐藏成就解锁" : "成就达成"}</span>` : ""}
-      ${list.map((x) => `<span class="cname">${esc(x.name)} <span class="medal m-${x.tier === "达成" ? "金" : x.tier}">${TIERWORD[x.tier] || x.tier}</span></span>`).join("")}
-      ${plays.length ? `<span class="muted" style="font-size:13px;letter-spacing:.2em;margin-top:${list.length ? 10 : 0}px">新奖励揭晓</span>${plays.map((x) => `<span class="cname">${esc(x.name)} <span class="medal m-${x.tier}">${x.tier}级奖励</span></span><span style="font-size:14px;line-height:1.6;color:#E2BE6A">小伴：${esc(x.note)}</span>`).join("")}` : ""}
+      ${list.map((x) => `<span class="cname">${uiText(x.name, false)} <span class="medal m-${x.tier === "达成" ? "金" : x.tier}">${TIERWORD[x.tier] || x.tier}</span></span>`).join("")}
+      ${plays.length ? `<span class="muted" style="font-size:13px;letter-spacing:.2em;margin-top:${list.length ? 10 : 0}px">新奖励揭晓</span>${plays.map((x) => `<span class="cname">${uiText(x.name, false)} <span class="medal m-${x.tier}">${x.tier}级奖励</span></span><span class="bline">小伴：${uiText(x.note, true)}</span>`).join("")}` : ""}
       ${gift ? `<span class="gold t-body">🎁 还解锁了一个惊喜，去找 小伴 聊聊</span>` : ""}
       <span class="muted t-sm">点任意处收起</span></button>`;
   } else if (S.overlay === "brain") {
@@ -1469,34 +1530,34 @@ function renderOverlayInner() {
       <div class="col u-g8">${(t && t.archive || []).map((x) => teamCard(x, x.status)).join("") || '<p class="muted">还没有归档的活</p>'}</div></section>`;
   } else if (S.overlay === "detail") {
     box.innerHTML = `<section class="sheet small" aria-label="${S.detailK === "train" ? "训练详情" : "三餐"}">${sheetHead(`${S.detailK === "train" ? "今天的训练" : "今天的三餐"}`)}
-      ${S.detailK === "meals" && st.meals && st.meals.meals.length ? mealsView(st.meals) : S.detailK === "train" && st.training ? trainView(st.training) : `<div style="white-space:pre-wrap;line-height:1.7;font-size:14px">${esc(st.detail[S.detailK] || "")}</div>`}
+      ${S.detailK === "meals" && st.meals && st.meals.meals.length ? mealsView(st.meals) : S.detailK === "train" && st.training ? trainView(st.training) : `<div style="white-space:pre-wrap;line-height:1.7;font-size:14px">${uiText(st.detail[S.detailK] || "", true)}</div>`}
       <button type="button" class="btn gold u-mt12" data-act="weekopen" data-k="${S.detailK}">看一周${S.detailK === "meals" ? "（含采购清单）" : ""}</button></section>`;
   } else if (S.overlay === "week") {  // 每周日自动出的一周安排（ethan/weekly.py）
     const w = S.week, which = S.weekWhich || "this", p = w && w[which];
     const pick = w ? `<span class="modeseg">${["this", "next"].map((k) => `<button type="button" class="${which === k ? "on" : ""}" data-act="weekwhich" data-k="${k}" ${w[k] ? "" : "disabled"}>${k === "this" ? "这周" : "下周"}</button>`).join("")}</span>` : "";
     const meals = (p) => `<h3 style="font-size:15px;margin:6px 0">采购清单 <span class="muted u-fw4 t-sm">${p.shopping.length} 样，够 7 天</span></h3>
-        <div class="shoplist">${p.shopping.map((x) => `<span>${esc(x.item)} <b>${x.grams >= 1000 ? (x.grams / 1000).toFixed(1) + " 千克" : x.grams + " 克"}</b></span>`).join("")}</div>
+        <div class="shoplist">${p.shopping.map((x) => `<span>${uiText(x.item, false)} <b>${x.grams >= 1000 ? (x.grams / 1000).toFixed(1) + " 千克" : x.grams + " 克"}</b></span>`).join("")}</div>
         <h3 style="font-size:15px;margin:14px 0 6px">每天吃什么 <span class="muted u-fw4 t-sm">每天约 ${p.kcal} 千卡、蛋白质 ${p.protein} 克</span></h3>
         ${p.days.map((d) => `<div class="weekrow"><b>周${d.weekday}${d.prep ? '<i class="drar">备主菜</i>' : ""}</b><span>${d.items.map((m) => esc(m.meal + "：" + m.name)).join("；")}</span></div>`).join("")}`;
-    const train = (p) => p.training.map((t) => `<div class="weekrow"><b>周${t.weekday} ${esc(t.start)}</b><span><b style="font-weight:600">${esc(t.focus)}</b> · ${esc(t.place)}<br><span class="muted t-sm">${t.exercises.map(esc).join("；")}</span></span></div>`).join("")
+    const train = (p) => p.training.map((t) => `<div class="weekrow"><b>周${t.weekday} ${uiText(t.start, false)}</b><span><b style="font-weight:600">${uiText(t.focus, true)}</b> · ${uiText(t.place, false)}<br><span class="muted t-sm">${t.exercises.map(esc).join("；")}</span></span></div>`).join("")
       + '<p class="muted t-sm">每天早上计划器会按当天日程再核一次，有冲突会挪。</p>';
     box.innerHTML = `<section class="sheet" aria-label="一周安排"><div class="row u-between u-wrap u-g8"><h2 class="t-h">${S.weekK === "train" ? "一周训练" : "一周三餐和采购清单"}</h2>${pick}<button type="button" class="btn" data-act="close">关闭</button></div>
       ${!w ? '<p class="muted">加载中……</p>' : !p ? '<p class="muted">这一周的还没排。每周日凌晨会自动排好下周的。</p>' : S.weekK === "train" ? train(p) : meals(p)}</section>`;
   } else if (S.overlay === "prep") {
     box.innerHTML = `<section class="sheet prepsheet" aria-label="小伴 在准备的事">${sheetHead(`小伴 在替你准备`)}
       ${(() => { const n = { parked: st.prep.filter((t) => t.state === "pending").length, routines: (st.prep_routines || []).length, trash: (st.prep_trash || []).length };
-        const tab = (k, label) => `<button type="button" class="btn ${(S.prepTab || "") === k ? "gold" : ""}" data-act="preptab" data-tab="${k}">${label}</button>`;
+        const tab = (k, label) => `<button type="button" class="btn ${(S.prepTab || "") === k ? "gold" : ""}" data-act="preptab" data-tab="${k}">${t(label)}</button>`;
         const later = st.prep.filter((t) => t.state !== "pending" && !prepShown(st, t)).length;
         return `<div class="row preptabs u-g6 u-wrap">${tab("", `今天 ${st.prep.length - n.parked - later}`)}${tab("later", `📋 还没轮到 ${later}`)}${tab("parked", `⏸ 先放着 ${n.parked}${(S.state || {}).parked_remind ? ` <i class="navdot inline parkdot" aria-label="今天还没看">${S.state.parked_remind}</i>` : ""}`)}${tab("routines", `🔁 长期工作 ${n.routines}`)}${tab("trash", `🗑 回收站 ${n.trash}`)}</div>`; })()}
-      ${S.prepTab && S.prepTab !== "later" ? "" : `${(st.prep_today || []).length && S.prepTab !== "later" ? `<div class="preptoday"><b class="t-md">今天 小伴 打算先做</b>${st.prep_today.map((o, n) => { const t = st.prep.find((x) => x.id === o.id); return t ? `<span class="t-sm">${n + 1}. ${esc(t.title)}<span class="muted">${o.why ? "：" + esc(o.why) : ""}</span></span>` : ""; }).join("")}</div>` : ""}
+      ${S.prepTab && S.prepTab !== "later" ? "" : `${(st.prep_today || []).length && S.prepTab !== "later" ? `<div class="preptoday"><b class="t-md">今天 小伴 打算先做</b>${st.prep_today.map((o, n) => { const t = st.prep.find((x) => x.id === o.id); return t ? `<span class="t-sm">${n + 1}. ${uiText(t.title, true)}<span class="muted">${o.why ? "：" + esc(o.why) : ""}</span></span>` : ""; }).join("")}</div>` : ""}
       <div class="preplist">${st.prep.filter((t) => t.state !== "pending" && prepShown(st, t) === (S.prepTab !== "later")).map((t) => `<div class="prepitem ${S.prepOpen === t.id ? "open" : ""} ${t.state === "ready" ? "ready" : ""}" data-pid="${t.id}">
-        <div class="row u-g8"><span class="drag" data-drag aria-label="拖动排序" title="按住拖动">⋮⋮</span><button type="button" class="x pstar ${t.star ? "on" : ""}" data-act="prepstar" data-id="${t.id}" data-on="${t.star ? "" : 1}" aria-label="${t.star ? "取消星星" : "点星星：今天必须做完"}" title="今天必须做完">${t.star ? "★" : "☆"}</button><button type="button" class="grow linkish" data-act="prepopen" data-id="${t.id}">${esc(t.title)}${t.summary ? `<span class="muted u-blk t-xs">${esc(t.summary)}</span>` : ""}</button>
-          <span class="pill ${t.state === "ready" ? "p-warn" : t.state === "approved" ? "p-ok" : "p-none"}">${esc(t.state === "ready" && !t.result ? "聊天里交了" : t.state_label)}</span></div>
-        ${t.help_for ? `<span class="muted" style="font-size:12px;margin-left:30px">替你的「${esc(t.help_for)}」提前准备</span>` : ""}
+        <div class="row u-g8"><span class="drag" data-drag aria-label="拖动排序" title="按住拖动">⋮⋮</span><button type="button" class="x pstar ${t.star ? "on" : ""}" data-act="prepstar" data-id="${t.id}" data-on="${t.star ? "" : 1}" aria-label="${t.star ? "取消星星" : "点星星：今天必须做完"}" title="今天必须做完">${t.star ? "★" : "☆"}</button><button type="button" class="grow linkish" data-act="prepopen" data-id="${t.id}">${uiText(t.title, true)}${t.summary ? `<span class="muted u-blk t-xs">${uiText(t.summary, true)}</span>` : ""}</button>
+          <span class="pill ${t.state === "ready" ? "p-warn" : t.state === "approved" ? "p-ok" : "p-none"}">${uiText(t.state === "ready" && !t.result ? "聊天里交了" : t.state_label, false)}</span></div>
+        ${t.help_for ? `<span class="muted" style="font-size:12px;margin-left:30px">替你的「${uiText(t.help_for, true)}」提前准备</span>` : ""}
         ${S.prepOpen === t.id ? `<div class="${t.result ? "prepreview" : "col"}" style="gap:8px;margin-top:8px">
           <div class="col u-g8 u-min0">
           ${t.result ? `<div class="prepresult md">${md(t.result)}</div>` : `<span class="muted t-sm">${t.state === "waiting_grok" ? "Grok 正在查，查回来 小伴 再整理。" : t.state === "ready" ? "小伴 在聊天里已经交了这件事，不用再等他做。你确认没问题，点“已经做完了”就收起来。" : "还在排队，轮到就做。"}</span>`}
-          ${t.decision ? `<span class="gold t-md">要你拍板：${esc(t.decision)}</span>` : ""}</div>
+          ${t.decision ? `<span class="gold t-md">要你拍板：${uiText(t.decision, true)}</span>` : ""}</div>
           ${t.result ? `<div class="prepnote col">
             <label class="muted t-sm" for="pn${t.id}">你的批注（Apple Pencil 直接写，会自动转成字；聊天里说过的不用再写）</label>
             <textarea id="pn${t.id}" data-prepnote="${t.id}" placeholder="哪里要改、改成什么样">${esc((S.prepDraft || {})[t.id] || "")}</textarea>
@@ -1510,17 +1571,17 @@ function renderOverlayInner() {
               <button type="button" class="btn" data-act="preppend" data-id="${t.id}" title="暂时用不上，先不做">先放着</button>
               <button type="button" class="btn" data-act="dropprep" data-id="${t.id}">不要了</button></div>`}</div>` : ""}</div>`).join("") || '<p class="muted">现在没有</p>'}</div>`}
       ${S.prepTab === "parked" ? (() => { const parked = st.prep.filter((t) => t.state === "pending"); return parked.length ? `<div class="col u-g8">
-        ${parked.map((t) => `<div class="prepitem col" style="align-items:stretch;gap:6px"><div class="row u-g8"><button type="button" class="grow linkish" data-act="prepopen" data-id="${t.id}">${esc(t.title)}${t.summary ? `<span class="muted u-blk t-xs">${esc(t.summary)}</span>` : ""}</button>
+        ${parked.map((t) => `<div class="prepitem col" style="align-items:stretch;gap:6px"><div class="row u-g8"><button type="button" class="grow linkish" data-act="prepopen" data-id="${t.id}">${uiText(t.title, true)}${t.summary ? `<span class="muted u-blk t-xs">${uiText(t.summary, true)}</span>` : ""}</button>
           <button type="button" class="btn" data-act="prepunpend" data-id="${t.id}">拿出来</button><button type="button" class="btn" data-act="dropprep" data-id="${t.id}">不要了</button></div>
           ${S.prepOpen === t.id && t.result ? `<div class="prepresult md">${md(t.result)}</div>` : ""}</div>`).join("")}</div>` : '<p class="muted">没有先放着的</p>'; })() : ""}
       ${S.prepTab === "routines" ? (st.prep_routines || []).length ? `<div class="col u-g8">
-        ${st.prep_routines.map((t) => `<div class="item"><span class="grow t-md">${esc(t)}</span></div>`).join("")}</div>` : '<p class="muted">没有长期工作</p>' : ""}
+        ${st.prep_routines.map((t) => `<div class="item"><span class="grow t-md">${uiText(t, false)}</span></div>`).join("")}</div>` : '<p class="muted">没有长期工作</p>' : ""}
       ${S.prepTab === "trash" ? (st.prep_trash || []).length ? `<div class="col u-g8">
-        ${st.prep_trash.map((x) => `<div class="item"><span class="grow">${esc(x.title)}<span class="muted u-blk t-xs">${esc(String(x.at).slice(5, 16).replace("T", " "))} 放进来的</span></span><button type="button" class="btn" data-act="preprestore" data-id="${x.id}">放回去</button></div>`).join("")}</div>` : '<p class="muted">回收站是空的</p>' : ""}</section>`;
+        ${st.prep_trash.map((x) => `<div class="item"><span class="grow">${uiText(x.title, true)}<span class="muted u-blk t-xs">${uiText(String(x.at).slice(5, 16).replace("T", " "), false)} 放进来的</span></span><button type="button" class="btn" data-act="preprestore" data-id="${x.id}">放回去</button></div>`).join("")}</div>` : '<p class="muted">回收站是空的</p>' : ""}</section>`;
   } else if (S.overlay === "desk") {  // 今日邮件和留言（ethan/desk.py）
     const items = (S.desk || {}).items;
-    const STATE = { drafting: "小伴 在写草稿……", handed: "主页助手在写草稿……", draft: "草稿好了，看看再发", sending: "等主页发出", sent: "已发送" };
-    const btn = (act, x, label, cls = "") => `<button type="button" class="btn ${cls}" data-act="${act}" data-kind="${x.kind}" data-id="${x.id}" data-k="${x.kind + x.id}">${label}</button>`;
+    const STATE = { drafting: "小伴 在写草稿……", handed: "Days在写草稿……", draft: "草稿好了，看看再发", sending: "等主页发出", sent: "已发送" };
+    const btn = (act, x, label, cls = "") => `<button type="button" class="btn ${cls}" data-act="${act}" data-kind="${x.kind}" data-id="${x.id}" data-k="${x.kind + x.id}">${t(label)}</button>`;
     // 一次只给她看一种语言，默认中文；“看原文 / 看翻译”切换。已经是中文的不出切换按钮
     const lang = (key, what) => ((S.deskLang || {})[key + what]) || "zh";
     const zhOf = (x, what) => { const key = x.kind + x.id, mine = (S.deskZh || {})[key + what];
@@ -1530,20 +1591,20 @@ function renderOverlayInner() {
     const flip = (x, what) => `<button type="button" class="btn" data-act="desklang" data-what="${what}" data-k="${x.kind + x.id}">${lang(x.kind + x.id, what) === "zh" ? "看原文" : "看翻译"}</button>`;
     const accts = (S.desk || {}).accounts || [];
     const one = (x) => { const key = x.kind + x.id, open = S.deskOpen === key, sent = x.state === "sent", out = x.kind === "out", mail = x.kind === "mail" || out;
-      const writer = mail ? "小伴" : "主页助手", manual = !mail && x.channel === "manual";
-      const bodyZh = !x.is_zh && lang(key, "body") === "zh";
+      const writer = mail ? "小伴" : "Days", manual = !mail && x.channel === "manual";
+      const bodyZh = uiLang !== "en" && !x.is_zh && lang(key, "body") === "zh";
       if (open && bodyZh && !zhOf(x, "body")) deskFetchZh(x, "body");
       const hasDraft = ["draft", "sending", "sent"].includes(x.state) && !!x.draft;
       const editable = x.state === "draft";
-      const draftZh = hasDraft && !x.draft_is_zh && lang(key, "draft") === "zh";
+      const draftZh = uiLang !== "en" && hasDraft && !x.draft_is_zh && lang(key, "draft") === "zh";
       if (open && draftZh && !zhOf(x, "draft")) deskFetchZh(x, "draft");
       const left = sent && !x.draft ? `<div class="deskread">你在别处回过了。</div>`
         : !hasDraft ? `<div class="deskempty">${["drafting", "handed"].includes(x.state) ? `${writer}在写草稿……${mail ? "" : "（主页那边每 10 分钟来取一次）"}`
           : !mail && !x.can_reply ? "对方没留联系方式，回不了。看过点“不用管”就好。"
-          : `还没起草。在右边写一句交代（也可以不写），点“${mail ? "按交代起草" : "交给主页助手起草"}”。`}</div>`
-        : draftZh ? `<div class="deskread">${zhOf(x, "draft") ? esc(zhOf(x, "draft")) : '<span class="muted">翻译中……</span>'}</div>`
-        : !editable ? `<div class="deskread">${esc(x.draft || "")}</div>`
-        : `<textarea class="draft" id="dd${key}" data-deskdraft="${key}" aria-label="回复草稿">${esc(deskDraftText(x))}</textarea>`;
+          : `还没起草。在右边写一句交代（也可以不写），点“${mail ? "按交代起草" : "交给Days起草"}”。`}</div>`
+        : draftZh ? `<div class="deskread">${zhOf(x, "draft") ? uiText(zhOf(x, "draft"), true) : '<span class="muted">翻译中……</span>'}</div>`
+        : !editable ? `<div class="deskread">${uiText(x.draft || "", true)}</div>`
+        : `<textarea class="draft" id="dd${key}" data-deskdraft="${key}" aria-label="回复草稿">${esc(deskDraftText(x))}</textarea>${uiLang === "en" ? `<div class="deskread">${uiText(deskDraftText(x), true)}</div>` : ""}`;
       const leftHead = `<div class="deskhead"><span class="muted t-sm">${sent ? `${x.draft ? (out ? "已经发出去的邮件" : "已经发出去的回复") : "已回"}${x.sent_at ? " · " + esc(String(x.sent_at).slice(11, 16)) : ""}`
           : x.state === "sending" ? "已确认，主页 10 分钟内从 hi@example.com 发出"
           : `${writer}起草的${out ? "新邮件" : "回复"}${draftZh ? "（中文版只给你看，改要在原文里改）" : manual ? "（对方只留了微信 / LinkedIn：复制去发）" : "（用对方的语言发；可以直接改）"}`}</span>
@@ -1557,27 +1618,27 @@ function renderOverlayInner() {
           ${editable && manual ? copy + done : ""}
           ${btn("desk-ignore", x, "不用管")}${btn("desk-todo", x, "记成待办")}
           ${editable && !manual ? copy + done : ""}
-          ${x.error ? `<span class="muted t-sm">上次没发出去：${esc(x.error)}</span>` : ""}`;
+          ${x.error ? `<span class="muted t-sm">上次没发出去：${uiText(x.error, true)}</span>` : ""}`;
       const noReply = !mail && !x.can_reply;
       // 新邮件：收件人能改，选用哪个邮箱发
       const outHead = out ? `<div class="deskhead" style="flex-wrap:wrap;gap:8px;justify-content:flex-start"><label class="muted deskaddr">发给 <input class="deskto" data-deskto="${key}" value="${esc((S.deskTo || {})[key] ?? x.to ?? "")}" ${editable ? "" : "disabled"}></label>
           <label class="muted deskaddr">用 <select data-deskacct="${key}" ${editable ? "" : "disabled"}>${accts.map((a) => `<option value="${esc(a.name)}" ${((S.deskAcct || {})[key] ?? x.account) === a.name ? "selected" : ""}>${esc(a.user)}</option>`).join("") || '<option value="">（还没有能发信的邮箱）</option>'}</select> 发</label></div>` : "";
       return `<div class="deskitem ${open ? "open" : ""}"><div class="row u-g8">
         <span class="kind ${out ? "mail" : x.kind}">${out ? "新邮件" : mail ? (x.via === "example.com" ? "主页来信" : "邮件") : "留言"}</span>
-        <button type="button" class="linkish" data-act="deskopen" data-k="${key}">${String(x.title || "").startsWith(x.who) ? "" : esc(x.who) + "："}${esc(x.title)}<span class="muted u-blk t-xs">${x.via_agent ? "由 agent 代留（" + esc(x.via_agent) + "）· " : ""}${esc(x.why || "")}${x.at ? " · " + esc(String(x.at).slice(5, 16).replace("T", " ")) : ""}</span></button>
+        <button type="button" class="linkish" data-act="deskopen" data-k="${key}">${String(x.title || "").startsWith(x.who) ? "" : esc(x.who) + "："}${uiText(x.title, true)}<span class="muted u-blk t-xs">${x.via_agent ? "由 agent 代留（" + esc(x.via_agent) + "）· " : ""}${uiText(x.why || "", true)}${x.at ? " · " + esc(String(x.at).slice(5, 16).replace("T", " ")) : ""}</span></button>
         ${STATE[x.state] ? `<span class="deskstate">${STATE[x.state]}</span>` : ""}
         ${["sent", "sending"].includes(x.state) ? "" : btn("desk-ignore", x, "不用管", "small")}</div>
         ${open ? `<div class="col u-g10 u-mt8">
           ${out ? outHead : `<div class="deskhead"><span class="muted t-sm">${mail ? "原邮件" : "留言原话"}${bodyZh ? "（中文翻译）" : ""}</span>
-            <span class="deskright">${!mail && (x.email || x.contact) ? `<span class="muted t-sm">联系方式：${esc([x.email, x.contact].filter(Boolean).join(" · "))}</span>` : ""}${x.is_zh ? "" : flip(x, "body")}</span></div>
-          <div class="deskbody">${bodyZh ? (zhOf(x, "body") ? esc(zhOf(x, "body")) : '<span class="muted">翻译中……</span>') : esc(x.text || "")}</div>`}
+            <span class="deskright">${!mail && (x.email || x.contact) ? `<span class="muted t-sm">联系方式：${uiText([x.email, x.contact].filter(Boolean).join(" · "), false)}</span>` : ""}${x.is_zh ? "" : flip(x, "body")}</span></div>
+          <div class="deskbody">${bodyZh ? (zhOf(x, "body") ? uiText(zhOf(x, "body"), true) : '<span class="muted">翻译中……</span>') : uiText(x.text || "", true)}</div>`}
           <div class="deskcols ${sent || x.state === "sending" || noReply ? "one" : ""}">
             <div class="dc-lh">${leftHead}</div>
             <div class="dc-lb">${left}</div>
             <div class="dc-lt row">${leftBtns}</div>
             ${sent || x.state === "sending" || noReply ? "" : `<div class="dc-rh deskhead"><label class="muted t-sm" for="dn${key}">你的交代（可不写）</label></div>
             <div class="dc-rb"><textarea id="dn${key}" data-desknote="${key}" placeholder="${out ? "比如：语气再软一点 / 加一句我是交换生 / 改成问能不能退一半" : x.kind === "mail" ? "比如：客气地推掉 / 约下周三视频 / 用中文回也行" : "比如：谢谢夸奖，欢迎常来"}">${esc((S.deskNote || {})[key] ?? x.note ?? "")}</textarea></div>
-            <div class="dc-rt row">${btn("desk-draft", x, x.state === "draft" || out ? "按交代重写" : mail ? "按交代起草" : "交给主页助手起草", "gold")}</div>`}
+            <div class="dc-rt row">${btn("desk-draft", x, x.state === "draft" || out ? "按交代重写" : mail ? "按交代起草" : "交给Days起草", "gold")}</div>`}
           </div>
         </div>` : ""}</div>`; };
     // 邮件和主页留言分两个标签；发到 hi@example.com 的“主页来信”算在主页那边
@@ -1585,19 +1646,19 @@ function renderOverlayInner() {
     const tabOf = { mail: (items || []).filter((x) => !site(x)), site: (items || []).filter(site) };
     const waiting = (list) => list.filter((x) => x.waiting).length;  // “等你处理”只认服务端 desk.state_of 给的（11-06）
     const tab = S.deskTab || (waiting(tabOf.mail) || !waiting(tabOf.site) ? "mail" : "site");
-    const tabBtn = (k, label) => `<button type="button" class="${tab === k ? "on" : ""}" data-act="desktab" data-tab="${k}">${label}${waiting(tabOf[k]) ? ` <span class="rbadge">${waiting(tabOf[k])}</span>` : ""}</button>`;
+    const tabBtn = (k, label) => `<button type="button" class="${tab === k ? "on" : ""}" data-act="desktab" data-tab="${k}">${t(label)}${waiting(tabOf[k]) ? ` <span class="rbadge">${waiting(tabOf[k])}</span>` : ""}</button>`;
     box.innerHTML = `<section class="sheet prepsheet" aria-label="今日邮件和留言"><h2 class="t-h">邮件和留言</h2>
       <div class="tabs">${tabBtn("mail", "邮件")}${tabBtn("site", "主页留言")}</div>
       <span class="muted t-sm">${tab === "mail" ? "只放要你亲自看的邮件，别的 小伴 已经归好类、标了已读。回复由 小伴 起草，你点“发送”才发；复制去邮件 App 发的，回来点“已回”。"
-        : "主页上要你回、或主页助手能回的留言，以及发到 hi@example.com 的信。回复由主页助手起草，你点“发送”才从 hi@example.com 发；只留了微信 / LinkedIn 的复制去发，回来点“已回”。"}</span>
+        : "主页上要你回、或Days能回的留言，以及发到 hi@example.com 的信。回复由Days起草，你点“发送”才从 hi@example.com 发；只留了微信 / LinkedIn 的复制去发，回来点“已回”。"}</span>
       <div class="desklist">${items ? tabOf[tab].map(one).join("") || '<p class="muted">现在没有要你处理的。</p>' : '<p class="muted">加载中……</p>'}</div>
       ${((S.desk || {}).archived || []).length ? `<details class="deskarch u-mt12"><summary class="muted t-md u-ptr">这两天 小伴 归档了 ${S.desk.archived.length} 封（垃圾、推广、群发），点开抽查</summary>
-        ${S.desk.archived.map((x) => `<div class="row" style="gap:8px;padding:5px 2px;border-top:1px solid rgba(127,127,127,.15);font-size:13px;display:flex;align-items:center"><span class="u-grow u-min0">${esc((x.sender || "").split("<")[0].trim() || x.sender || "")}：${esc(x.subject || "")}<span class="muted u-blk t-xs">${esc({ junk: "垃圾", promo: "推广", newsletter: "群发" }[x.category] || x.category)} · ${esc(x.reason || "")}</span></span><button type="button" class="btn" data-act="desk-notjunk" data-id="${x.id}">不是垃圾</button></div>`).join("")}</details>` : ""}</section>`;
+        ${S.desk.archived.map((x) => `<div class="row archrow"><span class="u-grow u-min0">${uiText((x.sender || "").split("<")[0].trim() || x.sender || "", false)}：${esc(x.subject || "")}<span class="muted u-blk t-xs">${esc({ junk: "垃圾", promo: "推广", newsletter: "群发" }[x.category] || x.category)} · ${uiText(x.reason || "", true)}</span></span><button type="button" class="btn" data-act="desk-notjunk" data-id="${x.id}">不是垃圾</button></div>`).join("")}</details>` : ""}</section>`;
   } else if (S.overlay === "addtodo") {
     const goals = st.goals || [];
     box.innerHTML = `<form class="sheet small" data-form="addtodo" aria-label="加待办"><h2 class="t-h">加一件待办</h2>
       <label>要做什么<input type="text" name="title" required></label>
-      <label>属于哪个领域<select name="territory"><option value="">让 小伴 猜（默认）</option>${TERRS.map(([k, n]) => `<option value="${k}">${n}</option>`).join("")}<option value="waste">先放荒原</option></select></label>
+      <label>属于哪个领域<select name="territory"><option value="">让 小伴 猜（默认）</option>${TERRS.map(([k, n]) => `<option value="${k}">${n}</option>`).join("")}<option value="waste">先放待归属</option></select></label>
       <label>什么时候做<select name="when"><option value="today">今天（进今日任务 ★）</option><option value="week">这周</option><option value="later">不急，让 AI 排</option></select></label>
       <div class="row u-end"><button type="button" class="btn" data-act="close">取消</button><button class="btn primary">加上</button></div></form>`;
   } else if (S.overlay === "addevent") {
@@ -1623,15 +1684,15 @@ function renderOverlayInner() {
     const edit = S.goalEdit === b.goal_id ? S.goalEditWhat : null, ed = S.editGoal === b.goal_id;
     box.innerHTML = `<section class="sheet ${ch && ch.milestones ? "bosssheet" : "small"}" aria-label="${esc(b.name)}"><div class="row u-between u-g8">
         ${edit === "name" ? `<form class="row u-g6 u-grow" data-form="goalset" data-id="${b.goal_id}"><input class="u-grow" type="text" name="title" value="${esc(b.title || b.name)}" aria-label="副本名字"><button class="btn primary">保存</button><button type="button" class="btn" data-act="goaledit" data-id="${b.goal_id}" data-what="">取消</button></form>`
-          : `<span class="row u-g6 u-center"><h2 class="t-h">${b.main ? "★ " : ""}${esc(b.name)}${b.main ? "（主副本）" : ""}</h2><button type="button" class="pen" data-act="goaledit" data-id="${b.goal_id}" data-what="name" title="改名字" aria-label="改名字">✎</button></span>`}
+          : `<span class="row u-g6 u-center"><h2 class="t-h">${b.main ? "★ " : ""}${uiText(b.name, true)}${b.main ? "（主副本）" : ""}</h2><button type="button" class="pen" data-act="goaledit" data-id="${b.goal_id}" data-what="name" title="改名字" aria-label="改名字">✎</button></span>`}
         <button type="button" class="btn" data-act="close">关闭</button></div>
       ${edit === "target" ? `<form class="row" data-form="goalset" data-id="${b.goal_id}" style="gap:8px;align-items:flex-end;flex-wrap:wrap">
           ${b.target != null ? `<label class="u-grow">目标值${b.unit ? "（" + esc(b.unit) + "）" : ""}<input type="text" inputmode="decimal" name="target" value="${esc(String(b.target))}"></label>` : ""}
           <label class="u-grow">截止日<input type="date" name="due" value="${esc(b.due || "")}"></label>
           <button class="btn primary">保存</button><button type="button" class="btn" data-act="goaledit" data-id="${b.goal_id}" data-what="">取消</button></form>`
-        : `<div class="row muted t-md u-wrap u-g6 u-center"><span>${esc(b.line)}</span>${b.due ? `<span>· 截止 ${esc(b.due)}</span>` : ""}${b.status ? `<span class="gold">· ${esc(b.status)}</span>` : ""}<button type="button" class="pen" data-act="goaledit" data-id="${b.goal_id}" data-what="target" title="改${b.target != null ? "目标值和" : ""}截止日" aria-label="改${b.target != null ? "目标值和" : ""}截止日">✎</button></div>`}
-      <div class="bar" style="height:10px"><i style="width:${Math.round(100 * (b.frac || 0))}%"></i></div>
-      ${b.comment ? `<span style="font-size:13px;line-height:1.6"><span class="gold">今天：</span>${esc(b.comment)}</span>` : ""}
+        : `<div class="row muted t-md u-wrap u-g6 u-center"><span>${uiText(b.line, true)}</span>${b.due ? `<span>· 截止 ${uiText(b.due, false)}</span>` : ""}${b.status ? `<span class="gold">· ${uiFixed(b.status)}</span>` : ""}<button type="button" class="pen" data-act="goaledit" data-id="${b.goal_id}" data-what="target" title="改${b.target != null ? "目标值和" : ""}截止日" aria-label="改${b.target != null ? "目标值和" : ""}截止日">✎</button></div>`}
+      ${bossBar(b, "big")}
+      ${b.comment ? `<span style="font-size:13px;line-height:1.6"><span class="gold">今天：</span>${uiText(b.comment, true)}</span>` : ""}
       ${ch && ch.milestones ? milestoneView(b.goal_id, ch.milestones, ed) : steps === null ? '<p class="muted">加载中……</p>' : `<div class="row u-between"><b class="t-md">主线 ${doneN} / ${steps.length} 步</b>${steps.length ? `<button type="button" class="btn small ${ed ? "gold" : ""}" data-act="editgoal" data-id="${b.goal_id}">${ed ? "完成" : "✎ 编辑"}</button>` : ""}</div>
       ${steps.length ? stepList(b.goal_id, steps, ed) : '<p class="muted">还没拆步骤。点下面“给这个副本加一步”，把阶段性的里程碑加进来，进度就按走到第几步算。</p>'}
 `}
@@ -1640,30 +1701,30 @@ function renderOverlayInner() {
     const d = S.ethanDays;
     box.innerHTML = `<section class="sheet prepsheet col" aria-label="小伴 的一天"><div class="row u-between"><h2>小伴 的一天</h2><button type="button" class="btn" data-act="close">关闭</button></div>
       <span class="muted t-sm">这是他自己的日子，每天早上写好，聊天时照着过。是他的，不是你的资料，所以不放进“收藏和资料”。</span>
-      ${!d ? '<p class="loading">加载中……</p>' : d.days.length ? d.days.map((x, i) => `<details ${i === 0 ? "open" : ""}><summary class="gold u-ptr">${esc(x.day)}${i === 0 ? " · 今天" : ""}</summary><div class="prepresult md" style="max-height:none">${md(x.body)}</div></details>`).join("") : '<p class="muted">他今天的日子还没写好，晚点再来看。</p>'}</section>`;
+      ${!d ? '<p class="loading">加载中……</p>' : d.days.length ? d.days.map((x, i) => `<details ${i === 0 ? "open" : ""}><summary class="gold u-ptr">${uiText(x.day, false)}${i === 0 ? " · 今天" : ""}</summary><div class="prepresult md" style="max-height:none">${md(x.body)}</div></details>`).join("") : '<p class="muted">他今天的日子还没写好，晚点再来看。</p>'}</section>`;
   } else if (S.overlay === "trip") {
     const x = (st.timeline[S.tripI] || {}).trip || {};
     const map = x.place ? `https://maps.apple.com/?daddr=${encodeURIComponent(x.place)}&dirflg=r` : "";
-    box.innerHTML = `<section class="sheet small col" aria-label="出门"><div class="row u-between"><h2>${esc(x.title || "出门")}</h2><button type="button" class="btn" data-act="close">关闭</button></div>
+    box.innerHTML = `<section class="sheet small col" aria-label="出门"><div class="row u-between"><h2>${uiText(x.title || "出门", true)}</h2><button type="button" class="btn" data-act="close">关闭</button></div>
       <div class="col u-g8 t-body u-lh17">
         <span>📍 ${x.place ? esc(x.place) : '<span class="muted">日历里没写地点</span>'}</span>
-        <span>🕐 ${esc(x.start || "")} 开始</span>
+        <span>🕐 ${uiText(x.start || "", false)} 开始</span>
         ${x.trip_min ? `<span>🚌 路上约 ${x.trip_min} 分钟${x.route ? "（" + esc(x.route) + "）" : ""}</span>` : ""}
-        ${x.leave ? `<span class="gold">🚶 ${esc(x.leave)} 出发（开始时间 − 路上 − 20 分钟）</span>` : ""}
-        ${x.remind ? `<span class="muted">⏰ ${esc(x.remind)} 小伴 提醒你准备</span>` : ""}</div>
+        ${x.leave ? `<span class="gold">🚶 ${uiText(x.leave, false)} 出发（开始时间 − 路上 − 20 分钟）</span>` : ""}
+        ${x.remind ? `<span class="muted">⏰ ${uiText(x.remind, false)} 小伴 提醒你准备</span>` : ""}</div>
       ${map ? `<a class="btn gold" style="align-self:flex-start" href="${map}" target="_blank" rel="noopener">在地图里看路线</a>` : ""}</section>`;
   } else if (S.overlay === "bigmap") {
-    box.innerHTML = `<section class="sheet wide col" aria-label="大地图"><div class="row u-between"><h2>大地图</h2><span class="row u-g10"><span class="legend"><span><i class="ldot s-ok"></i>达标</span><span><i class="ldot s-warn"></i>副本落后</span><span><i class="ldot s-bad"></i>跌破保底</span><span><i class="ldot s-none"></i>等数据</span></span><button type="button" class="btn phoneonly" data-act="close">关闭</button></span></div>
+    box.innerHTML = `<section class="sheet wide col" aria-label="大地图"><div class="row u-between"><span class="row u-g10 u-center"><h2>大地图</h2>${S.map ? pendBtn(S.map.waste) : ""}</span><span class="row u-g10"><span class="legend"><span><i class="ldot s-ok"></i>达标</span><span><i class="ldot s-warn"></i>副本落后</span><span><i class="ldot s-bad"></i>跌破保底</span><span><i class="ldot s-none"></i>等数据</span></span><button type="button" class="btn phoneonly" data-act="close">关闭</button></span></div>
       <div class="mapbox">${mapImg()}${S.map ? mapTags(S.map) : ""}</div><span class="muted t-sm">点一块领域进去看详情。</span></section>`;
   } else if (S.overlay === "redeemed") {
     box.innerHTML = `<section class="sheet small quip"><svg class="giftopen" viewBox="0 0 120 110" aria-hidden="true">
         <g class="glow"><circle cx="60" cy="52" r="34" fill="url(#gg)"/></g>
-        <defs><radialGradient id="gg"><stop offset="0" stop-color="#FFE7A3" stop-opacity=".95"/><stop offset="1" stop-color="#FFE7A3" stop-opacity="0"/></radialGradient></defs>
-        <g class="spark" fill="#F3C24E"><path d="M60 14l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/><path d="M86 26l1.4 4 4 1.4-4 1.4-1.4 4-1.4-4-4-1.4 4-1.4z"/><path d="M36 28l1.2 3.4 3.4 1.2-3.4 1.2-1.2 3.4-1.2-3.4-3.4-1.2 3.4-1.2z"/></g>
-        <rect x="26" y="58" width="68" height="44" rx="5" fill="#E7577F"/><rect x="55" y="58" width="10" height="44" fill="#F6D06B"/>
-        <rect x="26" y="58" width="68" height="7" fill="#C83D66" opacity=".55"/>
-        <g class="lid"><rect x="20" y="44" width="80" height="16" rx="4" fill="#F06C92"/><rect x="55" y="44" width="10" height="16" fill="#F6D06B"/>
-          <path d="M60 44c-10-14-24-10-18-2 3 4 12 3 18 2zm0 0c10-14 24-10 18-2-3 4-12 3-18 2z" fill="#F6D06B"/></g></svg>
+        <defs><radialGradient id="gg"><stop class="gx-glow" offset="0" stop-opacity=".95"/><stop class="gx-glow" offset="1" stop-opacity="0"/></radialGradient></defs>
+        <g class="spark gx-spark"><path d="M60 14l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/><path d="M86 26l1.4 4 4 1.4-4 1.4-1.4 4-1.4-4-4-1.4 4-1.4z"/><path d="M36 28l1.2 3.4 3.4 1.2-3.4 1.2-1.2 3.4-1.2-3.4-3.4-1.2 3.4-1.2z"/></g>
+        <rect class="gx-box" x="26" y="58" width="68" height="44" rx="5"/><rect class="gx-ribbon" x="55" y="58" width="10" height="44"/>
+        <rect class="gx-shade" x="26" y="58" width="68" height="7" opacity=".55"/>
+        <g class="lid"><rect class="gx-lid" x="20" y="44" width="80" height="16" rx="4"/><rect class="gx-ribbon" x="55" y="44" width="10" height="16"/>
+          <path d="M60 44c-10-14-24-10-18-2 3 4 12 3 18 2zm0 0c10-14 24-10 18-2-3 4-12 3-18 2z" class="gx-ribbon"/></g></svg>
       <h2 class="t-h">拆开了！</h2>
       <p>小伴 已经收到啦，正在给你准备——每次都不一样。<br>他会主动来聊天里找你揭晓、告诉你接下来怎么玩，一般就在今天；要花你钱的，他会先问你。</p>
       <span class="muted t-sm">进度在商店的兑换记录里能看到。</span>
@@ -1676,8 +1737,8 @@ function renderOverlayInner() {
     const ST = { queued: "排队", running: "在干", review: "等审查", accepted: x.rating ? `已打分 ${x.rating} 分` : "通过 · 待打分", failed: "没干成", dropped: "你叫停的" };
     const when = (v) => (v ? String(v).slice(5, 16).replace("T", " ") : "");
     box.innerHTML = `<section class="sheet small col u-g10" aria-label="活的详情">
-      <div class="row u-between u-g8"><span class="pill p-none">${esc(name)} · ${esc(ST[x.status] || x.status)}</span><button type="button" class="btn" data-act="close">关闭</button></div>
-      <b style="font-size:17px;line-height:1.5">${esc(x.title)}</b>
+      <div class="row u-between u-g8"><span class="pill p-none">${uiText(name, false)} · ${uiFixed(ST[x.status] || x.status)}</span><button type="button" class="btn" data-act="close">关闭</button></div>
+      <b style="font-size:17px;line-height:1.5">${uiText(x.title, true)}</b>
       <span class="muted t-sm">${[x.project && !x.project.startsWith("Grok 回报") ? x.project : "", `${x.size} 点`, x.created_at ? "派出 " + when(x.created_at) : "", x.finished_at ? "做完 " + when(x.finished_at) : "", x.reworks ? `返工 ${x.reworks} 次` : ""].filter(Boolean).map(esc).join(" · ")}</span>
       ${x.spec ? `<div class="col u-g4"><b class="t-md">要做什么</b><div class="prepresult md">${md(x.spec)}</div></div>` : ""}
       ${x.review_note ? `<div class="col u-g4"><b class="t-md">${x.agent === "grok" ? "Grok 回报的原文" : x.status === "failed" || x.status === "dropped" ? "为什么没成" : "交上来的说明"}</b><div class="prepresult md">${md(x.review_note)}</div></div>` : ""}
@@ -1691,10 +1752,10 @@ function renderOverlayInner() {
     if (!x) { S.overlay = null; box.hidden = true; return; }
     const ST = { running: "在干", review: "等你看", queued: "排队" };
     box.innerHTML = `<section class="sheet small col u-g10" aria-label="活的详情">
-      <div class="row u-between u-g8"><span class="pill p-none">${esc((t.names || {})[x.agent] || x.agent)} · ${esc(x.status_label || ST[x.state] || "")}</span><button type="button" class="btn" data-act="close">关闭</button></div>
-      <b style="font-size:17px;line-height:1.5">${esc(x.title)}</b>
-      <span class="muted t-sm">${esc(x.sub)}${x.at ? " · 最近动静 " + ago(x.at) : ""}</span>
-      ${x.detail ? `<div class="col u-g4"><b class="t-md">${esc(x.detail_label || "说明")}</b><div class="prepresult md">${md(x.detail)}</div></div>` : '<span class="muted t-md">它还没留下更多说明。</span>'}
+      <div class="row u-between u-g8"><span class="pill p-none">${esc((t.names || {})[x.agent] || x.agent)} · ${uiFixed(x.status_label || ST[x.state] || "")}</span><button type="button" class="btn" data-act="close">关闭</button></div>
+      <b style="font-size:17px;line-height:1.5">${uiText(x.title, true)}</b>
+      <span class="muted t-sm">${uiText(x.sub, true)}${x.at ? " · 最近动静 " + ago(x.at) : ""}</span>
+      ${x.detail ? `<div class="col u-g4"><b class="t-md">${uiText(x.detail_label || "说明", false)}</b><div class="prepresult md">${md(x.detail)}</div></div>` : '<span class="muted t-md">它还没留下更多说明。</span>'}
       ${x.state === "review" && x.key ? `<div class="row u-g8">${judge(`data-key="${esc(x.key)}" data-agent="${esc(x.agent)}" data-title="${esc(x.title)}"`, true)}</div>` : ""}
       ${x.agent === "claude" ? '<span class="muted t-xs">Claude 会话只报项目名、你的第一句话和它最后一段回复的开头，完整对话在 Claude App 里。</span>' : ""}
     </section>`;
@@ -1705,7 +1766,7 @@ function renderOverlayInner() {
       <span class="muted t-sm">场景、动作、拍照视角、穿搭都行，cosplay 也行（比如“cos 水手服战士在大本钟顶上”“鱼眼镜头跳起来接落叶”）。不点的话，小伴 每天按你当天的事自己编一个镜头。</span>
       <textarea data-cardwish rows="3" placeholder="写一句你想要的画面">${esc(S.cardWishDraft || "")}</textarea>
       <div class="row u-g6 u-wrap"><button type="button" class="btn gold" data-act="cardwish" data-now="1">现在重画今天</button><button type="button" class="btn" data-act="cardwish" data-now="">留到明天画</button></div>
-      ${(c.wishes || []).length ? `<div class="col u-g4"><span class="muted t-sm">还没画的要求。“现在重画”的几条会合在一起画今天这张${c.drawing ? "（正在画，画完要是还有没用上的，会接着再画一次）" : ""}；“明天画”的一天用一条。</span>${c.wishes.map((w) => `<div class="item"><span class="grow t-md">${esc(w.text)}</span><span class="pill ${w.now ? "p-warn" : "p-none"}">${w.now ? (c.drawing ? "正在画" : "马上重画") : "明天画"}</span><button type="button" class="x" data-act="cardwishdrop" data-id="${w.id}" aria-label="删掉这条">✕</button></div>`).join("")}</div>` : ""}
+      ${(c.wishes || []).length ? `<div class="col u-g4"><span class="muted t-sm">还没画的要求。“现在重画”的几条会合在一起画今天这张${c.drawing ? "（正在画，画完要是还有没用上的，会接着再画一次）" : ""}；“明天画”的一天用一条。</span>${c.wishes.map((w) => `<div class="item"><span class="grow t-md">${uiText(w.text, true)}</span><span class="pill ${w.now ? "p-warn" : "p-none"}">${w.now ? (c.drawing ? "正在画" : "马上重画") : "明天画"}</span><button type="button" class="x" data-act="cardwishdrop" data-id="${w.id}" aria-label="删掉这条">✕</button></div>`).join("")}</div>` : ""}
     </section>`;
   } else if (S.overlay === "streakhelp") {  // “满勤是什么的满勤”
     box.innerHTML = `<section class="sheet small">${sheetHead(`日常连续全勤`)}
@@ -1713,8 +1774,8 @@ function renderOverlayInner() {
       <p>从第一次打卡那天往后数，连着全勤几天就是几天；今天还没打完不算断。每周有 1 张补签卡，漏一天会自动补上；休整日只要做到一半就算。</p>
       <p class="muted t-md">连续 7 天 +50 积分，30 天 +300，还会出稀有、超稀有卡。</p></section>`;
   } else if (S.overlay === "seasonhelp") {
-    box.innerHTML = `<section class="sheet small">${sheetHead(`${esc(st.season.name)}的进度`)}
-      <p>这个百分比是<b>赛季按时间走了多少</b>：${esc(st.season.start)} 开始，${esc(st.season.end)} 结束，今天走到了 ${st.season.pct}%。</p>
+    box.innerHTML = `<section class="sheet small">${sheetHead(`${uiText(st.season.name, true)}的进度`)}
+      <p>这个百分比是<b>赛季按时间走了多少</b>：${uiText(st.season.start, false)} 开始，${uiText(st.season.end, false)} 结束，今天走到了 ${st.season.pct}%。</p>
       <p>每个副本各到哪了，看首页右边的“副本进度”。</p>
       <p class="muted t-md">赛季还剩 ${st.season.days_left} 天。</p></section>`;
   } else if (S.overlay === "person") {
@@ -1723,7 +1784,7 @@ function renderOverlayInner() {
     box.innerHTML = `<section class="sheet small">${sheetHead(`经验和积分`)}
       <p>每做完一件事，<b>经验和积分一起涨，一比一</b>，涨的数一样。</p>
       <p><b>经验</b>只涨不减，用来升级、换称号。<br><b>积分</b>是钱包，在商店拆惊喜会花掉，所以会比经验少。</p>
-      <p class="muted t-md">怎么挣：主线一次性的 +40 / +100 / +200（看大小），反复做的每次 +10，每阶段一次的 +40，里程碑达成 +300（没达成但复盘了 +50）· 其他 +20 · 日常每项 +10，全勤再 +20，连续满勤 7 天 +50、30 天 +300 · 周常达标 +50，超额每次 +20。撤销完成会把分收回。</p></section>`;
+      <p class="muted t-md">怎么挣：任务按预计工作量定档，一小时内 +40 / 半天 +100 / 一两天 +200 / 好几天 +400（节点再 +300，硬骨头 ×1.5，邮件来的不计分），反复做的每次 +10，每阶段一次的 +40，里程碑达成 +300（没达成但复盘了 +50）· 日常每项 +10，全勤再 +20，连续满勤 7 天 +50、30 天 +300 · 周常达标 +50，超额每次 +20。撤销完成会把分收回。</p></section>`;
   } else if (S.overlay === "budget") {  // 健康线“本周花销”保底旁边的 ✎（不用收起来的框，弹窗改，选立即还是下月生效）
     const bp = S.budgetPlan || {};
     box.innerHTML = `<form class="sheet small col u-g10" data-form="budget" aria-label="改每月预算"><h2 class="t-h">每月预算</h2>
@@ -1739,10 +1800,10 @@ function renderOverlayInner() {
       <label>是谁<input type="text" name="who" required placeholder="名字或称呼，几个人用顿号隔开"></label>
       <label>哪天<input type="date" name="day" value="${esc((S.state && S.state.day) || "")}"></label>
       <div class="row u-end"><button type="button" class="btn" data-act="close">取消</button><button class="btn primary">记上</button></div></form>`;
-  } else if (S.overlay === "makeup") {  // 补昨天的卡
-    const left = ((st.habits && st.habits.daily) || []).filter((h) => !h.yesterday);
+  } else if (S.overlay === "makeup") {  // 补昨天的卡；周常也能补（11-06：英语陪练在 Grok App 里练的，服务器收不到回报）
+    const left = [...((st.habits && st.habits.daily) || []), ...((st.habits && st.habits.weekly) || [])].filter((h) => !h.yesterday);
     box.innerHTML = `<section class="sheet small col u-g10" aria-label="补昨天的卡">${sheetHead(`补昨天的卡`)}
-      <div class="chips">${left.map((h) => `<button type="button" class="chip" data-act="makeupone" data-id="${h.id}">${esc(short(h.title))}</button>`).join("") || '<span class="muted">昨天的都打过了</span>'}</div></section>`;
+      <div class="chips">${left.map((h) => `<button type="button" class="chip" data-act="makeupone" data-id="${h.id}">${uiText(short(h.title), true)}</button>`).join("") || '<span class="muted">昨天的都打过了</span>'}</div></section>`;
   } else if (S.overlay === "explore") {  // 探索地图：去过、跳过这些随时改（不能每次改完都上传一次）
     const e = S.explore;
     if (!e) { box.innerHTML = '<section class="sheet prepsheet"><p class="loading">加载中……</p></section>'; return; }
@@ -1760,13 +1821,13 @@ function renderOverlayInner() {
     const sel = "background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px 8px";
     const visa = (r, i) => S.exploreEdit === i
       ? `<form class="row u-g6" data-form="explorevisa" data-i="${i}"><input type="text" name="v" value="${esc(r["签证"] || "")}" style="width:140px"><button class="btn small primary">存</button></form>`
-      : `<span class="muted t-sm">${esc(r["签证"] || "—")}</span><button type="button" class="pen" data-act="explorevisa" data-i="${i}" title="改签证">✎</button>`;
+      : `<span class="muted t-sm">${uiText(r["签证"] || "—", false)}</span><button type="button" class="pen" data-act="explorevisa" data-i="${i}" title="改签证">✎</button>`;
     box.innerHTML = `<section class="sheet prepsheet col u-g10" aria-label="探索地图">${sheetHead(`探索地图`)}
-      <div class="tabs" role="tablist">${names.map((k) => `<button type="button" role="tab" class="${k === cur ? "on" : ""}" data-act="exploresheet" data-v="${esc(k)}">${esc(k)}</button>`).join("")}</div>
+      <div class="tabs" role="tablist">${names.map((k) => `<button type="button" role="tab" class="${k === cur ? "on" : ""}" data-act="exploresheet" data-v="${esc(k)}">${uiText(k, false)}</button>`).join("")}</div>
       <div class="row u-g8 u-wrap u-center"><input type="search" data-exploreq value="${esc(q)}" placeholder="搜地名、项目" style="flex:1;min-width:140px;${sel}">
         <select data-explore-tag aria-label="按标签筛选" style="${sel}"><option value="">全部 ${all.length}</option>${sts.map((v) => `<option value="${v}"${tag === v ? " selected" : ""}>${v} ${count(v)}</option>`).join("")}</select>
         <select data-explore-sort aria-label="排序" style="${sel}">${[["", "表格顺序"], ["status", "按状态"], ["name", "按名字"], ...(abroad ? [["area", "按区域"], ["visa", "按签证"]] : [])].map(([v, l]) => `<option value="${v}"${sort === v ? " selected" : ""}>${l}</option>`).join("")}</select></div>
-      <div class="col" style="gap:4px;overflow:auto">${rows.map(({ r, i }) => `<div class="item u-wrap"><span class="grow">${esc(label(r))}${r["星标"] ? ' <span class="gold">★</span>' : ""}${abroad && area(r) ? ` <span class="muted t-sm">${esc(area(r))}</span>` : ""}</span>
+      <div class="col" style="gap:4px;overflow:auto">${rows.map(({ r, i }) => `<div class="item u-wrap"><span class="grow">${uiText(label(r), false)}${r["星标"] ? ' <span class="gold">★</span>' : ""}${abroad && area(r) ? ` <span class="muted t-sm">${uiText(area(r), false)}</span>` : ""}</span>
         ${abroad ? `<span class="row u-g4">${visa(r, i)}</span>` : ""}
         <select data-explore-row="${i}" data-sheet="${esc(cur)}" aria-label="状态">${sts.map((v) => `<option value="${v}"${st(r) === v ? " selected" : ""}>${v}</option>`).join("")}</select>
         <button type="button" class="x" data-act="exploredel" data-i="${i}" aria-label="删掉这一处">×</button></div>`).join("") || '<p class="muted">没有对得上的</p>'}</div>
@@ -1776,7 +1837,7 @@ function renderOverlayInner() {
   } else if (S.overlay === "diarynote") {  // 日记批注：写给 小伴，他只改这一句
     const n = S.noteDraft || {};
     box.innerHTML = `<form class="sheet small col u-g10" data-form="diarynote" aria-label="批注"><h2 class="t-h">批注</h2>
-      <blockquote class="quote">${esc(n.text || "")}</blockquote>
+      <blockquote class="quote">${uiText(n.text || "", true)}</blockquote>
       <textarea name="note" rows="3" required placeholder="哪里不对？比如：这是 小伴 在跟别人聊名字，不是我" style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px">${esc(n.note || "")}</textarea>
       <div class="row u-end u-g8"><button type="button" class="btn" data-act="close">取消</button><button class="btn primary">交给 小伴 改这一句</button></div></form>`;
   } else if (S.overlay === "rename") {
@@ -1786,14 +1847,14 @@ function renderOverlayInner() {
   } else if (S.overlay === "shopask") {
     const items = S.shopAsk || [];
     box.innerHTML = `<section class="sheet small col u-g12" aria-label="积分够换惊喜了"><h2 class="t-h">🎁 积分够换惊喜了</h2>
-      ${items.map((x) => `<div class="row u-between u-wrap u-g8"><b>${esc(x.name.replace(/^能拆/, "能换"))}</b>
+      ${items.map((x) => `<div class="row u-between u-wrap u-g8"><b>${uiText(x.name.replace(/^能拆/, "能换"), false)}</b>
         <span class="row u-g8"><button type="button" class="btn" data-act="shopsave">再攒一攒</button><button type="button" class="btn primary" data-act="shopnow" data-id="${x.reward}">立即兑换</button></span></div>`).join("")}
       <span class="muted t-sm">立即兑换会再让你确认一次；选再攒一攒，下次积分掉下去又攒够时再问你。</span></section>`;
   } else if (S.overlay === "shortof") {
-    box.innerHTML = `<section class="sheet small quip"><p>${esc(S.quip)}</p></section>`;
+    box.innerHTML = `<section class="sheet small quip"><p>${uiText(S.quip, false)}</p></section>`;
   } else if (S.overlay.startsWith("redeem:")) {
     const r = S.quests.rewards.find((x) => String(x.id) === S.overlay.split(":")[1]);
-    box.innerHTML = `<section class="sheet small"><h2 class="t-h">确认用 ${r.cost} 分兑换「${esc(r.title)}」？</h2>
+    box.innerHTML = `<section class="sheet small"><h2 class="t-h">确认用 ${r.cost} 分兑换「${uiText(r.title, true)}」？</h2>
       <span class="muted">拆开就收不回啦。要花你钱的部分，小伴 会先问你。</span>
       <div class="row u-end"><button type="button" class="btn" data-act="close">算了</button><button type="button" class="btn primary" data-act="redeemok" data-id="${r.id}">确认兑换</button></div></section>`;
   }
@@ -1845,10 +1906,11 @@ async function reloadQuests(res) {
   S.quests = await api("/api/quests").catch(() => S.quests); render(); return res;
 }
 // 保存：send + 提示，一个写法。没成：提示“fail：原因”、调 onFail（她写的字留着），返回 null；成了：提示服务器的话（没有就 done），返回结果
-async function save(action, payload, { fail = "没存上", done = "好了", onFail, wait } = {}) {
+// say：成了固定说这句（不用服务器的话）；quiet：成了不提示（后面还有一步，等那步再说）
+async function save(action, payload, { fail = "没存上", done = "好了", say, quiet, onFail, wait } = {}) {
   const r = await send(action, payload, wait);
   if (!r.ok) { if (!r.login) showUndo(fail + "：" + r.msg); if (onFail) onFail(r); return null; }
-  showUndo(r.msg || done);
+  if (!quiet) showUndo(say || r.msg || done);
   return r;
 }
 async function reloadExplore() { S.explore = await api("/api/explore").catch(() => S.explore); renderOverlay(); }
@@ -1858,10 +1920,11 @@ const sheetHead = (title, extra = "") => `<div class="row u-between u-g8"><h2 cl
 let undoTimer = null;
 function showUndo(msg, undo) {
   const bar = $("#undo");
-  bar.innerHTML = `<span>${esc(msg)}</span>${undo ? '<button type="button" class="btn gold" data-act="undo">撤销</button>' : ""}`;
+  bar.innerHTML = `<span>${uiText(msg, false)}</span>${undo ? '<button type="button" class="btn gold" data-act="undo">撤销</button>' : ""}`;
   bar.hidden = false;
   S.pendingUndo = undo;
   clearTimeout(undoTimer);
+  localizeVisible();
   undoTimer = setTimeout(() => { bar.hidden = true; S.pendingUndo = null; }, undo ? 6000 : 2500);
 }
 
@@ -1912,19 +1975,28 @@ document.addEventListener("click", (ev) => {
   const a = el.dataset.act, id = el.dataset.id;
   if (a === "hintoff") act("hint.off", { key: el.dataset.key }, el);  // 首页小提示点掉
   else if (a === "go") { leaveEdits();  // 离开页面：正在编辑的一律自动存上、收起编辑（所有能编辑的地方都一样）
-    S.page = el.dataset.page; S.brainBack = null; S.quests = null; S.team = null; S.map = null; S.overlay = null;
+    resetView(); S.page = el.dataset.page;
     if (S.page === "brain") { S.bq = null; S.brain = null; }  // 从导航进大脑看全部，不沿用上次从某个领域带过来的筛选
-    if (S.page === "map") { S.mapTab = ""; S.seasonWhy = true; }  // 进赛季页先看本季，依据默认展开
+    if (S.page === "map") { S.mapTab = ""; S.seasonWhy = true; S.season = null; }  // 进赛季页先看本季；上回的分数不先画出来，等现算的到了再画（记了一笔赛季页没更新）
     // 从导航进来都回到默认筛选（卡册的筛选没复原）
     if (S.page === "cards") { S.cardF = null; S.diaryAt = 0; S.cards = null; S.diaryMode = "book"; S.diaryEdit = null; }  // 每次进日记都从最新那天开始
     if (S.page === "ach") S.achTab = "";
     if (S.state) render();  // 先切过去（这页的数据没到就显示“加载中”），数据到了再画
     load(); }
-  else if (a === "terr") { S.terrBack = S.overlay === "bigmap" ? "bigmap" : S.page === "territory" ? S.terrBack : S.page; S.overlay = null; S.page = "territory"; S.tkey = el.dataset.k; S.terr = null; render(); load(); }
+  else if (a === "terr") { const back = S.overlay === "bigmap" ? "bigmap" : S.page === "territory" ? S.terrBack : S.page;
+    leaveEdits(); resetView(); S.terrBack = back; S.page = "territory"; S.tkey = el.dataset.k; render(); load(); }
   else if (a === "rate") act("agent.rate", { id, rating: Number(el.dataset.rating) });
   else if (a === "agent-drop") confirmTwice("drop:" + id, "再点一次 ⊘ 就放弃这件活（不算失败）", () => act("agent.drop", { id }));
   else if (a === "domain-ok") act("task.domain", { id, key: el.dataset.k });
   else if (a === "maptab") { S.mapTab = el.dataset.v; S.review = null; render(); load(); }
+  else if (a === "ui-lang") {
+    save("settings.set", { ui_lang: el.dataset.v }, { quiet: true }).then((r) => {
+      if (!r) return;
+      uiLang = el.dataset.v;
+      if (S.state) S.state.ui_lang = uiLang;
+      render();
+    });
+  }
   else if (a === "setpro") act("settings.set", { proactive: !!el.dataset.v });
   else if (a === "settab") { S.setTab = el.dataset.v; render(); }
   else if (a === "cardf") { S.cardF = { ...(S.cardF || {}), [el.dataset.f]: el.dataset.v }; render(); }
@@ -1946,8 +2018,7 @@ document.addEventListener("click", (ev) => {
     (async () => {  // 她改过还没保存的先存上，再按她说的融进去
       if (t && t.value.trim() && (!x || t.value.trim() !== (x.diary || "").trim())) {
         S.diaryDraft = t.value;
-        const r = await send("diary.save", { day, text: t.value });
-        if (!r.ok) return showUndo("改的没存上，先没往里加：" + r.msg);
+        if (!await save("diary.save", { day, text: t.value }, { fail: "改的没存上，先没往里加", quiet: true })) return;
       }
       diarySend("diary.weave", { day, note });
     })();
@@ -2047,6 +2118,11 @@ document.addEventListener("click", (ev) => {
   }
   else if (a === "close") { S.overlay = ["addtodo", "addevent", "rename"].includes(S.overlay) ? S.back : null; S.back = null; resetOverlayState(); render(); }
   else if (a === "showdone") { S.showDone = !S.showDone; render(); }
+  else if (a === "wishdone") { S.wishOpen = !S.wishOpen; render(); }
+  else if (a === "wishreopen") {  // “实现心愿”里那条不是她实现的：点两次放回心愿清单（可撤销）
+    const key = "wish:" + id;
+    confirmTwice(key, "再点一次放回心愿清单", () => act("wish.reopen", { id }, el), render);
+  }
   else if (a === "exploreopen") { S.overlay = "explore"; S.explore = null; S.exploreTag = "未开始"; renderOverlay(); api("/api/explore").then((e) => { S.explore = e; if (S.overlay === "explore") renderOverlay(); }); }
   else if (a === "exploresheet") { S.exploreSheet = el.dataset.v; S.exploreQ = ""; S.exploreEdit = null; renderOverlay(); }
   else if (a === "explorevisa") { S.exploreEdit = Number(el.dataset.i); renderOverlay(); const i = document.querySelector('[data-form="explorevisa"] input'); if (i) i.focus(); }
@@ -2059,6 +2135,7 @@ document.addEventListener("click", (ev) => {
   else if (a === "star") act("task.star", { id, on: !!el.dataset.on });
   else if (a === "postpone") act("task.postpone", { id });
   else if (a === "undrop") act("task.undrop", { id });
+  else if (a === "sizeok") act("size.ok", {});
   else if (a === "deltask") act("task.delete", { id });
   else if (a === "delevent") act("event.delete", { id });
   else if (a === "dropprep") act("prep.drop", { id });
@@ -2078,6 +2155,9 @@ document.addEventListener("click", (ev) => {
   }
   else if (a === "cardwishdrop") act("card.wishdrop", { id }).then(async () => { S.cards = await api("/api/cards"); renderOverlay(); render(); });
   else if (a === "cardwishopen") { S.overlay = "cardwish"; renderOverlay(); }
+  else if (a === "cardredo") redoCard();
+  else if (a === "avatarref") act("avatar.ref", { id, off: el.dataset.off ? 1 : 0 }).then(async (r) => {
+    if (!r || !r.ok) return; S.brain = await api("/api/brain?" + new URLSearchParams(S.bq || { tab: "all" })); renderOverlay(); });
   else if (a === "preppend") act("prep.pending", { id });
   else if (a === "prepunpend") act("prep.unpend", { id });
   else if (a === "preptab") {
@@ -2099,11 +2179,18 @@ document.addEventListener("click", (ev) => {
   else if (a === "trip") { S.tripI = Number(el.dataset.i); S.overlay = "trip"; renderOverlay(); }
   else if (a === "terrback") {  // 从哪来回哪去：大地图点进来的回大地图
     const to = S.terrBack || "map";
-    S.page = to === "bigmap" ? "map" : to; S.overlay = to === "bigmap" ? "bigmap" : null; S.map = null; load();
+    leaveEdits(); resetView();  // 返回到的那一页也从初始状态开始
+    S.page = to === "bigmap" ? "map" : to; S.overlay = to === "bigmap" ? "bigmap" : null;
+    if (S.page === "map") { S.mapTab = ""; S.seasonWhy = true; }  // 回赛季页：数据重新拉，刚在领域页记的一笔要算进去
+    if (S.state) render();
+    load();
   }
-  else if (a === "bigmap") { S.overlay = "bigmap"; renderOverlay(); }
+  else if (a === "bigmap") { S.overlay = "bigmap"; renderOverlay();
+    if (!S.map) api("/api/map").then((m) => { S.map = m; if (S.overlay === "bigmap") renderOverlay(); }).catch(() => {}); }
   else if (a === "alive") { S.overlay = "alive:" + el.dataset.i; renderOverlay(); }
-  else if (a === "acard") { S.overlay = "acard:" + id; renderOverlay(); }
+  else if (a === "acard") { S.overlay = "acard:" + id; renderOverlay();
+    const t = S.team || {}, x = [...(t.columns || []).flatMap((c) => c.tasks), ...(t.archive || [])].find((y) => y.id === Number(id));
+    if (x && x.cut) api("/api/agent_task?id=" + id).then((full) => { if (full && full.id) { Object.assign(x, full, { cut: false }); if (S.overlay === "acard:" + id) renderOverlay(); } }).catch(() => {}); }
   else if (a === "xphelp") { S.overlay = "xphelp"; renderOverlay(); }
   else if (a === "streakhelp" || a === "seasonhelp") { S.overlay = a; renderOverlay(); }
   else if (a === "shortof") showUndo(quip(Number(el.dataset.gap)));  // 不弹窗，提示几秒自己消失
@@ -2130,12 +2217,9 @@ document.addEventListener("submit", (ev) => {
   if (f.dataset.form === "quiet") { act("settings.set", { quiet: d.quiet }); return; }
   if (f.dataset.form === "diarynote") {
     const n = S.noteDraft || {}; S.overlay = null; S.diaryTool = null; renderOverlay(); showUndo("小伴 在改这一句……");
-    send("diary.note", { day: n.day, text: n.text, note: d.note }, 120000).then((r) => {
-      if (!r.ok) {  // 没记上：批注框带着她写的字重新打开
-        S.noteDraft = { ...n, note: d.note }; S.diaryTool = "note"; S.overlay = "diarynote"; renderOverlay();
-        return showUndo("批注没记上：" + r.msg);
-      }
-      showUndo(r.msg || "记上了");
+    save("diary.note", { day: n.day, text: n.text, note: d.note }, { fail: "批注没记上", done: "记上了", wait: 120000,
+      onFail: () => { S.noteDraft = { ...n, note: d.note }; S.diaryTool = "note"; S.overlay = "diarynote"; renderOverlay(); } }).then((r) => {  // 没记上：批注框带着她写的字重新打开
+      if (!r) return;
       const c = ((S.cards && S.cards.cards) || []).find((x) => x.day === n.day);
       if (c) { c.notes = r.notes; if (r.diary) c.diary = r.diary; }
       render();
@@ -2183,8 +2267,13 @@ document.addEventListener("submit", (ev) => {
 });
 
 // 点弹窗外面的空白处也能关（所有弹窗都这样）；加待办这类从别的弹窗开出来的，退回上一个
+let ovDown = null;
+$("#overlay").addEventListener("pointerdown", (ev) => { ovDown = ev.target; });
 $("#overlay").addEventListener("click", (ev) => {
   if (ev.target !== ev.currentTarget || !S.overlay) return;
+  // 待你定里点日期框，选择器一打开弹窗就关了——iPad 的日期选择器把点击落到了空白处。按下也在空白处、没有输入框正在用才算点空白
+  const busy = document.activeElement && ev.currentTarget.contains(document.activeElement) && /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName);
+  if (ovDown !== ev.currentTarget || busy) return;
   if (S.overlay === "celebrate") { const b = document.querySelector('#overlay [data-act="celebrate-done"]'); if (b) b.click(); return; }
   S.overlay = ["addtodo", "addevent", "carddiary"].includes(S.overlay) ? S.back : null; S.back = null; render();
 });
@@ -2215,7 +2304,43 @@ function openCard() {
   const img = new Image();
   img.src = imgUrl(S.state.card.image);
   const ready = img.decode ? img.decode() : new Promise((ok) => { img.onload = ok; img.onerror = ok; });
-  ready.catch(() => {}).then(() => { store("eo_card_" + S.state.day, "1"); S.overlay = "card"; render(); });
+  ready.catch(() => {}).then(() => { store("eo_card_" + S.state.day, "1"); S.overlay = "card"; S._cardShown = null; render(); });  // 打开时翻一次牌
+}
+
+// 重画这张昨日卡：
+// 大图和卡册里看今天那张都用这一个按钮、这一个处理函数；点两次确认（要重新生图，约 0.09 美元）。
+function redoButton(c) {
+  if (c.redoing) return '<span class="credo busy" role="status"><i class="spin" aria-hidden="true"></i>小伴 在重画，大约半分钟，画好了原地换上</span>';
+  const label = confirming("cardredo") ? "再点一次，重画这张" : "↻ 重画这张";
+  return `<span class="credo col u-g4"><span class="btn credobtn ${confirming("cardredo") ? "armed" : ""}" role="button" tabindex="0" data-act="cardredo">${t(label)}</span>`
+    + (c.redo_msg ? `<span class="muted t-xs">上次重画：${uiText(c.redo_msg, false)}</span>` : "") + "</span>";
+}
+function redoCard() {
+  const label = () => document.querySelectorAll('[data-act="cardredo"]').forEach((b) => {
+    b.textContent = confirming("cardredo") ? "再点一次，重画这张" : "↻ 重画这张"; b.classList.toggle("armed", confirming("cardredo")); });
+  confirmTwice("cardredo", "再点一次就重画：换一个镜头重新画（约 0.09 美元），没画成原来那张留着", () => {
+    act("card.redo", {}).then((r) => {
+      if (!r || !r.ok) return;
+      if (S.overlay === "cardview") S.overlay = "card";  // 卡册里点的：切到今天那张大图看进度
+      S.cards = null; renderOverlay(); waitForRedo();
+    });
+  }, label);
+}
+let redoTimer = null;
+function waitForRedo() {
+  clearInterval(redoTimer);
+  const from = S.state.card && S.state.card.image;
+  let n = 0;
+  redoTimer = setInterval(async () => {
+    n += 1;
+    await load(true);  // 弹层跟着重画：进度、换上的新图
+    const c = S.state.card || {};
+    if ((c.image && c.image !== from) || (!c.redoing && n > 1) || n > 36) {
+      clearInterval(redoTimer);
+      if (c.image !== from) showUndo("重画好了");
+      else if (c.redo_msg) showUndo("没重画成：" + c.redo_msg);
+    }
+  }, 5000);
 }
 
 // 现画昨日卡要半分钟：每 5 秒看一次，画好了自动翻开
@@ -2237,7 +2362,7 @@ function waitForCard() {
 function showError(msg) {
   trace("error", msg);
   const page = $("#page");
-  if (page) page.innerHTML = `<div class="login panel"><h2>出错了</h2><p>${esc(msg)}</p><p class="muted">截个图发给 小伴，我们来修。</p></div>`;
+  if (page) page.innerHTML = `<div class="login panel"><h2>出错了</h2><p>${uiText(msg, false)}</p><p class="muted">截个图发给 小伴，我们来修。</p></div>`;
 }
 window.addEventListener("error", (e) => showError(e.message + (e.filename ? ` (${e.filename.split("/").pop()}:${e.lineno})` : "")));
 window.addEventListener("unhandledrejection", (e) => showError(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)));
@@ -2336,14 +2461,24 @@ function meSentence(dims) {  // 一句结论：规则拼出来，不靠模型
   else if (empty.length) parts.push(`${empty.slice(0, 2).join("、")}${empty.length > 2 ? `等 ${empty.length} 个方面` : ""}还空着`);
   return parts.join("；") + "。";
 }
-function meBoard(mt, rate) {
+// 第二大脑好不好用：每周“对得上的比例”= 她确认的 ÷（确认的 + 纠正的）。
+// 每个点下面写这周确认、纠正各几次——次数少的周比例会大起大落，看得出来；没有确认也没有纠正的周不画点
+function meTrend(weeks) {
+  const pts = (weeks || []).filter((w) => w.rate != null).map((w) => ({ x: w.week, v: Math.round(w.rate * 100), n: w.confirmed + w.wrong }));
+  if (!pts.length) return "";
+  // 和各领域页的趋势图同一个组件，纵轴按数据定
+  return `<div class="metrend">${metricChart({ title: "每周对得上的比例", unit: "%", kind: "line", auto_y: true, max: 100, points: pts,
+    note: "你确认的 ÷（确认的 + 纠正的）；日期下面是这周确认和纠正一共几次，次数少的周比例会跳" })}</div>`;
+}
+// 每周对得上的比例的趋势图放在左半边结论下面
+function meBoard(mt, rate, weeks) {
   if (!mt) return "";
   const dims = mt.dims || [];
   const star = S.meStar;
   const tile = (d) => { const tot = Math.max(d.n, 1), conf = Math.min(d.confirmed, d.hers), other = d.n - d.hers;
     const seg = (n, c) => n ? `<i class="${c}" style="width:${(n / tot * 100).toFixed(1)}%"></i>` : "";
     return `<button type="button" class="metile ${d.state}" data-act="me-dimopen" data-k="${esc(d.dim)}">
-      <span class="t">${esc(d.name)}</span><span class="st">${ME_STATE[d.state]}</span>
+      <span class="t">${uiText(d.name, false)}</span><span class="st">${ME_STATE[d.state]}</span>
       <span class="mebarx">${seg(conf, "c")}${seg(d.hers - conf, "h")}${seg(other, "s")}</span>
       <span class="u">${d.n} 条　被查 ${d.used + d.missed} 次${d.missed ? `，<b class="miss">没查到 ${d.missed}</b>` : ""}</span></button>`; };
   const max = Math.max(1, ...dims.map((d) => d.hers));
@@ -2357,26 +2492,26 @@ function meBoard(mt, rate) {
   const drill = star && S.meStarDim ? dims.find((d) => d.dim === S.meStarDim) : null;
   const sub = (d) => { const ps = d.props || [], pmax = Math.max(1, ...ps.map((p) => p.n)), cx = 175, cy = 140, R = ps.length > 1 ? 100 : 0;
     return `<div class="row" style="gap:8px;align-items:center;margin-bottom:4px"><button type="button" class="chip" data-act="me-stardim" data-k="">回到十个方面</button>
-        <button type="button" class="chip" data-act="me-dimopen" data-k="${esc(d.dim)}">看${esc(d.name)}的全部 ${d.n} 条</button></div>
+        <button type="button" class="chip" data-act="me-dimopen" data-k="${esc(d.dim)}">看${uiText(d.name, false)}的全部 ${d.n} 条</button></div>
       <svg class="mestars" viewBox="0 0 350 290" role="img" aria-label="${esc(d.name)}里的细项">
       <circle cx="${cx}" cy="${cy}" r="24" class="hub ${d.state}"/><text x="${cx}" y="${cy + 4}" text-anchor="middle" class="hubt">${esc(d.name)}</text>
       ${ps.map((p, i) => { const a = -Math.PI / 2 + i * 2 * Math.PI / ps.length, x = cx + R * Math.cos(a), y = cy + R * Math.sin(a) + (R ? 0 : 80), r = 5 + 11 * Math.sqrt(p.n / pmax);
         return `<line class="link" x1="${cx}" y1="${cy}" x2="${x}" y2="${y}"/><g class="mestar ${p.hers ? d.state : "stale"}" data-act="me-propopen" data-dim="${esc(d.dim)}" data-k="${esc(p.key)}" data-name="${esc(p.name)}" tabindex="0" role="button" aria-label="${esc(p.name)} ${p.n} 条">
           <circle cx="${x}" cy="${y}" r="${r + 6}" class="halo"/><circle cx="${x}" cy="${y}" r="${r}" class="core"/><text x="${x}" y="${y + r + 14}" text-anchor="middle">${esc(p.name)} ${p.n}</text></g>`; }).join("")}</svg>`; };
   const sug = (mt.suggestions || []).map((x) => `<div class="mesug"><span class="who ${x.who === "你" ? "me" : "sys"}">${x.who === "你" ? "你来" : "系统来"}</span>
-      <div><p>${esc(x.what)}</p><span class="muted">${esc(x.weak)}　做完看：${esc(x.watch)}</span></div></div>`).join("") || '<p class="muted t-md">这周没有要升级的地方。</p>';
+      <div><p>${uiText(x.what, true)}</p><span class="muted">${uiText(x.weak, false)}　做完看：${uiText(x.watch, false)}</span></div></div>`).join("") || '<p class="muted t-md">这周没有要升级的地方。</p>';
   // 最近升级（ontology-plan 4.1）：小字一行一条，最多 3 条，点开看前两周 → 后两周的数字
   const ufmt = (k, v) => (v === null || v === undefined ? "—" : k === "share" ? pct(v) : v);
-  const upg = (mt.recent_upgrades || []).slice(0, 3).map((u) => `<details class="meupg"><summary><span class="muted">${esc(u.at.slice(5))} · ${esc(u.kind)}</span> ${esc(u.what)}</summary>
-      <table>${(u.numbers || []).map((n) => `<tr><td>${esc(n.name)}</td><td>${ufmt(n.key, n.before)}</td><td>→</td><td>${u.after ? ufmt(n.key, n.after) : "满两周再看"}</td></tr>`).join("")}</table></details>`).join("");
+  const upg = (mt.recent_upgrades || []).slice(0, 3).map((u) => `<details class="meupg"><summary><span class="muted">${uiText(u.at.slice(5), false)} · ${uiText(u.kind, false)}</span> ${uiText(u.what, true)}</summary>
+      <table>${(u.numbers || []).map((n) => `<tr><td>${uiText(n.name, false)}</td><td>${ufmt(n.key, n.before)}</td><td>→</td><td>${u.after ? ufmt(n.key, n.after) : "满两周再看"}</td></tr>`).join("")}</table></details>`).join("");
   const upgs = upg ? `<div class="meupgs"><span class="muted">最近升级　前两周 → 后两周</span>${upg}</div>` : "";
   const said = mt.said || {}, total = (said.hers || 0) + (said.system || 0) + (said.behavior || 0) + (said.others || 0);
   const rt = mt.routing || {};
   const route = (rt.by_question || rt.fallback) ? `<p class="muted mix">这周按题答 ${rt.by_question} 次，兜底检索 ${rt.fallback} 次${rt.share !== null && rt.share !== undefined ? `（按题占 ${pct(rt.share)}）` : ""}</p>` : "";
   return `<section class="meboard">
-    <div class="meverdict"><div class="lead"><p class="line">${esc(meSentence(dims))}</p>
+    <div class="meverdict"><div class="lead"><p class="line">${uiText(meSentence(dims), false)}</p>
       <p class="muted mix">${rate !== undefined && rate !== null ? `这周对得上 ${pct(rate)}　` : ""}${total ? `关于你的 ${total} 条里，` + [["你说的、你给的", said.hers], ["行为记录", said.behavior], ["系统推的", said.system], ["别人说的", said.others]].filter((x) => x[1]).map((x) => `${x[0]} ${x[1]} 条`).join("，") : "还没有关于你的记忆"}</p>${route}</div>
-      ${sug}${upgs}</div>
+      ${sug}${upgs}${meTrend(weeks)}</div>
     <div class="memap"><div class="row" style="justify-content:space-between;align-items:center;margin-bottom:8px">${star ? '<span class="mekey">十个方面的星图</span>' : '<span class="mekey"><i class="c"></i>你确认过的<i class="h"></i>你说的<i class="s"></i>别的来源</span>'}
       <span class="chips"><button type="button" class="chip ${star ? "" : "on"}" data-act="me-star" data-k="">格子</button><button type="button" class="chip ${star ? "on" : ""}" data-act="me-star" data-k="1">星图</button></span></div>
       <p class="medimnote"><b class="u-text">关于你的十个方面</b>：你是什么样的人；你在做的事（健康、事业、财务……）按赛季的七块领域分，在赛季页看。</p>
@@ -2387,24 +2522,24 @@ function mePage() {
   const m = S.me;
   if (!m) return '<p class="loading">加载中……</p>';
   // 第一屏只放结论、升级建议和十个方面；对得上的比例只在结论下面一行，使用者和纠错单挪进“谁在用和纠错”
-  return `<header class="row mehead"><h2 class="t-xl">我</h2><span class="metools">
+  return `<header class="row mehead"><h2 class="pagetitle">我</h2><span class="metools">
       <button type="button" class="btn" data-act="me-open" data-k="me-pending">待你定${m.pending ? ` <i class="navdot inline">${m.pending}</i>` : ""}</button>
       ${((S.state || {}).badges || {}).brain ? `<button type="button" class="btn gold" data-act="me-brain">收藏和资料 <i class="navdot inline">${S.state.badges.brain}</i></button>` : ""}
       <button type="button" class="btn" data-act="me-open" data-k="me-ask">🔍 问一问</button>
       <button type="button" class="btn" data-act="me-open" data-k="me-all">全部记忆</button>
-      <button type="button" class="btn" data-act="me-open" data-k="me-users">谁在用和纠错</button>
       <button type="button" class="btn" data-act="me-open" data-k="me-manage">删除和对外</button></span></header>
-    ${meBoard(m.metrics, m.rate)}`;
+    ${meBoard(m.metrics, m.rate, m.weeks)}${meUsersPanel()}`;
 }
-// 第二层“谁在用和纠错”：使用者小卡（点开看详细，下面的纠错单跟着它变）+ 纠错单；原来在第一屏下面，11-04 挪进来
-function meUsersSheet() {
-  const m = S.me, close = '<button type="button" class="btn" data-act="close">关闭</button>';
-  const head = `<div class="row u-between"><h2 class="t-h">谁在用和纠错</h2>${close}</div>`;
-  if (!m) return `<section class="sheet mesheet wide" aria-label="谁在用和纠错">${head}<p class="muted">加载中……</p></section>`;
+// “谁在用和纠错”：使用者小卡（点开看详细，下面的纠错单跟着它变）+ 纠错单。11-04 挪进过弹层，直接放在页面里一张卡片
+// （“谁在用和纠错，不要收到弹窗里啊，那个直接放一个卡片在页面里面就好了呀”）
+function meUsersPanel() {
+  const m = S.me;
+  const head = `<div class="row u-between"><h2 class="t-h">谁在用和纠错</h2></div>`;
+  if (!m) return "";
   const sel = S.meUser;
   const card = (u) => `<button type="button" class="meuser ${sel === u.user ? "on" : ""} ${u.connected ? "" : "off"}" data-act="me-user" data-k="${esc(u.user)}" ${u.connected ? "" : "disabled"}>
-      <span class="n"><span>${esc(u.name)}</span><span>${u.connected ? (sel === u.user ? "▾" : "▸") : ""}</span></span>
-      ${u.members && u.members.length > 1 ? `<span class="s u-blk">${esc(u.parts)}</span>` : ""}
+      <span class="n"><span>${uiText(u.name, false)}</span><span>${u.connected ? (sel === u.user ? "▾" : "▸") : ""}</span></span>
+      ${u.members && u.members.length > 1 ? `<span class="s u-blk">${uiText(u.parts, false)}</span>` : ""}
       ${u.connected ? `<b>${pct(u.accuracy)}</b> <span class="s">这周用了 ${u.queries} 次</span><span class="bar"><i style="width:${Math.round((u.accuracy ?? 0) * 100)}%"></i></span>` : '<span class="s">登记了，还没接上</span>'}</button>`;
   const su = m.users.find((u) => u.user === sel);
   const detail = su ? `<div class="medetail"><table>
@@ -2413,19 +2548,19 @@ function meUsersSheet() {
       <tr><td>错在哪</td><td>${Object.entries(su.layers || {}).map(([k, v]) => esc(k) + " " + v).join("、") || "—"}</td></tr>
       <tr><td>上周用对的比例</td><td>${pct(su.last_week)}</td></tr></table>
       <div><div class="muted" style="font-size:12px;margin-bottom:4px">这周用得最多的记忆</div>
-      ${(su.top || []).map((t) => `<button type="button" class="linkish" style="display:block;font-size:13px;line-height:1.9;text-align:left" data-act="me-jump" data-q="${esc(t.text)}">${esc(t.text)} <span class="muted t-sm">· ${t.n} 次</span></button>`).join("") || '<p class="muted t-md">这周还没用到</p>'}</div></div>` : "";
+      ${(su.top || []).map((t) => `<button type="button" class="linkish" style="display:block;font-size:13px;line-height:1.9;text-align:left" data-act="me-jump" data-q="${esc(t.text)}">${uiText(t.text, true)} <span class="muted t-sm">· ${t.n} 次</span></button>`).join("") || '<p class="muted t-md">这周还没用到</p>'}</div></div>` : "";
   const tickets = m.tickets.filter((t) => !sel || t.user === sel);
   const tk = (t) => { const open = S.meTicket === t.id;
     return `<div class="meticket ${open ? "open" : ""}"><button type="button" class="linkish" data-act="me-ticket" data-id="${t.id}">
-      <span class="muted t-sm u-blk">${esc(t.at.slice(5))} · ${esc(t.entry)} · ${esc(t.user_name)} · ${esc(t.layer)}</span>
-      ${t.wrong ? `<s>${esc(t.wrong)}</s> → ` : ""}${esc(t.right)}</button>
-      <div><span class="stamp ${t.used_after ? "good" : "wait"}">${t.used_after ? `之后用对 ${t.used_after} 次` : "之后还没被问到"}</span>${t.recurred.length ? `<span class="stamp bad">${esc(t.recurred[0].slice(5))} 复发 ${t.recurred.length} 次</span>` : ""}${t.kind === "changed" ? '<span class="stamp wait">变了，不算错</span>' : ""}</div>
-      ${open ? `<div class="metdetail">${t.quote ? `<div><span class="muted">你当时说</span>“${esc(t.quote)}”</div>` : ""}
-        <div><span class="muted">错在哪</span>${esc(t.layer)}</div>
+      <span class="muted t-sm u-blk">${uiText(t.at.slice(5), false)} · ${uiText(t.entry, false)} · ${uiText(t.user_name, false)} · ${uiText(t.layer, false)}</span>
+      ${t.wrong ? `<s>${uiText(t.wrong, false)}</s> → ` : ""}${uiText(t.right, false)}</button>
+      <div><span class="stamp ${t.used_after ? "good" : "wait"}">${t.used_after ? `之后用对 ${t.used_after} 次` : "之后还没被问到"}</span>${t.recurred.length ? `<span class="stamp bad">${uiText(t.recurred[0].slice(5), false)} 复发 ${t.recurred.length} 次</span>` : ""}${t.kind === "changed" ? '<span class="stamp wait">变了，不算错</span>' : ""}</div>
+      ${open ? `<div class="metdetail">${t.quote ? `<div><span class="muted">你当时说</span>“${uiText(t.quote, false)}”</div>` : ""}
+        <div><span class="muted">错在哪</span>${uiText(t.layer, false)}</div>
         <div class="row u-g8 u-wrap"><button type="button" class="btn gold" data-act="me-reask" data-q="${esc(t.quote || t.right)}">再问一次，看现在对不对</button>
         <button type="button" class="btn" data-act="me-undo" data-id="${t.id}">撤销这次纠正</button></div></div>` : ""}</div>`; };
   const week = m.confirmed + m.wrong ? `这周你确认了 ${m.confirmed} 次、纠正了 ${m.wrong} 次${m.corrections > m.wrong ? `（另有 ${m.corrections - m.wrong} 次是 小伴 他自己的事）` : ""}${m.recurrences ? `，复发 ${m.recurrences} 次` : ""}${m.eval && m.eval.total ? `；检验题通过 ${pct(m.eval.rate)}` : ""}。` : "这周你还没有确认或纠正过。";
-  return `<section class="sheet mesheet wide" aria-label="谁在用和纠错">${head}
+  return `<section class="panel meusersp" aria-label="谁在用和纠错">${head}
     <p class="muted" style="font-size:12px;margin:2px 0 14px">${week}</p>
     <h3 style="font-size:15px;margin:0 0 8px">谁在用你的记忆 <span class="muted u-fw4 t-sm">点一张卡看详细</span></h3>
     <div class="meusers">${m.users.map(card).join("")}</div>${detail}
@@ -2435,49 +2570,52 @@ function meUsersSheet() {
 
 function meOverlay() {
   const close = '<button type="button" class="btn" data-act="close">关闭</button>';
-  if (S.overlay === "me-users") return meUsersSheet();
   if (S.overlay === "me-pending") {
     const items = S.mePending;
     const one = (x) => { const k = "p" + x.id, both = (S.meBoth || {})[x.id];
-      const opt = (o, i) => `<div class="meopt"><div>${esc(o.text)}${o.mine ? '<span class="mine">你说过的</span>' : ""}<div class="src">${esc(o.src)}</div>
+      const opt = (o, i) => `<div class="meopt"><div>${uiText(o.text, !o.mine)}${o.mine ? '<span class="mine">你说过的</span>' : ""}<div class="src">${uiText(o.src, false)}</div>
           ${both ? `<div class="medates">从 <input type="date" data-mef="${k}since${i}"> 到 <input type="date" data-mef="${k}until${i}"></div>` : ""}</div>
         </div>`;
       const yes = x.kind === "expire" ? ["还算数", "不算了"] : ["对", "不对"];
-      return `<div class="mepair"><div class="q"><span class="kind ${x.type === "once" ? "k-once" : "k-long"}">${x.type === "once" ? "那一次" : "长期"}</span>${esc(x.question)}${x.users.length ? " · " + esc(x.users.join("、")) + " 用过" : ""}</div>
+      return `<div class="mepair"><div class="q"><span class="kind ${x.type === "once" ? "k-once" : "k-long"}">${x.type === "once" ? "那一次" : "长期"}</span>${uiText(x.question, true)}${x.users.length ? " · " + esc(x.users.join("、")) + " 用过" : ""}</div>
         ${x.options.map(opt).join("")}
-        ${x.type !== "once" && !both ? `<div class="medates">${x.kind === "conflict" ? "按哪条为准，这条" : "这条"}从 <input type="date" data-mef="${k}since"> 起，到 <input type="date" data-mef="${k}until">（不填就是一直）</div>` : ""}
-        ${x.kind === "conflict" && !both ? `<div class="row u-g8 u-mt8 u-wrap">${x.options.map((o, i) => `<button type="button" class="btn gold" data-act="me-pick" data-id="${x.id}" data-i="${i}">以“${esc(o.text.length > 12 ? o.text.slice(0, 12) + "…" : o.text)}”为准</button>`).join("")}</div>` : ""}
+        ${x.type !== "once" && !both ? `<div class="medates">${x.kind === "conflict" ? "按哪条为准，这条" : "这条"}从 <input type="date" data-mef="${k}since" value="${esc((S.meF || {})[k + "since"] ?? x.since ?? "")}"> 起，到 <input type="date" data-mef="${k}until" value="${esc((S.meF || {})[k + "until"] ?? x.until ?? "")}">（不填就是一直）</div>` : ""}
+        ${x.kind === "conflict" && !both ? `<div class="row u-g8 u-mt8 u-wrap">${x.options.map((o, i) => `<button type="button" class="btn gold" data-act="me-pick" data-id="${x.id}" data-i="${i}">以“${uiText(o.text.length > 12 ? o.text.slice(0, 12) + "…" : o.text, !o.mine)}”为准</button>`).join("")}</div>` : ""}
         ${x.kind !== "conflict" && x.options.length ? `<div class="row u-g8 u-mt8"><button type="button" class="btn gold" data-act="me-yes" data-id="${x.id}">${yes[0]}</button><button type="button" class="btn" data-act="me-no" data-id="${x.id}">${yes[1]}</button></div>` : ""}
         ${x.kind === "conflict" ? (both ? `<button type="button" class="btn gold" data-act="me-both" data-id="${x.id}" data-n="${x.options.length}">两条都留着，按上面的时间</button>`
           : `<button type="button" class="linkish meboth" data-act="me-bothopen" data-id="${x.id}">都对，只是时间不同</button>`) : ""}
         <div class="meown"><input data-mef="${k}text" placeholder="${x.type === "once" ? "都不对？写那天实际发生了什么" : x.options.length ? "都不对？自己写，比如：现在每周 3 次" : "写一句，比如：现在每周 3 次"}" value="${esc((S.meF || {})[k + "text"] || "")}">
           <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="${x.type}">用我写的</button></div></div>`; };
     const outside = (x) => { const k = "p" + x.id, o = x.options[0] || {};  // 对外使用者问到“问我”的类别（ontology-plan 3.3）
-      return `<div class="mepair medisc"><div class="q"><span class="kind k-out">对外</span>${esc(x.question)}</div>
-        <div class="meopt"><div>${o.text ? `拟答：“${esc(o.text)}”` : '<span class="muted">还没有现成的说法，写一句能说的</span>'}<div class="src">${esc(o.src || "")}</div></div></div>
+      return `<div class="mepair medisc"><div class="q"><span class="kind k-out">对外</span>${uiText(x.question, true)}</div>
+        <div class="meopt"><div>${o.text ? `拟答：“${uiText(o.text, !o.mine)}”` : '<span class="muted">还没有现成的说法，写一句能说的</span>'}<div class="src">${uiText(o.src || "", false)}</div></div></div>
         <div class="row u-g8 u-mt8 u-wrap">${o.text ? `<button type="button" class="btn gold" data-act="me-yes" data-id="${x.id}">可以说${o.recipient ? "（这次）" : ""}</button>
-          ${o.category ? `<button type="button" class="btn" data-act="me-always" data-id="${x.id}">以后“${esc(o.category_name)}”都可以</button>` : ""}` : ""}
+          ${o.category ? `<button type="button" class="btn" data-act="me-always" data-id="${x.id}">以后“${uiText(o.category_name, false)}”都可以</button>` : ""}` : ""}
           <button type="button" class="btn" data-act="me-no" data-id="${x.id}">不说</button></div>
         <div class="meown"><input data-mef="${k}text" placeholder="改一下再说，比如：她换了城市" value="${esc((S.meF || {})[k + "text"] || "")}">
           <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="long">用我写的</button></div></div>`; };
-    const styleCard = (x) => `<div class="mepair mestyle"><div class="q"><span class="kind k-long">写作</span>${esc(x.question)}</div>
-        <p class="muted" style="font-size:12px;margin:4px 0 6px">从你发的邮件、你写和改过的日记、你在聊天里的话归纳的。逐条看：对的生效，以后 小伴 写日记、起草邮件、人物卡里那句、主页助手 回留言都照着写；不对的以后不再提。</p>
-        ${x.options.map((o) => { const k = "s" + o.rule_id;
-          return `<div class="meopt"><div><b style="font-weight:600">${esc(o.text)}</b>${o.words && o.words.length ? ` <span class="muted">（${esc(o.words.join("、"))}）</span>` : ""}
-            <div class="src">${esc(o.category)} · ${esc(o.audience)} · ${esc(o.src)}</div>
-            ${(o.quotes || []).map((q) => `<div class="src">「${esc(q.text)}」— ${esc(q.from)}</div>`).join("")}
+    const styleCard = (x) => `<div class="mepair mestyle"><div class="q"><span class="kind k-long">写作</span>${uiText(x.question, true)}</div>
+        <p class="muted" style="font-size:12px;margin:4px 0 6px">从你发的邮件、你写和改过的日记、你在聊天里的话归纳的。逐条看：对的生效，每条标了用在哪（按出处自动标，可以改）：小伴 写日记只用“日记”和“通用”的，起草邮件只用“邮件”和“通用”的，以此类推；不对的以后不再提。</p>
+        ${x.options.map((o, i) => { const k = "s" + o.rule_id;
+          // 用在哪：按出处自动标，可以改；已生效的只改用在哪
+          const scene = `<label class="src">用在 <select data-act-change="me-stylescene" data-id="${x.id}" data-i="${o.rule_id}">${Object.entries(STYLE_SCENES).map(([v, n]) => `<option value="${v}" ${(o.scene || "all") === v ? "selected" : ""}>${uiFixed(n)}</option>`).join("")}</select></label>`;
+          const head = o.confirmed && (i === 0 || !x.options[i - 1].confirmed) ? `<h3 class="smh">${uiFixed("已生效的（看看用在哪对不对）")}</h3>` : "";
+          if (o.confirmed) return head + `<div class="meopt"><div>${uiText(o.text, false)}<div class="src">${uiText(o.category, false)} · ${uiText(o.audience, false)}</div>${scene}</div></div>`;
+          return `<div class="meopt"><div><b style="font-weight:600">${uiText(o.text, !o.mine)}</b>${o.words && o.words.length ? ` <span class="muted">（${uiText(o.words.join("、"), false)}）</span>` : ""}
+            <div class="src">${uiText(o.category, false)} · ${uiText(o.audience, false)} · ${uiText(o.src, false)}</div>${scene}
+            ${(o.quotes || []).map((q) => `<div class="src">「${uiText(q.text, false)}」— ${uiText(q.from, false)}</div>`).join("")}
             <div class="row u-g8 u-mt6 u-wrap"><button type="button" class="btn gold" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="yes">对</button>
               <button type="button" class="btn" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="no">不对</button></div>
             <div class="meown"><input data-mef="${k}text" placeholder="改一下：写成你认的那句" value="${esc((S.meF || {})[k + "text"] || "")}">
               <button type="button" class="btn" data-act="me-style" data-id="${x.id}" data-i="${o.rule_id}" data-v="own">用我写的</button></div></div></div>`; }).join("")}</div>`;
-    const pre = (t) => `<pre style="white-space:pre-wrap;font-size:12px;line-height:1.6;margin:4px 0">${esc(t || "")}</pre>`;
+    const pre = (t) => `<pre style="white-space:pre-wrap;font-size:12px;line-height:1.6;margin:4px 0">${uiText(t || "", false)}</pre>`;
     const skillCard = (x) => { const k = "p" + x.id, o = x.options[0] || {}, rev = o.step === "revise", draft = o.step === "draft" || rev;
-      return `<div class="mepair meskill"><div class="q"><span class="kind k-long">skill</span>${esc(x.question)}</div>
-        <div class="meopt"><div><div class="src">${esc(o.src || o.why || "")}</div>
-          ${rev ? (o.changes || []).map((c) => `<div class="u-mt6">+ ${esc(c.text)}<div class="src">依据：${esc(c.from)}</div></div>`).join("")
+      return `<div class="mepair meskill"><div class="q"><span class="kind k-long">skill</span>${uiText(x.question, true)}</div>
+        <div class="meopt"><div><div class="src">${uiText(o.src || o.why || "", false)}</div>
+          ${rev ? (o.changes || []).map((c) => `<div class="u-mt6">+ ${uiText(c.text, true)}<div class="src">依据：${uiText(c.from, false)}</div></div>`).join("")
             + `<details class="u-mt6"><summary class="muted t-md u-ptr">看改前改后（只改了“她的做法”）</summary>
-              <div class="muted t-sm u-mt6">改前 v${esc(String(o.from_version || ""))}</div>${pre(o.before)}
-              <div class="muted t-sm u-mt6">改后 v${esc(String(o.version || ""))}</div>${pre(o.after)}</details>` : ""}
+              <div class="muted t-sm u-mt6">改前 v${uiText(String(o.from_version || ""), false)}</div>${pre(o.before)}
+              <div class="muted t-sm u-mt6">改后 v${uiText(String(o.version || ""), false)}</div>${pre(o.after)}</details>` : ""}
           ${draft && !rev && o.body ? `<details class="u-mt6"><summary class="muted t-md u-ptr">看草稿</summary>${pre(o.body)}</details>` : ""}</div></div>
         <div class="row u-g8 u-mt8"><button type="button" class="btn gold" data-act="me-yes" data-id="${x.id}">${rev ? "批准，换成新版" : draft ? "批准，用起来" : "开一个，先给我看草稿"}</button><button type="button" class="btn" data-act="me-no" data-id="${x.id}">${rev ? "不要，还用原来的" : "不要"}</button></div>
         ${draft ? `<div class="meown"><input data-mef="${k}text" placeholder="再加一条要求，比如：给教授的信都用英文" value="${esc((S.meF || {})[k + "text"] || "")}">
@@ -2485,14 +2623,16 @@ function meOverlay() {
     const card = (x) => x.kind === "disclose" ? outside(x) : x.kind === "style" ? styleCard(x) : x.kind === "skill" ? skillCard(x) : one(x);
     const decide = (items || []).filter((x) => !x.gap), asks = (items || []).filter((x) => x.gap);
     const ask = (x) => { const k = "p" + x.id;
-      return `<div class="mepair"><div class="q">${esc(x.question)}</div>
+      return `<div class="mepair"><div class="q">${uiText(x.question, true)}</div>
         <div class="meown"><input data-mef="${k}text" placeholder="想到就写一句，不想答就跳过" value="${esc((S.meF || {})[k + "text"] || "")}">
           <button type="button" class="btn" data-act="me-own" data-id="${x.id}" data-type="long">记下</button><button type="button" class="btn" data-act="me-skip" data-id="${x.id}">不想答</button></div></div>`; };
     return `<section class="sheet mesheet" aria-label="待你定"><div class="row u-between"><h2 class="t-h">待你定${items ? " " + decide.length + " 件" : ""}</h2>${close}</div>
       <p class="muted t-sm">长期的按“现在一般是怎样”定；那一次的按“那天实际发生了什么”定。定了就锁定，所有使用者都按这个来；小伴 在聊天里问你、你回了，这里也会少一件。</p>
       ${items ? decide.map(card).join("") || '<p class="muted">没有要你定的。</p>' : '<p class="muted">加载中……</p>'}
+      ${(S.meLater || []).length ? `<div class="mepair"><div class="q"><span class="kind k-long">以后</span>以后再办（条件到了会变成你的待办）</div>
+        ${S.meLater.map((f) => `<div class="meopt"><div>${uiText(f.what, true)}<div class="src">等${uiText(f.wait, false)}</div></div></div>`).join("")}</div>` : ""}
       ${(S.meSkills || []).length ? `<div class="mepair meskill"><div class="q"><span class="kind k-long">skill</span>在用的 skill</div>
-        ${S.meSkills.map((sk) => `<div class="meopt"><div>${esc(sk.title)} v${sk.version}<div class="src">管：${esc(sk.scope || "")}</div></div>
+        ${S.meSkills.map((sk) => `<div class="meopt"><div>${uiText(sk.title, true)} v${sk.version}<div class="src">管：${uiText(sk.scope || "", false)}</div></div>
           ${sk.back_to ? `<button type="button" class="btn" data-act="me-skillback" data-k="${esc(sk.skill)}">退回 v${sk.back_to}</button>` : ""}</div>`).join("")}</div>` : ""}
       <details class="measks"><summary class="muted t-md u-ptr">贴别的 AI 记得的关于你（ChatGPT、Grok、Gemini、豆包……的记忆导出）</summary>
         <p class="muted t-sm">先把“导出提示词”贴给那个 AI（提示词在 docs/operations/agent-export.md“其他 AI 怎么导”），再把它的回答原样贴在这里。每条都只当它的转述、存成猜测，会出现在上面让你一条条点对不对。</p>
@@ -2503,8 +2643,8 @@ function meOverlay() {
   if (S.overlay === "me-ask") {
     const r = S.meAsk, marks = S.meMarks || {};
     const recent = (S.me || {}).recent_questions || [];
-    const ans = (a) => `<div class="means ${marks[a.user] === "bad" ? "wrong" : marks[a.user] === "ok" ? "right" : ""}"><div class="who"><span>${esc(a.user === "twin" ? "主页助手（访客问时会这么答）" : a.name)}</span><span>用了 ${a.keys.length} 条记忆</span></div>
-        <p>${esc(a.answer)}</p>${a.sources.length ? `<div class="src">依据：${a.sources.map(esc).join("；")}</div>` : '<div class="src">没查到相关的记忆</div>'}
+    const ans = (a) => `<div class="means ${marks[a.user] === "bad" ? "wrong" : marks[a.user] === "ok" ? "right" : ""}"><div class="who"><span>${uiText(a.user === "twin" ? "Days（访客问时会这么答）" : a.name, false)}</span><span>用了 ${a.keys.length} 条记忆</span></div>
+        <p>${uiText(a.answer, true)}</p>${a.sources.length ? `<div class="src">依据：${a.sources.map(esc).join("；")}</div>` : '<div class="src">没查到相关的记忆</div>'}
         <div class="row u-g8 u-mt8"><button type="button" class="btn ${marks[a.user] === "ok" ? "gold" : ""}" data-act="me-mark" data-k="${a.user}" data-v="ok">对</button>
         <button type="button" class="btn ${marks[a.user] === "bad" ? "warnbtn" : ""}" data-act="me-mark" data-k="${a.user}" data-v="bad">不对</button></div></div>`;
     let next = "";
@@ -2518,15 +2658,15 @@ function meOverlay() {
         next = `<div class="mepair" style="border-color:var(--gold)"><div class="q">${bad.length > 1 ? "两个你都点了“不对”" : "你点了“不对”"}：正确的是？</div>
           <div class="meown" style="border:0;padding:0"><input data-mef="asktext" value="${esc(F.asktext || "")}" placeholder="写一句正确的"><button type="button" class="btn gold" data-act="me-verdict">记下</button></div>
           ${kindSeg}${(S.meType || "long") === "long" ? whySeg + `<div class="medates">从 <input type="date" data-mef="asksince"> 起，到 <input type="date" data-mef="askuntil">（不填就是一直）</div>` : ""}</div>
-          <div class="meeffect">记下以后：${bad.map((a) => esc(a.user === "twin" ? "主页助手" : a.name)).join("和")}都改成这句，各开一张纠错单${(S.meKind || "wrong") === "changed" ? "；旧的说法留作历史，不算错" : "；旧的说法作废"}。</div>`;
+          <div class="meeffect">记下以后：${bad.map((a) => esc(a.user === "twin" ? "Days" : a.name)).join("和")}都改成这句，各开一张纠错单${(S.meKind || "wrong") === "changed" ? "；旧的说法留作历史，不算错" : "；旧的说法作废"}。</div>`;
       } else if (ok.length === 1 && vals.every((v) => v)) {
-        next = `<div class="meeffect">记下以后：正确说法是“${esc(ok[0].answer)}”${bad.length ? "，" + bad.map((a) => esc(a.user === "twin" ? "主页助手" : a.name)).join("和") + "改成这句，各开一张纠错单" : ""}。</div>
+        next = `<div class="meeffect">记下以后：正确说法是“${uiText(ok[0].answer, true)}”${bad.length ? "，" + bad.map((a) => esc(a.user === "twin" ? "Days" : a.name)).join("和") + "改成这句，各开一张纠错单" : ""}。</div>
           <div class="row u-mt8"><button type="button" class="btn gold" data-act="me-verdict">记下</button></div>`;
       } else if (ok.length > 1) {
         const c = S.meCompare;
         next = !c ? '<p class="muted" style="margin-top:10px">在看两个回答是不是一回事……</p>'
           : !c.conflict ? `<div class="meeffect">两个说的是一回事，记成你确认过。</div><div class="row u-mt8"><button type="button" class="btn gold" data-act="me-verdict">记下</button></div>`
-          : `<div class="mepair" style="border-color:var(--gold)"><div class="q">这两个说法不一样，你都点了“对”（${esc(c.why)}）</div>
+          : `<div class="mepair" style="border-color:var(--gold)"><div class="q">这两个说法不一样，你都点了“对”（${uiText(c.why, true)}）</div>
               ${S.meSplit ? r.answers.map((a, i) => `<div class="meown" style="border:0;padding:4px 0"><input data-mef="split${i}" value="${esc(F["split" + i] ?? a.answer)}"></div>
                 <div class="medates">从 <input type="date" data-mef="splitsince${i}"> 到 <input type="date" data-mef="splituntil${i}"></div>`).join("") + `<div class="row u-mt8"><button type="button" class="btn gold" data-act="me-split">两条都留着</button></div>`
               : `<div class="row u-g8 u-wrap"><button type="button" class="btn" data-act="me-splitopen">都对，是不同时候或不同情况</button>
@@ -2537,24 +2677,24 @@ function meOverlay() {
       <p class="muted t-sm">只是问问看，不会发给任何人。每张回答只看它说得对不对。</p>
       <div class="meown" style="border:0;padding:0"><input data-mef="q" value="${esc((S.meF || {}).q || "")}" placeholder="比如：我每周练几次？我吃香菜吗？" aria-label="问一件关于你的事">
         <button type="button" class="btn gold" data-act="me-ask" ${S.meAsking ? "disabled" : ""}>${S.meAsking ? "在问……" : "问"}</button></div>
-      ${recent.length ? `<div class="chips u-mt8"><span class="muted t-sm">最近问过：</span>${recent.map((q) => `<button type="button" class="chip" data-act="me-reask" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>` : ""}
+      ${recent.length ? `<div class="chips u-mt8"><span class="muted t-sm">最近问过：</span>${recent.map((q) => `<button type="button" class="chip" data-act="me-reask" data-q="${esc(q)}">${uiText(q, false)}</button>`).join("")}</div>` : ""}
       ${r && r.answers ? `<div class="meanswers">${r.answers.map(ans).join("")}</div>${next}` : ""}</section>`;
   }
   if (S.overlay === "me-manage") {  // 删除管理和对外表达（ontology-plan 2.2 第二层）
     const g = S.meManage, F = S.meF || {};
-    const del = (x) => `<div class="memem"><div><b class="t-body">${esc(x.at)}</b> 删了 ${x.facts || 0} 条${x.dims.length ? `（${esc(x.dims.join("、"))}）` : ""}${x.sources ? `，来源 ${x.sources} 个` : ""}${x.suspended ? `，另有 ${x.suspended} 条先停用` : ""}
+    const del = (x) => `<div class="memem"><div><b class="t-body">${uiText(x.at, false)}</b> 删了 ${x.facts || 0} 条${x.dims.length ? `（${uiText(x.dims.join("、"), false)}）` : ""}${x.sources ? `，来源 ${x.sources} 个` : ""}${x.suspended ? `，另有 ${x.suspended} 条先停用` : ""}
         <div class="src">内容已经清掉，放不回来${x.reimport ? "；已允许以后重新记" : x.sources ? "；你再发同样的东西，小伴 不会再记" : ""}</div></div>
         ${x.sources && !x.reimport ? `<button type="button" class="btn" data-act="me-reimport" data-id="${x.id}">允许以后重新记</button>` : ""}</div>`;
-    const sus = (x) => `<div class="memem"><div>${esc(x.text)}<div class="src">${esc(x.dim)} · 它的一部分依据被你删了，还剩别的依据撑着</div></div>
+    const sus = (x) => `<div class="memem"><div>${uiText(x.text, !x.mine)}<div class="src">${uiText(x.dim, false)} · 它的一部分依据被你删了，还剩别的依据撑着</div></div>
         <span class="mevote"><button type="button" class="btn" data-act="me-keep" data-id="${x.id}">留着</button>${S.meForget === "s" + x.id ? `<button type="button" class="btn primary" data-act="me-dropsusp" data-id="${x.id}">确定删掉？</button>` : `<button type="button" class="btn" data-act="me-forgetsus" data-id="${x.id}">也删掉</button>`}</span></div>`;
-    const dis = (x) => `<div class="memem"><div>${x.deny ? '<span class="pchg">挡住</span>' : ""}“${esc(x.text)}”<div class="src">给 ${esc(x.to)} · ${x.deny ? "这句不说" : x.once ? `这次对 ${esc(x.to_whom)} 说` : `长期${x.renew_at ? "，" + esc(x.renew_at) + " 问你要不要续" : ""}`}${x.until ? " · 到 " + esc(x.until) : ""} · ${esc(x.state)}</div></div>
+    const dis = (x) => `<div class="memem"><div>${x.deny ? '<span class="pchg">挡住</span>' : ""}“${uiText(x.text, !x.mine)}”<div class="src">给 ${uiText(x.to, false)} · ${x.deny ? "这句不说" : x.once ? `这次对 ${uiText(x.to_whom, false)} 说` : `长期${x.renew_at ? "，" + esc(x.renew_at) + " 问你要不要续" : ""}`}${x.until ? " · 到 " + esc(x.until) : ""} · ${uiText(x.state, false)}</div></div>
         ${x.state === "有效" ? `<button type="button" class="btn" data-act="me-revoke" data-id="${x.id}">撤回</button>` : ""}</div>`;
     const MODES = [["allow", "可以说"], ["ask", "问我"], ["deny", "不说"]];
-    const prow = (t) => (r) => `<div class="pol ${r.locked ? "locked" : ""}"><div class="pn">${esc(r.name)}${r.changed ? '<i class="pchg" title="你改过">改过</i>' : ""}<span>${esc(r.hint)}</span></div>
+    const prow = (t) => (r) => `<div class="pol ${r.locked ? "locked" : ""}"><div class="pn">${uiText(r.name, false)}${r.changed ? '<i class="pchg" title="你改过">改过</i>' : ""}<span>${uiText(r.hint, true)}</span></div>
         ${r.locked ? '<span class="plock">永远不说</span>' : `<span class="pseg" role="group" aria-label="${esc(t.name)}·${esc(r.name)}">${MODES.map(([v, l]) => `<button type="button" class="m-${v} ${r.mode === v ? "on" : ""}" aria-pressed="${r.mode === v}" data-act="me-policy" data-tier="${t.tier}" data-k="${r.key}" data-v="${v}">${l}</button>`).join("")}</span>`}</div>`;
-    const ptable = (t) => `<div class="poltable"><div class="ph"><b>${esc(t.name)}</b><span>${t.tier === "public" ? "主页助手、主页访客、不认识的 agent" : "以后接进来、你信任的 agent"}</span></div>${t.rows.map(prow(t)).join("")}</div>`;
+    const ptable = (t) => `<div class="poltable"><div class="ph"><b>${uiText(t.name, false)}</b><span>${t.tier === "public" ? "Days、主页访客、不认识的 agent" : "以后接进来、你信任的 agent"}</span></div>${t.rows.map(prow(t)).join("")}</div>`;
     const body = !g ? '<p class="muted">加载中……</p>' : `
-      <h3 style="font-size:15px;margin:6px 0 4px">对外开关</h3><p class="muted" style="font-size:12px;margin:0 0 4px">${esc(g.policy_note || "")}“问我”的被问到时先回“我问问她”，进待你定；别人说的、系统猜的，开着也不说。</p>
+      <h3 style="font-size:15px;margin:6px 0 4px">对外开关</h3><p class="muted" style="font-size:12px;margin:0 0 4px">${uiText(g.policy_note || "", true)}“问我”的被问到时先回“我问问她”，进待你定；别人说的、系统猜的，开着也不说。</p>
       <div class="polgrid">${(g.policy || []).map(ptable).join("")}</div>
       <h3 style="font-size:15px;margin:16px 0 4px">删过的</h3><p class="muted" style="font-size:12px;margin:0 0 6px">在“全部记忆”里点“删掉”的都在这里。为了真删干净，只留日期、方面和条数。</p>
       <div class="memlist">${g.deletions.map(del).join("") || '<p class="muted">还没删过</p>'}</div>
@@ -2570,9 +2710,9 @@ function meOverlay() {
   if (S.overlay === "me-all") {
     const d = S.meAll, F = S.meF || {};
     const item = (x) => { const fixing = S.meFix === x.id;
-      return `<div class="memem"><div>${x.state === "expired" ? `<span class="pchg u-mr6" title="临时状态过了原定的日期，小伴 不再当现在（11-06）">${esc(x.state_label)}</span>` : ""}${esc(x.text)} ${x.locked ? '<span class="gold" title="你定过的，系统不会自己改">🔒</span>' : ""}
-          <div class="src">${esc(x.said || (x.mine ? "你说的" : "系统推出来的"))}${x.kind === "self_report" ? "（自述）" : x.kind === "hypothesis" ? "（猜测）" : ""}${x.context ? " · " + esc(x.context) : ""} · ${esc(x.from)}${x.to ? " 到 " + esc(x.to) : x.until ? " 到 " + esc(x.until) : ""} · 用过 ${x.uses} 次</div>
-          ${(x.similar || []).length ? `<details class="mesim"><summary>意思相近的还有 ${x.similar.length} 条</summary>${x.similar.map((y) => `<div class="mesimrow">${esc(y.text)}${y.locked ? ' <span class="gold" title="你定过的">🔒</span>' : ""}<span class="src"> ${esc(y.from)}${y.past ? "，" + esc(y.past) : ""}</span></div>`).join("")}<p class="mesimtip">同一件事就删掉一条；说的不一样，点“不对”或“变了”。</p></details>` : ""}
+      return `<div class="memem"><div>${x.state === "expired" ? `<span class="pchg u-mr6" title="临时状态过了原定的日期，小伴 不再当现在（11-06）">${uiFixed(x.state_label)}</span>` : ""}${uiText(x.text, !x.mine)} ${x.locked ? '<span class="gold" title="你定过的，系统不会自己改">🔒</span>' : ""}
+          <div class="src">${uiText(x.said || (x.mine ? "你说的" : "系统推出来的"), false)}${x.kind === "self_report" ? "（自述）" : x.kind === "hypothesis" ? "（猜测）" : ""}${x.context ? " · " + esc(x.context) : ""} · ${uiText(x.from, false)}${x.to ? " 到 " + esc(x.to) : x.until ? " 到 " + esc(x.until) : ""} · 用过 ${x.uses} 次</div>
+          ${(x.similar || []).length ? `<details class="mesim"><summary>意思相近的还有 ${x.similar.length} 条</summary>${x.similar.map((y) => `<div class="mesimrow">${uiText(y.text, true)}${y.locked ? ' <span class="gold" title="你定过的">🔒</span>' : ""}<span class="src"> ${uiText(y.from, false)}${y.past ? "，" + esc(y.past) : ""}</span></div>`).join("")}<p class="mesimtip">同一件事就删掉一条；说的不一样，点“不对”或“变了”。</p></details>` : ""}
           ${fixing ? `<div class="meown" style="border:0;padding:6px 0 0"><input data-mef="fixtext" placeholder="正确的是？" value="${esc(F.fixtext || "")}"><button type="button" class="btn gold" data-act="me-fixsave" data-id="${x.id}">改</button></div>
             <div class="seg">${[["wrong", "当时就记错了"], ["changed", "以前是这样，现在变了"]].map(([v, l]) => `<button type="button" class="${(S.meKind || "wrong") === v ? "on" : ""}" data-act="me-kind" data-k="${v}">${l}</button>`).join("")}</div>` : ""}</div>
         ${S.meHistory ? "" : x.kind === "hypothesis" || ["转述", "系统推的", "系统推出来的"].includes(x.said)
@@ -2582,16 +2722,16 @@ function meOverlay() {
     const brainN = ((S.state || {}).badges || {}).brain || 0;
     const tabs = `<div class="chips">${[["facts", "关于你"], ["days", "发生过的事"], ["people", "人"]].map(([k, l]) => `<button type="button" class="chip ${tab === k ? "on" : ""}" data-act="me-alltab" data-k="${k}">${l}</button>`).join("")}
       <button type="button" class="chip" data-act="me-brain">收藏和资料${brainN ? ` <span class="rbadge">${brainN}</span>` : ""}</button></div>`;
-    const dayRow = (x) => `<div class="memem u-blk"><b class="t-body">${esc(x.day)}</b>${x.journal ? `<div style="font-size:13px;line-height:1.7;margin-top:2px">${esc(x.journal)}</div>` : ""}
-        ${x.events.map((e) => `<div class="src">· ${esc(e.title)}${e.summary && e.summary !== e.title ? "：" + esc(e.summary) : ""}</div>`).join("")}</div>`;
-    const personRow = (x) => `<div class="memem u-blk"><b class="t-body">${esc(x.name)}</b>${x.circle ? ` <span class="muted t-sm">${esc(x.circle)}</span>` : ""}
-        ${x.how_met || x.notes ? `<div class="t-md u-lh17">${esc([x.how_met, x.notes].filter(Boolean).join("；"))}</div>` : ""}
+    const dayRow = (x) => `<div class="memem u-blk"><b class="t-body">${uiText(x.day, false)}</b>${x.journal ? `<div style="font-size:13px;line-height:1.7;margin-top:2px">${uiText(x.journal, false)}</div>` : ""}
+        ${x.events.map((e) => `<div class="src">· ${uiText(e.title, true)}${e.summary && e.summary !== e.title ? "：" + esc(e.summary) : ""}</div>`).join("")}</div>`;
+    const personRow = (x) => `<div class="memem u-blk"><b class="t-body">${uiText(x.name, false)}</b>${x.circle ? ` <span class="muted t-sm">${uiText(x.circle, true)}</span>` : ""}
+        ${x.how_met || x.notes ? `<div class="t-md u-lh17">${uiText([x.how_met, x.notes].filter(Boolean).join("；"), false)}</div>` : ""}
         <div class="src">${x.last_contact ? "最近一次联系 " + esc(x.last_contact) : "还没记过联系"}</div></div>`;
     const body = !d ? '<p class="muted">加载中……</p>'
       : tab === "days" ? `<div class="memlist">${d.items.map(dayRow).join("") || '<p class="muted">没有</p>'}${more}</div>`
       : tab === "people" ? `<div class="memlist">${d.items.map(personRow).join("") || '<p class="muted">还没记下谁。聊天里提到的人，小伴 会记进来。</p>'}${more}</div>`
-      : `<div class="chips u-mt8"><button type="button" class="chip ${!S.meDim ? "on" : ""}" data-act="me-dim" data-k="">全部 ${d.total}</button>${d.dims.map((x) => `<button type="button" class="chip ${S.meDim === x.key ? "on" : ""}" data-act="me-dim" data-k="${x.key}">${esc(x.name)} ${x.n}</button>`).join("")}
-        ${S.meProp ? `<button type="button" class="chip on" data-act="me-noprop" title="去掉这个筛选">只看这一项：${esc(S.mePropName || "")} ✕</button>` : ""}
+      : `<div class="chips u-mt8"><button type="button" class="chip ${!S.meDim ? "on" : ""}" data-act="me-dim" data-k="">全部 ${d.total}</button>${d.dims.map((x) => `<button type="button" class="chip ${S.meDim === x.key ? "on" : ""}" data-act="me-dim" data-k="${x.key}">${uiText(x.name, false)} ${x.n}</button>`).join("")}
+        ${S.meProp ? `<button type="button" class="chip on" data-act="me-noprop" title="去掉这个筛选">只看这一项：${uiText(S.mePropName || "", false)} ✕</button>` : ""}
         <button type="button" class="chip ${S.meHistory ? "on" : ""}" data-act="me-history">${S.meHistory ? "回到现在的" : "看过时的"}</button></div>
         <div class="memlist">${d.items.map(item).join("") || '<p class="muted">没有</p>'}${more}</div>`;
     const hint = { facts: "系统现在记得的你（从聊天、文件里整理出来的一条条）。🔒 是你定过的，系统不会自己改。你发过的文件、链接、收藏原件在“收藏和资料”里。", days: "每天的记忆日记和那天记下的事，新的在前。", people: "你生活里的人，按最近联系排。" }[tab];
@@ -2605,7 +2745,7 @@ function meOverlay() {
 
 async function meLoad(what) {
   try {
-    if (what === "pending") { const r = await api("/api/me/pending"); S.mePending = r.items; S.meSkills = r.skills || []; }
+    if (what === "pending") { const r = await api("/api/me/pending"); S.mePending = r.items; S.meSkills = r.skills || []; S.meLater = r.later || []; }
     if (what === "manage") S.meManage = await api("/api/me/manage");
     if (what === "all") S.meAll = await api("/api/me/all?" + new URLSearchParams({ q: (S.meF || {}).allq || "", dim: S.meDim || "", prop: S.meProp || "", history: S.meHistory ? "1" : "",
       tab: S.meAllTab || "facts", limit: S.meLimit || 100 }));
@@ -2623,6 +2763,7 @@ async function meAct(action, payload, after) {
 const meF = (k) => ((S.meF || {})[k] || "").trim();
 
 document.addEventListener("input", (ev) => {
+  if (ev.target.dataset && ev.target.dataset.mergepick) S.mergePick = { ...(S.mergePick || {}), [ev.target.dataset.mergepick]: ev.target.value };
   const k = ev.target.dataset && ev.target.dataset.mef;
   if (k) S.meF = { ...(S.meF || {}), [k]: ev.target.value };
 });
@@ -2631,8 +2772,8 @@ document.addEventListener("click", (ev) => {
   if (!el) return;
   const a = el.dataset.act, id = el.dataset.id ? Number(el.dataset.id) : null;
   const refresh = async () => { await meLoad("page"); await load(true); };
-  if (a === "me-user") { S.meUser = S.meUser === el.dataset.k ? null : el.dataset.k; S.meTicket = null; renderOverlay(); }
-  else if (a === "me-ticket") { S.meTicket = S.meTicket === id ? null : id; renderOverlay(); }
+  if (a === "me-user") { S.meUser = S.meUser === el.dataset.k ? null : el.dataset.k; S.meTicket = null; render(); }
+  else if (a === "me-ticket") { S.meTicket = S.meTicket === id ? null : id; render(); }
   else if (a === "me-undo") meAct("me.undo", { id }, refresh);
   else if (a === "me-open") { S.overlay = el.dataset.k; S.meAsk = null; S.meMarks = {}; S.meCompare = null; S.meSplit = false; S.meFix = null;
     S.meF = {}; S.meDim = null; S.meProp = null; S.meHistory = false; S.meLimit = 100; S.meAllTab = "facts"; S.meAll = null; S.meUser = null; S.meTicket = null;  // 每次打开都从头开始，不留上次的搜索（ui-spec 默认状态）
@@ -2730,6 +2871,7 @@ document.addEventListener("change", (ev) => {
   const t = ev.target;
   if (!t.dataset) return;
   if (t.dataset.ms && t.dataset.msk) act("milestone.set", { id: t.dataset.ms, [t.dataset.msk]: t.value }, null, true).then(reloadQuests);
+  else if (t.dataset.tsize) act("task.size", { id: t.dataset.tsize, size: t.value }).then(reloadQuests);  // 改档：提示改成几分，能撤销
   else if (t.dataset.stagecad) act("stage.set", { id: t.dataset.stagecad, cadence: t.value }, null, true).then(reloadQuests);
   else if (t.dataset.stageweek) { const sel = document.querySelector(`[data-stagecad="${t.dataset.stageweek}"]`); act("stage.set", { id: t.dataset.stageweek, cadence: sel ? sel.value : "weekly", per_week: t.value }, null, true).then(reloadQuests); }
   else if (t.dataset.stagehabit !== undefined) act("stage.set", { id: t.dataset.stagehabit, habit_id: t.value || null }, null, true).then(reloadQuests);
@@ -2814,11 +2956,27 @@ document.addEventListener("input", (ev) => {
 
 
 /* ---------- 关系（ethan/relations.py，名“关系”）----------
-   顶上三张清单：该联系了、生日和重要日子、待回复；下面按重要程度分组的人物卡。
+   顶上三张清单：该联系了、待履约（改：有没了结的事的人，放中间）、生日和重要日子（放最右）；下面的人物卡按她微信里的标签分组，也能切回按重要程度分。
    每张卡左边一条“联系线”：上次联系到今天走了提醒间隔的多少，走满了就该联系了。 */
 const REL_GROUPS = [[3, "很重要"], [2, "常联系"], [1, "认识的人"], [0, "还没分"]];
+const STYLE_SCENES = { all: "通用", mail: "邮件", diary: "日记", site: "Days 回留言", chat: "和朋友聊天" };  // 写作规范用在哪（ethan/style.py SCENES）
 const REL_STARS = (n) => "★".repeat(n || 0) + "☆".repeat(3 - (n || 0));
 function relPerson(id) { return ((S.rel || {}).people || []).find((x) => x.id === id); }
+// 提醒间隔的选项：默认按重要程度、几个常用的、自定天数、永不
+// “默认”按重要程度算几天，鼠标放上去看得到；天数跟着服务器的设置走
+const relEveryHint = () => { const d = (S.rel || {}).defaults || {}, f = (n) => (d[n] ? d[n] + " 天" : "永不");
+  return `默认按重要程度：★★★ ${f(3)}，★★ ${f(2)}，★ ${f(1)}，☆☆☆（没星）永不。到点没联系就进“该联系”；生日、对方问了你还没回的照样提醒`; };
+const REL_EVERY = [["", "默认"], [14, "14 天"], [30, "30 天"], [90, "90 天"], [180, "180 天"], [365, "365 天"], ["never", "永不"]];
+// 下拉选：和默认一样的天数、和默认一样的“永不”不重复列；自己定过别的天数的，列在里面显示成选中
+function relEverySelect(x) {
+  const d = (S.rel.defaults || {})[x.importance];
+  const opts = REL_EVERY.filter(([v]) => !(v === "never" ? !d : typeof v === "number" && d === v)).map(([v, n]) =>
+    [v, v === "" ? (d ? `默认（${d} 天）` : "默认（永不）") : n]);
+  if (x.every_set && !x.never && !opts.some(([v]) => v === x.every)) opts.push([x.every, `${x.every} 天`]);
+  const cur = !x.every_set ? "" : x.never ? "never" : x.every;
+  return `<select data-pf="contact_every_days" data-id="${x.id}" aria-label="多少天提醒一次">${opts.map(([v, n]) =>
+    `<option value="${v}" ${String(v) === String(cur) ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>`;
+}
 function relThread(x) {
   if (x.days == null || !x.every) return `<span class="relthread none" aria-hidden="true"><i style="height:0"></i></span>`;
   const pct = Math.min(100, Math.round(100 * x.days / x.every));
@@ -2832,70 +2990,105 @@ function relationsPage() {
   const r = S.rel;
   if (!r) return '<p class="loading">加载中……</p>';
   const d = r.due, q = (S.relQ || "").trim(), circle = S.relCircle || "";
-  const lane = (title, hint, rows, empty) => `<section class="panel rellane" aria-label="${title}">
+  const lane = (title, hint, rows, empty, all) => `<section class="panel rellane" aria-label="${title}">
       <div class="row u-between u-base"><h2>${title}</h2><span class="muted t-sm">${rows.length ? rows.length + " 个" : ""}</span></div>
       <p class="muted relhint">${hint}</p>
-      ${rows.length ? rows.slice(0, 6).join("") : `<p class="muted relempty">${empty}</p>`}
-      ${rows.length > 6 ? `<p class="muted" style="font-size:12px;margin:4px 0 0">还有 ${rows.length - 6} 个，在下面的卡里</p>` : ""}</section>`;
-  const due = (id, name, sub, tag) => `<button type="button" class="reldue" data-act="person-open" data-id="${id}"><b>${esc(name)}</b><span class="muted">${sub}</span>${tag ? `<em>${tag}</em>` : ""}</button>`;
-  const lanes = `<div class="grid3 rellanes">
-    ${lane("该联系了", "超过提醒间隔的，附一句能聊的", d.contact.map((x) => due(x.id, x.name, esc(x.topic || "好久没聊了"), x.days + " 天")), "都联系过了")}
-    ${lane("生日和重要日子", "未来 7 天", d.days.map((x) => due(x.id, x.name, esc(x.what), x.in === 0 ? "今天" : x.in === 1 ? "明天" : x.date.slice(5).replace("-", "月") + "日")), "这周没有")}
-    ${lane("待回复", "对方问了你还没回，7 天内的", d.reply.map((x) => due(x.id, x.name, esc(x.text), x.ago === 0 ? "今天" : x.ago + " 天前")), "没有欠着的")}</div>`;
+      ${!rows.length ? `<p class="muted relempty">${empty}</p>` : all ? `<div class="rellane-all">${rows.join("")}</div>` : rows.slice(0, 6).join("")}
+      ${!all && rows.length > 6 ? `<p class="muted" style="font-size:12px;margin:4px 0 0">还有 ${rows.length - 6} 个，在下面的卡里</p>` : ""}</section>`;
+  const due = (id, name, sub, tag) => `<button type="button" class="reldue" data-act="person-open" data-id="${id}"><b>${uiText(name, false)}</b><span class="muted">${sub}</span>${tag ? `<em>${tag}</em>` : ""}</button>`;
+  // 推荐见谁（按她在哪、接下来做什么推荐，ethan/meetrec.py）：有行程、刚做完对应的事、或这周在常驻城市
+  const meet = (r.meet || []).length ? `<section class="panel relmeet" aria-label="推荐见谁"><h2>推荐见谁</h2>${r.meet.map((m) => `<div class="item"><span class="grow">${uiText(m.why, true)}<span class="u-blk">${m.people.map((p) => `<button type="button" class="btn tiny" data-act="person-open" data-id="${p.id}" title="${esc(p.why || "")}">${uiText(p.name, false)}</button>`).join(" ")}</span></span></div>`).join("")}</section>` : "";
+  const lanes = meet + `<div class="grid3 rellanes">
+    ${lane("该联系了", "超过提醒间隔的，附一句能聊的", d.contact.map((x) => due(x.id, x.name, esc(x.topic || "好久没聊了"), x.days + " 天")), "都联系过了", true)}
+    ${lane("待履约", "有没了结的事的人，点开卡片逐条了结", (d.loops || []).map((x) => due(x.id, x.name, esc(x.text) + (x.n > 1 ? `（共 ${x.n} 件）` : ""), x.date ? x.date.slice(5).replace("-", "月") + "日" : "")), "没有欠着的", true)}
+    ${lane("生日和重要日子", "未来 7 天，办完了点“办完了”，明年再提醒", d.days.map((x) => `<div class="row u-g6">${due(x.id, x.name, esc(x.what), x.in === 0 ? "今天" : x.in === 1 ? "明天" : x.date.slice(5).replace("-", "月") + "日")}<button type="button" class="btn tiny" data-act="person-datedone" data-id="${x.id}" data-date="${esc(x.date)}" data-what="${esc(x.what)}">${uiFixed("办完了")}</button></div>`), "这周没有", true)}</div>`;  // 三张清单都整张列出、框里自己滚
   let people = r.people;
   if (circle) people = people.filter((x) => x.circle === circle);
-  if (q) people = people.filter((x) => [x.name, x.relation, x.circle, x.recent, x.notes, (x.topics || []).join(" ")].some((v) => (v || "").includes(q)));
+  if (q) people = people.filter((x) => [x.name, x.relation, x.circle, x.recent, x.notes, (x.topics || []).join(" "), (x.labels || []).join(" ")].some((v) => (v || "").includes(q)));
   const tile = (x) => `<button type="button" class="reltile ${x.overdue ? "over" : ""}" data-act="person-open" data-id="${x.id}" aria-label="${esc(x.name)} 的人物卡">
-      ${relThread(x)}<span class="relbody"><span class="relname">${esc(x.name)}</span>
-      <span class="relrel">${esc(x.relation || x.circle || (x.organized ? "" : "还没整理"))}</span>
+      ${relThread(x)}<span class="relbody"><span class="relname">${uiText(x.name, false)}</span>
+      <span class="relrel">${uiText(x.relation || x.circle || (x.organized ? "" : "还没整理"), true)}</span>
       <span class="relmeta">${relAgo(x)}</span></span></button>`;
-  const groups = REL_GROUPS.map(([lv, label]) => {
+  const hasLabels = r.people.some((x) => (x.labels || []).length), by = hasLabels ? (S.relBy || "label") : "imp";
+  const groups = by === "label" ? relLabelGroups(people, tile) : REL_GROUPS.map(([lv, label]) => {
     const g = people.filter((x) => (x.importance || 0) === lv);
     if (!g.length) return "";
     const all = (S.relMore || {})[lv], shown = all || lv >= 2 ? g : g.slice(0, 24);
-    return `<section class="relgroup" aria-label="${label}"><div class="row relghead"><span class="relstars" aria-hidden="true">${lv ? REL_STARS(lv) : ""}</span><h2>${label}</h2><span class="muted t-sm">${g.length} 人</span></div>
+    return `<section class="relgroup" aria-label="${t(label)}"><div class="row relghead"><span class="relstars" aria-hidden="true">${lv ? REL_STARS(lv) : ""}</span><h2>${t(label)}</h2><span class="muted t-sm">${g.length} 人</span></div>
       <div class="reltiles">${shown.map(tile).join("")}</div>
       ${shown.length < g.length ? `<button type="button" class="btn" data-act="rel-more" data-lv="${lv}">再看 ${g.length - shown.length} 个</button>` : ""}</section>`;
   }).join("");
   const circles = [...new Set(r.people.map((x) => x.circle).filter(Boolean))];
-  return `<header class="row relhead"><div><h1 class="reltitle">关系</h1>
+  return `<header class="row relhead"><div><h1 class="pagetitle">关系</h1>
       <p class="muted" style="margin:2px 0 0;font-size:12px">${r.people.length} 张人物卡 · 从微信聊天整理，你改过的地方系统不再动</p></div>
       <input class="relq" type="search" data-relq placeholder="找人、找话题" value="${esc(S.relQ || "")}" aria-label="找人"></header>
-    ${lanes}
-    ${circles.length ? `<div class="chips" role="group" aria-label="按关系圈看"><button type="button" class="chip ${circle ? "" : "on"}" data-act="rel-circle" data-c="">全部</button>${circles.map((c) => `<button type="button" class="chip ${circle === c ? "on" : ""}" data-act="rel-circle" data-c="${esc(c)}">${esc(c)}</button>`).join("")}</div>` : ""}
-    ${groups || `<section class="panel"><p class="muted u-m0">${r.people.length ? "没找到。" : "还没有人物卡。等你 Mac 上的微信导出下次交过来（每周日 20:43，或者现在手动跑一次 --send），这里就会按聊天多少排好。"}</p></section>`}
+    ${relMerge(r.merge || [])}${lanes}
+    <div class="relbar">${circles.length ? `<div class="chips" role="group" aria-label="按关系圈看"><button type="button" class="chip ${circle ? "" : "on"}" data-act="rel-circle" data-c="">全部</button>${circles.map((c) => `<button type="button" class="chip ${circle === c ? "on" : ""}" data-act="rel-circle" data-c="${esc(c)}">${uiText(c, false)}</button>`).join("")}</div>` : ""}
+    ${hasLabels ? `<div class="relseg" role="group" aria-label="怎么分组"><button type="button" class="${by === "label" ? "on" : ""}" data-act="rel-by" data-by="label" aria-pressed="${by === "label"}">按微信标签</button><button type="button" class="${by === "imp" ? "on" : ""}" data-act="rel-by" data-by="imp" aria-pressed="${by === "imp"}">按重要程度</button></div>` : ""}</div>
+    ${groups || `<section class="panel"><p class="muted u-m0">${r.people.length ? "没找到。" : "还没有人物卡。等你 Mac 上的微信导出下次交过来（每天 22:43，或者现在手动跑一次 --send），这里就会按聊天多少排好。"}</p></section>`}
     ${relDeleted(r.deleted || [])}`;
+}
+// 按微信标签分组：一个人有几个标签就在几个组里都出现；
+// 组按人数从多到少，没标签的放最后“未分组”（有别的组时默认折起来）；组头点一下折起 / 展开，组名后是人数；组里的顺序沿用重要程度、最近联系
+function relLabelGroups(people, tile) {
+  const by = new Map(), none = [];
+  people.forEach((x) => { const ls = x.labels || []; if (!ls.length) none.push(x); ls.forEach((l) => { if (!by.has(l)) by.set(l, []); by.get(l).push(x); }); });
+  const order = [...by.entries()].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0], "zh"));
+  if (none.length) order.push(["", none]);
+  const fold = S.relFold || {};
+  return order.map(([name, g], i) => {
+    const key = "L" + i + ":" + name, closed = name in fold ? fold[name] : (!name && order.length > 1);
+    const all = (S.relMore || {})[key], shown = all ? g : g.slice(0, 24);
+    return `<section class="relgroup rellabel" aria-label="${esc(name || "未分组")}"><button type="button" class="relghead relfold" data-act="rel-fold" data-g="${esc(name)}" aria-expanded="${closed ? "false" : "true"}">
+        <span class="relchev" aria-hidden="true"></span><span class="relgname">${uiText(name || "未分组", false)}</span><span class="muted t-sm">${g.length} 人</span></button>
+      ${closed ? "" : `<div class="reltiles">${shown.map(tile).join("")}</div>
+      ${shown.length < g.length ? `<button type="button" class="btn" data-act="rel-more" data-lv="${esc(key)}">再看 ${g.length - shown.length} 个</button>` : ""}`}</section>`;
+  }).join("");
+}
+// 可能是同一个人：聊天里冒出来的卡对上微信那张，
+// 点两次“合并”才合；留下的是微信那张，另一张的关系圈、备注、记忆都挪过去
+function relMerge(list) {
+  if (!list.length) return "";
+  return `<section class="panel relmerge" aria-label="可能是同一个人"><div class="row u-between"><h2>可能是同一个人</h2><span class="muted t-sm">聊天里提到的人，和微信里的联系人对上了</span></div>
+    ${list.map((m) => { const k = "merge:" + m.drop.id + ":" + m.keep.id;
+      return `<div class="relmergerow"><span class="u-grow u-min0"><b>${uiText(m.drop.name, false)}</b>${m.drop.circle ? `<span class="muted">（${uiText(m.drop.circle, true)}）</span>` : ""} → <b>${uiText(m.keep.name, false)}</b>${m.keep.relation ? `<span class="muted">（${uiText(m.keep.relation, true)}）</span>` : ""}<span class="muted t-sm"> · ${uiText(m.why, true)}</span></span>
+        <button type="button" class="btn" data-act="person-notsame" data-keep="${m.keep.id}" data-drop="${m.drop.id}">不是同一个人</button>
+        <button type="button" class="btn ${confirming(k) ? "warnbtn" : "gold"}" data-act="person-merge" data-keep="${m.keep.id}" data-drop="${m.drop.id}">${confirming(k) ? "再点一次合并" : "合并"}</button></div>`; }).join("")}</section>`;
 }
 // “删掉的人”（4）：删掉的卡聊天里再提到也不自动建回来，想要回来在这里点恢复；平时折成一行
 function relDeleted(rows) {
   if (!rows.length) return "";
   const open = S.relGone;
   return `<section class="relgone" aria-label="删掉的人"><button type="button" class="relgonehead" data-act="rel-gone" aria-expanded="${open ? "true" : "false"}"><span>删掉的人 ${rows.length}</span><span class="muted">删了以后聊天里再提到也不会自动建卡${open ? " ▾" : " ▸"}</span></button>
-    ${open ? `<div class="relgonelist">${rows.map((x) => `<div class="relgonerow"><span class="relgonename">${esc(x.name)}</span><span class="muted">${esc(x.relation || (x.kept ? "" : "卡上内容没留，恢复后重新整理"))}</span><span class="muted relgoneat">${esc(x.at.slice(5).replace("-", "月"))}日删的</span><button type="button" class="btn tiny" data-act="person-restore" data-id="${x.id}">恢复</button></div>`).join("")}</div>` : ""}</section>`;
+    ${open ? `<div class="relgonelist">${rows.map((x) => `<div class="relgonerow"><span class="relgonename">${uiText(x.name, false)}</span><span class="muted">${uiText(x.relation || (x.kept ? "" : "卡上内容没留，恢复后重新整理"), true)}</span><span class="muted relgoneat">${uiText(x.at.slice(5).replace("-", "月"), false)}日删的</span><button type="button" class="btn tiny" data-act="person-restore" data-id="${x.id}">恢复</button></div>`).join("")}</div>` : ""}</section>`;
 }
 function personSheet() {
   const x = relPerson(S.personId);
   if (!x) return `<section class="sheet small"><p class="muted">这张卡不在了。</p></section>`;
-  const st = x.stats || {}, lk = (f) => (x.locked || []).includes(f) ? '<span class="rellock" title="你改过，自动整理不再动这一项">你改过</span>' : "";
-  const field = (f, label, val, opts = {}) => `<label class="relfield"><span>${label}${lk(f)}</span>${opts.area
+  const st = x.stats || {}, lk = (f) => (x.locked || []).includes(f) ? '<span class="rellock" title="你改过：整理时当参考，聊天里看得出变了会跟着更新">你改过</span>' : "";
+  const field = (f, label, val, opts = {}) => `<label class="relfield"><span>${t(label)}${lk(f)}</span>${opts.area
       ? `<textarea data-pf="${f}" data-id="${x.id}" rows="2" placeholder="${esc(opts.ph || "")}">${esc(val)}</textarea>`
-      : `<input type="text" data-pf="${f}" data-id="${x.id}" value="${esc(val)}" placeholder="${esc(opts.ph || "")}" ${opts.max ? `maxlength="${opts.max}"` : ""}>`}</label>`;
+      : `<input type="text" data-pf="${f}" data-id="${x.id}" value="${esc(val)}" placeholder="${esc(opts.ph || "")}" ${opts.max ? `maxlength="${opts.max}"` : ""}>`}${uiLang === "en" && val && !["name", "wechat", "remark"].includes(f) ? `<span class="muted u-blk t-sm">${uiText(val, true)}</span>` : ""}</label>`;
   const pct = (v) => v == null ? "—" : Math.round(100 * v) + "%";
   const loops = (x.open_loops || []).map((o) => `<div class="relloop"><span class="relloopk">${o.kind === "they_asked" ? "对方问了" : "你答应了"}</span>
-      <span class="u-grow u-min0">${esc(o.text)}<span class="muted u-blk t-xs">${esc(o.date)} · “${esc(o.quote || "")}”</span></span>
+      <span class="u-grow u-min0">${uiText(o.text, !o.mine)}<span class="muted u-blk t-xs">${uiText(o.date, false)} · “${uiText(o.quote || "", false)}”</span></span>
+      <button type="button" class="btn tiny" data-act="person-loopdefer" data-id="${x.id}" data-text="${esc(o.text)}" title="现在不用做：挪进“以后再办”，到时候变成待办">${uiFixed("先放着")}</button>
       <button type="button" class="btn tiny" data-act="person-loopdone" data-id="${x.id}" data-text="${esc(o.text)}">了结</button></div>`).join("");
-  const dates = (x.dates || []).map((o) => `<span class="chip">${esc(o.date)} ${esc(o.what)}</span>`).join("");
+  const dates = (x.dates || []).map((o) => `<span class="chip">${uiText(o.date, false)} ${uiText(o.what, true)}</span>`).join("");
   const del = S.personDel === x.id
     ? `<span class="row u-g6"><span class="muted t-sm">删了不再自动建回来，能在最下面“删掉的人”里恢复</span><button type="button" class="btn" data-act="person-delno">算了</button><button type="button" class="btn warnbtn" data-act="person-delyes" data-id="${x.id}">确定删除</button></span>`
     : `<button type="button" class="btn" data-act="person-del" data-id="${x.id}">删卡</button>`;
   return `<section class="sheet relsheet" aria-label="${esc(x.name)} 的人物卡">
-    <div class="row relsheethead">${relThread(x)}<div class="u-grow u-min0"><h2 class="relbig">${esc(x.name)}</h2>
-      <p class="muted" style="margin:4px 0 0;font-size:13px">${esc(x.relation || "关系还没整理出来")}${x.frequency ? " · " + esc(x.frequency) : ""}</p></div>
+    <div class="row relsheethead">${relThread(x)}<div class="u-grow u-min0"><h2 class="relbig">${uiText(x.name, false)}</h2>
+      <p class="muted" style="margin:4px 0 0;font-size:13px">${uiText(x.relation || "关系还没整理出来", true)}${x.frequency ? " · " + esc(x.frequency) : ""}</p></div>
       <button type="button" class="btn" data-act="close">关闭</button></div>
     <div class="relcontrols">
-      <div class="relfield"><span>重要程度${lk("importance")}</span><span class="row relimp" role="group" aria-label="重要程度">${[1, 2, 3].map((n) => `<button type="button" class="chip ${x.importance === n ? "on" : ""}" data-act="person-imp" data-id="${x.id}" data-v="${n}">${REL_STARS(n)}</button>`).join("")}</span></div>
+      <div class="relfield"><span>重要程度${lk("importance")}</span><span class="row relimp" role="group" aria-label="重要程度">${[0, 1, 2, 3].map((n) => `<button type="button" class="chip ${(x.importance || 0) === n ? "on" : ""}" data-act="person-imp" data-id="${x.id}" data-v="${n}" aria-label="${n ? n + " 颗星" : "没星"}">${REL_STARS(n)}</button>`).join("")}</span></div>
       <label class="relfield"><span>关系圈${lk("circle")}</span><select data-pf="circle" data-id="${x.id}"><option value="">没分</option>${(S.rel.circles || []).map((c) => `<option ${x.circle === c ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>
-      <label class="relfield"><span>多少天提醒一次${lk("contact_every_days")}</span><input type="number" min="1" max="3650" data-pf="contact_every_days" data-id="${x.id}" value="${x.every_set ? x.every : ""}" placeholder="默认 ${x.importance ? S.rel.defaults[x.importance] + " 天" : "按重要程度"}"></label>
+      <div class="relfield relevery" title="${esc(relEveryHint())}"><span>多少天提醒一次 <span class="muted" aria-label="${esc(relEveryHint())}">ⓘ</span>${lk("contact_every_days")}</span>
+        <span class="row u-g6">${relEverySelect(x)}
+          <input type="number" min="1" max="3650" class="relevery-n" data-pf="contact_every_days" data-id="${x.id}" aria-label="自己定天数"
+            value="${x.every_set && !x.never && !REL_EVERY.some(([v]) => v === x.every) ? x.every : ""}" placeholder="自定天数"></span></div>
     </div>
     <div class="relstats">
       <div><b>${x.last_contact ? esc(x.last_contact.slice(5).replace("-", "月")) + "日" : "—"}</b><span>最近联系${x.days != null ? `（${x.days} 天前）` : ""}</span></div>
@@ -2904,19 +3097,26 @@ function personSheet() {
     </div>
     ${(st.groups || []).length ? `<p class="muted" style="margin:0;font-size:12px">共同群：${st.groups.map(esc).join("、")}</p>` : ""}
     <div class="reldraft"><div class="row u-between"><label class="muted t-sm" for="pd${x.id}">可以发的一句${lk("draft")}<span>（草稿，系统不会替你发，复制去微信里自己发）</span></label>${x.draft ? `<button type="button" class="btn tiny" data-act="person-copy" data-id="${x.id}">复制</button>` : ""}</div>
-      <textarea id="pd${x.id}" data-pf="draft" data-id="${x.id}" rows="2" placeholder="${x.organized ? "这次没想到合适的，你可以自己写一句" : "整理后 小伴 会给一句"}">${esc(x.draft)}</textarea></div>
+      <textarea id="pd${x.id}" data-pf="draft" data-id="${x.id}" rows="2" placeholder="${x.organized ? "这次没想到合适的，你可以自己写一句" : "整理后 小伴 会给一句"}">${esc(x.draft)}</textarea>${uiLang === "en" && x.draft ? `<p class="muted">${uiText(x.draft, true)}</p>` : ""}</div>
     ${loops ? `<div><h3 class="relh3">没了结的事</h3>${loops}</div>` : ""}
+    ${(x.want_meet || []).length ? `<div><h3 class="relh3">随口约过的</h3><div class="chips">${x.want_meet.map((w) => `<span class="chip" title="${esc(w.quote || "")}">${uiText(w.text, true)}${w.date ? ` · ${uiText(w.date.slice(0, 7), false)}` : ""}</span>`).join("")}</div></div>` : ""}
     <div class="relfields">
       ${field("recent", "对方近况", x.recent, { area: true, ph: "比如：刚换工作去了上海" })}
       ${field("topics", "常聊的话题（用逗号隔开）", (x.topics || []).join("，"))}
       ${field("how_met", "怎么认识的", x.how_met)}
+      ${field("city", "常住城市（推荐见谁按这个）", x.city, { ph: "比如：珠海", max: 20 })}
+      ${field("roles", "身份标签（逗号隔开）", (x.roles || []).join("，"), { ph: "比如：投资人，创业者" })}
       ${field("relation", "关系", x.relation, { max: 60 })}
       ${field("birthday", "生日（MM-DD）", x.birthday, { ph: "03-14", max: 5 })}
       ${field("notes", "备注", x.notes, { area: true })}
+      ${field("wx_labels", "分组（默认是你微信里的标签，逗号隔开）", (x.labels || []).join("，"), { ph: "比如：大学同学，伦敦" })}
       ${field("name", "名字", x.name, { max: 30 })}
     </div>
     ${dates ? `<div><h3 class="relh3">重要日子</h3><div class="chips">${dates}</div></div>` : ""}
-    <div class="row u-between u-wrap u-g8"><span class="muted t-xs">${x.organized ? "小伴 从你们的微信聊天整理的" : "还没整理（每晚整理几个人，聊得多的先）"}</span>${del}</div>
+    <div class="row u-between u-wrap u-g8"><span class="muted t-xs">${x.organized ? "小伴 从你们的微信聊天整理的" : "还没整理（每晚整理几个人，聊得多的先）"}</span>
+      <span class="row u-g6 u-wrap"><input data-mergepick="${x.id}" list="mergeppl${x.id}" value="${esc((S.mergePick || {})[x.id] || "")}" placeholder="搜名字，和这张卡合并" aria-label="和哪张卡是同一个人" style="min-width:180px">
+          <datalist id="mergeppl${x.id}">${(S.rel.people || []).filter((o) => o.id !== x.id).map((o) => `<option value="${esc(o.name)}">${esc(o.relation || o.circle || "")}</option>`).join("")}</datalist>
+        <button type="button" class="btn ${confirming("mergepick:" + x.id) ? "warnbtn" : ""}" data-act="person-mergepick" data-id="${x.id}">${confirming("mergepick:" + x.id) ? "再点一次合并" : "合并"}</button>${del}</span></div>
   </section>`;
 }
 document.addEventListener("click", (ev) => {
@@ -2925,8 +3125,22 @@ document.addEventListener("click", (ev) => {
   const a = el.dataset.act, id = Number(el.dataset.id);
   if (a === "person-open") { S.personId = id; S.personDel = null; S.overlay = "person"; renderOverlay(); }
   else if (a === "person-imp") act("person.set", { id, field: "importance", value: Number(el.dataset.v) }, el);
+  else if (a === "person-every") act("person.set", { id, field: "contact_every_days", value: el.dataset.v }, el);
   else if (a === "person-loopdone") act("person.loopdone", { id, text: el.dataset.text }, el);
+  else if (a === "person-loopdefer") act("person.loopdefer", { id, text: el.dataset.text }, el);
+  else if (a === "person-datedone") act("person.datedone", { id, date: el.dataset.date, what: el.dataset.what }, el);
   else if (a === "person-del") { S.personDel = id; renderOverlay(); }
+  else if (a === "person-notsame") act("person.notsame", { keep: Number(el.dataset.keep), drop: Number(el.dataset.drop) }, el);
+  else if (a === "person-merge") { const keep = Number(el.dataset.keep), drop = Number(el.dataset.drop);
+    confirmTwice("merge:" + drop + ":" + keep, "再点一次就合并，合完这张卡只剩一张", () => act("person.merge", { keep, drop }, el), render); }
+  else if (a === "person-mergepick") {  // 打字搜名字选
+    // 选好的名字记在 S.mergePick 里（二次确认时弹窗重画把名字清空了，还得再选一次），第二下照这个合
+    const inp = document.querySelector(`[data-mergepick="${id}"]`), name = ((inp && inp.value) || (S.mergePick || {})[id] || "").trim();
+    const hits = (S.rel.people || []).filter((o) => o.id !== Number(id) && o.name === name), keep = hits.length === 1 ? hits[0].id : 0;
+    if (!keep) { showUndo(name ? (hits.length > 1 ? "有好几张同名的卡，先改个名再合并" : "没找到这个名字，从候选里点一个") : "先在左边搜名字，选和哪张卡合并"); return; }
+    // 留下选中的那张（多半是微信那张，下次导入不会再建回来），这张并进去
+    S.mergePick = { ...(S.mergePick || {}), [id]: name };
+    confirmTwice("mergepick:" + id, `再点一次“合并”，把这张并进「${name}」`, () => { S.overlay = null; S.mergePick = {}; act("person.merge", { keep, drop: Number(id) }, el); }, renderOverlay); }
   else if (a === "person-delno") { S.personDel = null; renderOverlay(); }
   else if (a === "person-delyes") { S.overlay = null; S.personDel = null; renderOverlay(); act("person.delete", { id }, el); }
   else if (a === "person-copy") { const x = relPerson(id); if (x && navigator.clipboard) navigator.clipboard.writeText(x.draft).then(() => showUndo("复制好了，去微信里发")); }
@@ -2934,6 +3148,13 @@ document.addEventListener("click", (ev) => {
   else if (a === "rel-gone") { S.relGone = !S.relGone; render(); }
   else if (a === "rel-more") { S.relMore = { ...(S.relMore || {}), [el.dataset.lv]: true }; render(); }
   else if (a === "rel-circle") { S.relCircle = el.dataset.c; render(); }
+  else if (a === "rel-by") { S.relBy = el.dataset.by; render(); }
+  else if (a === "rel-fold") { const g = el.dataset.g || "", open = el.getAttribute("aria-expanded") === "true"; S.relFold = { ...(S.relFold || {}), [g]: open }; render(); }
+});
+document.addEventListener("change", (ev) => {  // 写作规范改“用在哪”
+  const t = ev.target;
+  if (!t.matches || !t.matches("[data-act-change=me-stylescene]")) return;
+  meAct("me.resolve", { id: Number(t.dataset.id), how: "scene", pick: Number(t.dataset.i), text: t.value }, async () => { await meLoad("pending"); });
 });
 document.addEventListener("change", (ev) => {
   const t = ev.target;
@@ -2945,3 +3166,8 @@ document.addEventListener("input", (ev) => {
   S.relQ = ev.target.value; const pos = ev.target.selectionStart; render();
   const n = document.querySelector("[data-relq]"); if (n) { n.focus(); n.setSelectionRange(pos, pos); }
 });
+
+// 弹层以外的保存提示、展开内容也走同一套翻译，不影响页面原有事件。
+if (typeof MutationObserver !== "undefined") {
+  new MutationObserver(() => localizeVisible()).observe(document.body, { childList: true, subtree: true, characterData: true });
+}

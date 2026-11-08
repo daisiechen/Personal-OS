@@ -27,8 +27,11 @@ def demo_relations(db, today):
     rows = [("母上大人", 2, 210, 900), ("小林", 34, 40, 300), ("阿哲", 9, 120, 640), ("Mia", 3, 60, 200), ("王老师", 50, 6, 20),
             ("周周", 120, 0, 12), ("Leo", 15, 20, 80), ("室友 Anna", 1, 160, 400), ("陈师姐", 70, 2, 30), ("大鹏", 200, 0, 3),
             ("老爸", 6, 40, 260), ("Sophie", 95, 0, 8), ("Kevin 学长", 40, 4, 25), ("小雨", 22, 18, 120)]
+    tags = {"母上大人": ["家人"], "老爸": ["家人"], "小林": ["大学同学", "上海"], "阿哲": ["某商学院"], "Mia": ["某商学院", "伦敦朋友"],
+            "室友 Anna": ["伦敦朋友"], "Leo": ["某商学院"], "陈师姐": ["大学同学"], "王老师": ["老师"], "Kevin 学长": ["大学同学"]}  # 微信标签（11-06）
     relations.ingest_stats(db, {"people": [{"key": relations.wx_key(n), "name": n, "last": d(g), "n90": a, "n365": b, "total": b + 40,
-                                            "her_share": 0.52, "her_starts": 0.45, "rounds": 40, "groups": ["某商学院 中国同学会"] if i % 3 else []}
+                                            "her_share": 0.52, "her_starts": 0.45, "rounds": 40, "groups": ["某商学院 中国同学会"] if i % 3 else [],
+                                            "labels": tags.get(n, [])}
                                            for i, (n, g, a, b) in enumerate(rows)]})
     one = lambda name, **kw: db.conn.execute(f"UPDATE people SET {', '.join(k + ' = ?' for k in kw)}, organized_at = ? WHERE name = ?",
                                              (*kw.values(), d(0), name))
@@ -80,7 +83,7 @@ def demo_system(root, db):
         ev = lifebase.add_evidence(db, "interview", f"interview:demo{i}", now.isoformat(),
                                    text=f"【访谈】会话：微信 · 朋友{i}；场合：她的微信聊天（导出）；时间：x；整段对话\n【她】嗯")
         if i < 7:
-            db.conn.execute("INSERT INTO interview_digest (evidence_id, at, result) VALUES (?, ?, '{}')", (ev, (now - timedelta(minutes=9)).isoformat()))
+            db.conn.execute("INSERT OR IGNORE INTO interview_digest (evidence_id, at, result) VALUES (?, ?, '{}')", (ev, (now - timedelta(minutes=9)).isoformat()))
     db.conn.commit()
 def demo_outside(db):
     """“我”页对外开关的示意：她改过一格、一条“问我”进了待你定（内容都是编的）。"""
@@ -168,6 +171,36 @@ def demo_season(store, settings, today):
     attributes.compute = fake
 
 
+def demo_english(db, today):
+    """学习页“每周和 Grok 练英语”的示意：几周的练习分钟数，再加一天只打卡没写时长的（按 0 分钟、算一次）。数字是编的。"""
+    from datetime import timedelta
+    from ethan import english, quests
+    english.ensure(db)
+    for k, m in ((1, 15), (3, 22), (8, 12), (10, 18), (16, 25), (24, 14)):
+        db.conn.execute("INSERT INTO english_sessions (day, minutes, data, at) VALUES (?, ?, '{}', 'x')",
+                        ((today - timedelta(days=k)).isoformat(), m))
+    h = quests.habit_by_title(db, english.HABIT)
+    if h:
+        db.conn.execute("INSERT OR IGNORE INTO habit_log (habit_id, day, at, easy) VALUES (?, ?, 'x', 0)",
+                        (h["id"], (today - timedelta(days=9)).isoformat()))
+    db.conn.commit()
+
+
+def demo_effort(store):
+    """按预计工作量定档（方案 A）的示意：两件好几天的活，再跑一遍补估档的迁移，“日历 · 改计划”顶上出估档清单。"""
+    import importlib.util
+    from ethan import taskrules
+    for title in ("个人管理系统工作台上线", "申请英国人才签证"):
+        tid = store.db.add_task(title)
+        store.db.conn.execute("UPDATE tasks SET size = 'S' WHERE id = ?", (tid,))
+    store.db.conn.commit()
+    taskrules.ensure(store.db)
+    spec = importlib.util.spec_from_file_location("effort", Path(__file__).resolve().parent.parent / "migrations/20261106_effort_sizes.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.run(store)
+
+
 def main():
     root = Path(sys.argv[1])
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8810
@@ -179,6 +212,8 @@ def main():
     demo_desk(store.db)
     demo_feedback_1105(store.db, datetime.now(LOCAL).date())
     demo_asks_and_gone(store.db, datetime.now(LOCAL).date())
+    demo_english(store.db, datetime.now(LOCAL).date())
+    demo_effort(store)
     settings = Settings(root / "settings.json")
     settings.set("telegram_owner_chat_id", 1)
     demo_season(store, settings, datetime.now(LOCAL).date())

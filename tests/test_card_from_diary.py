@@ -148,7 +148,7 @@ class CardFromDiaryTest(unittest.TestCase):
         self.assertIsNone(diary.get(self.db, SUNDAY.isoformat()))
         self.assertIsNone(card["diary"]["hash"])
         self.assertIn("没有昨天的日记", [c for c in r.calls if c[0] == "card-director"][0][1])
-        self.assertIn("训练", [c for c in r.calls if c[0] == "card-director"][0][1])  # 旧素材：今天的安排照旧
+        self.assertNotIn("训练", [c for c in r.calls if c[0] == "card-director"][0][1])  # 今天（周一）的训练不进昨日卡
         self.assertEqual(card["line"], "今天下雨记得带伞")
         # 后来补上了日记：卡算对不上、要重出
         diary.save(self.db, SUNDAY.isoformat(), DIARY, source="ethan")

@@ -10,7 +10,7 @@
 - 迭代（——迭代，规范也一样）：
   她最近写的和某条确认过的规则不一样了（模型在 replaces 里指那条），每次算一次信号（style_signals）；4 周里攒够 REVISE_AT 句，
   出一条这条规则的“修订草稿”（revises 指原来那条），不另开新规则；她点对才替换（原来那条记“被取代”），不对就还按原来的。
-- 用：只有确认过的才注入日记、邮件起草、人物卡“可以发的一句”、主页助手 对外回复的提示词（style_block）；草稿不注入。
+- 用：只有确认过的才注入日记、邮件起草、人物卡“可以发的一句”、Days 对外回复的提示词（style_block）；草稿不注入。
 
 命令：
   python3 -m ethan.style --data <数据目录> --draft          生成 / 增量更新草稿（--force 原料少也跑）
@@ -41,6 +41,16 @@ REVISE_WEEKS = 4
 CATEGORIES = {"length": "句子长短", "tone": "语气", "words": "常用词和口头禅", "avoid": "不用的词", "punctuation": "标点和 emoji",
               "mix": "中英混用", "opening": "开头", "closing": "结尾", "audience": "对不同对象", "other": "其他"}
 AUDIENCES = {"all": "对谁都一样", "friend": "对朋友", "elder": "对长辈", "work": "工作上"}
+# 用在哪
+SCENES = {"all": "通用", "mail": "邮件", "diary": "日记", "site": "Days 回留言", "chat": "和朋友聊天"}
+REF_SCENE = {"sent": "mail", "mailpair": "mail", "diary": "diary", "pair": "diary", "liked": "diary", "disliked": "diary", "chat": "chat"}
+USER_SCENE = {"mail": "mail", "diary": "diary", "twin": "site", "relations": "chat"}  # 哪个使用者用哪个场景的规范
+
+
+def scene_of(quotes: list) -> str:
+    """按出处定用在哪：出处都来自同一种（都是她发的邮件、都是日记……）就是那一种；几处都有就是通用。"""
+    got = {REF_SCENE.get(str(q.get("ref") or "").split(":")[0]) for q in quotes or []} - {None}
+    return got.pop() if len(got) == 1 else "all"
 STATUS = ("draft", "confirmed", "rejected", "replaced")
 HER_KINDS = ("mail", "diary", "pair", "added", "deleted", "chat")  # 她写的或她改的；liked / disliked 是系统写的句子，只能当旁证
 EDIT_KINDS = ("pair", "added", "deleted")  # 改前→改后：最强信号
@@ -64,8 +74,14 @@ def _now() -> str:
 def ensure(db):
     if tx.once(db, "style"):
         db.conn.executescript(SCHEMA)
-        if "revises" not in {c[1] for c in db.conn.execute("PRAGMA table_info(style_rules)")}:  # 修订草稿：改的是哪条确认过的
+        have = {c[1] for c in db.conn.execute("PRAGMA table_info(style_rules)")}
+        if "revises" not in have:  # 修订草稿：改的是哪条确认过的
             db.conn.execute("ALTER TABLE style_rules ADD COLUMN revises INTEGER")
+        if "scene" not in have:  # 用在哪：老规则按出处补
+            db.conn.execute("ALTER TABLE style_rules ADD COLUMN scene TEXT NOT NULL DEFAULT 'all'")
+            for r in db.conn.execute("SELECT id, quotes FROM style_rules").fetchall():
+                db.conn.execute("UPDATE style_rules SET scene = ? WHERE id = ?", (scene_of(json.loads(r["quotes"] or "[]")), r["id"]))
+            db.conn.commit()
 
 
 def rules(db, status=None) -> list:
@@ -239,10 +255,11 @@ def _insert_draft(db, r: dict, text: str, items: list, revises: int = None):
         fid = lifebase.add_fact(db, "expression", text, evidence, confidence=0.5, importance=3, tags=("writing_style",),
                                 status="candidate", kind="hypothesis", source_kind="system_inference", prop="writing_style",
                                 context=_context(r["category"], r["audience"]))
-    cur = db.conn.execute("INSERT INTO style_rules (category, audience, rule, words, quotes, evidence, strength, fact_id, statement_id, created_at, revises) "
-                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    scene = r.get("scene") or scene_of(quotes)  # 修订草稿沿用原来那条的；新的按出处定
+    cur = db.conn.execute("INSERT INTO style_rules (category, audience, rule, words, quotes, evidence, strength, fact_id, statement_id, created_at, revises, scene) "
+                          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                           (r["category"], r["audience"], text, json.dumps(r.get("words") or [], ensure_ascii=False),
-                           json.dumps(quotes, ensure_ascii=False), json.dumps(evidence), strength, fid, _statement_of(db, fid), _now(), revises))
+                           json.dumps(quotes, ensure_ascii=False), json.dumps(evidence), strength, fid, _statement_of(db, fid), _now(), revises, scene))
     return cur, fid
 
 
@@ -261,7 +278,7 @@ def _signal(db, target: dict, r: dict, text: str, items: list, existing: list) -
     n = db.conn.execute("SELECT COUNT(*) FROM style_signals WHERE rule_id = ? AND used_by IS NULL AND at >= ?", (target["id"], since)).fetchone()[0]
     if n < REVISE_AT or any(x["status"] == "draft" and x.get("revises") == target["id"] for x in existing):
         return "signal"
-    cur, _ = _insert_draft(db, {**r, "category": target["category"], "audience": target["audience"]}, text, items, revises=target["id"])
+    cur, _ = _insert_draft(db, {**r, "category": target["category"], "audience": target["audience"], "scene": target.get("scene") or "all"}, text, items, revises=target["id"])
     db.conn.execute("UPDATE style_signals SET used_by = ? WHERE rule_id = ? AND used_by IS NULL", (cur.lastrowid, target["id"]))
     existing.append({"id": cur.lastrowid, "status": "draft", "rule": text, "her_text": None, "revises": target["id"]})
     return "revision"
@@ -272,7 +289,8 @@ QUESTION = "你的写作规范草稿"
 
 
 def _option(r: dict, db=None) -> dict:
-    out = {"rule_id": r["id"], "text": r["rule"], "category": CATEGORIES.get(r["category"], r["category"]),
+    out = {"rule_id": r["id"], "text": r["her_text"] or r["rule"], "category": CATEGORIES.get(r["category"], r["category"]),
+           "scene": r.get("scene") or "all", "confirmed": r["status"] == "confirmed",
            "audience": AUDIENCES.get(r["audience"], r["audience"]), "words": r["words"],
            "quotes": [{"text": q["text"], "from": FROM.get(q["kind"], "") + ("（改前）" if q.get("side") == "before" else "")} for q in r["quotes"]],
            "src": f"依据 {len(r['quotes'])} 句" + (f"，其中 {r['strength']} 句是你改草稿时的" if r["strength"] else "")}
@@ -300,7 +318,7 @@ def refresh_pending(db) -> int:
     n_ok = len(rules(db, "confirmed"))
     n_rev = sum(1 for r in drafts if r.get("revises"))
     q = f"{QUESTION}：{len(drafts)} 条等你看" + (f"（其中修订 {n_rev} 条）" if n_rev else "") + (f"（已生效 {n_ok} 条）" if n_ok else "")
-    opts = json.dumps([_option(r, db) for r in drafts], ensure_ascii=False)
+    opts = json.dumps([_option(r, db) for r in drafts] + [_option(r, db) for r in rules(db, "confirmed")], ensure_ascii=False)  # 已生效的也列，能改用在哪
     if row:
         db.conn.execute("UPDATE pending SET question = ?, options = ? WHERE id = ?", (q, opts, row[0]))
         pid = row[0]
@@ -367,6 +385,14 @@ def resolve(db, pending_row, action: str, pick=None, text: str = "") -> dict:
         if not (text or "").strip():
             return {"ok": False, "msg": "写一句改好的"}
         return confirm(db, int(pick), text)
+    if action == "scene":  # 改用在哪
+        if text not in SCENES:
+            return {"ok": False, "msg": "用在哪只能选：" + "、".join(SCENES.values())}
+        ensure(db)
+        db.conn.execute("UPDATE style_rules SET scene = ? WHERE id = ?", (text, int(pick)))
+        db.conn.commit()
+        refresh_pending(db)
+        return {"ok": True, "msg": f"这条以后只用在：{SCENES[text]}" if text != "all" else "这条以后哪里都用", "log": f"写作规范 #{pick} 用在 {SCENES[text]}"}
     return {"ok": False, "msg": "不认识的操作"}
 
 
@@ -374,7 +400,7 @@ def resolve(db, pending_row, action: str, pick=None, text: str = "") -> dict:
 def style_block(db, user: str, audience: str = None, quotes: bool = True) -> str:
     """给提示词：她确认过的写作规范（经 onto_query.writing_style，按使用者把关）。没有确认过的就空——草稿不注入。"""
     try:
-        got = onto_query.writing_style(db, user, audience=audience)
+        got = onto_query.writing_style(db, user, audience=audience, scene=USER_SCENE.get(user))
     except Exception:
         return ""
     if got["status"] != "answer":

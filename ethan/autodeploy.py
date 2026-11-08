@@ -170,8 +170,8 @@ class Deployer:
             step = "拉代码"
             self.git("merge", "--ff-only", "-q", "origin/main")
             step = "跑测试"  # 先测再装 systemd 文件：测试不过就什么都不动
-            try:
-                self.as_ethan("python3", "-m", "unittest", "discover", "-s", "tests", "-q")
+            try:  # 按测试文件分几路同时跑（串行要 8 分钟）；挂了照样打“FAIL: …”，下面认得出是哪几条
+                self.as_ethan("python3", "-m", "ethan.testrun", "-q")
             except StepFailed as e:
                 record["failed_tests"] = failed_tests(e.full)
                 raise

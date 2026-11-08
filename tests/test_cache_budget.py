@@ -218,6 +218,18 @@ class BudgetYieldTest(unittest.TestCase):
         self.assertGreaterEqual(p.budget_waits, 1)
         self.assertEqual(self.router.primary.calls, 1)
 
+    def test_reported_utilization_wins_over_usd_estimate(self):
+        """11-07：美元估算到了 $5，但 Claude 报的用量只有两三成——后台不该一直让路（从 11-05 起空转了两天）。"""
+        from ethan.core import quota
+        root = Path(self.settings.path).parent
+        self.spend(bgwork.BUDGET_USD + 1, hours_ago=1)
+        reset = int((NOW + timedelta(hours=3)).timestamp())
+        quota.observe(root, {"status": "allowed_warning", "unifiedWindows": {"five_hour": {"utilization": 0.2, "resetsAt": reset, "status": "allowed"},
+                                                                            "seven_day": {"utilization": 0.27, "resetsAt": reset + 86400, "status": "allowed"}}}, NOW)
+        self.assertFalse(bgwork.budget(self.ledger, self.settings, NOW)["yielding"])
+        quota.observe(root, {"status": "allowed", "unifiedWindows": {"five_hour": {"utilization": 0.85, "resetsAt": reset, "status": "allowed"}}}, NOW)
+        self.assertTrue(bgwork.budget(self.ledger, self.settings, NOW)["yielding"])  # 真用到八成照样让路
+
     def test_projection_yields_before_hitting_limit(self):
         # 窗口里才用了 3 美元（没到 5），但最近一小时烧了 3：预计再过一小时到 6，先让路
         self.spend(3.0, hours_ago=0.5)
@@ -284,6 +296,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

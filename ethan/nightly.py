@@ -248,10 +248,19 @@ def steps(store, router_for, data: Path, day: date, today: date, sunday: bool, f
         from . import relations
         return relations.nightly(store, router_for(), today)
 
+    def structure_():  # 今天新说的规矩、在做的事、住处进待你定（ethan/structure.py）；提议过的不重复
+        from . import structure
+        return structure.propose(store, router_for(), limit=40)
+
     def pending():  # “我”页的待你定：常被用到没确认过的、到期的
         from . import mepage, whereabouts
         return mepage.refresh(store.db, city=whereabouts.current(store.db).get("city"))
 
+    def followups_():  # 等着办：每天看一次条件，到了就做（ethan/followups.py）
+        from . import followups
+        return followups.daily(store.db, today)
+
+    step(failed, "等着办", followups_)
     before = len(failed)
     step(failed, "地基补登记", base)
     if len(failed) == before:  # 地基没补上，后面这几样照以前一样不跑
@@ -260,6 +269,7 @@ def steps(store, router_for, data: Path, day: date, today: date, sunday: bool, f
         step(failed, "补缺口的题", gaps)
         step(failed, "文件整理", files)
         step(failed, "人物卡", people)
+        step(failed, "规矩 / 在做的事 / 住处", structure_)
         step(failed, "待你定", pending)
     return failed
 
@@ -273,6 +283,8 @@ def main():
     from .clock import her_now
     from .memory import MemoryStore
     store = MemoryStore(args.data)
+    # 每晚整理和后台大批整理同时写库：等锁等到 2 分钟，不再 10 秒就报“database is locked”丢掉整步（11-07 体检：一晚 4 步没跑成）
+    store.db.conn.execute("PRAGMA busy_timeout = 120000")
     try:
         now = her_now()
         today = now.date()

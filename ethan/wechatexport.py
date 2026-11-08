@@ -27,6 +27,8 @@
 7. 人物卡（docs/design/relations.md）：--send 时顺带按私聊联系人算统计（最近联系、90 / 365 天条数、她说的占比、
    谁先开口〔隔 6 小时算新一轮〕、共同群），经 /cloud/people_stats 交给服务器；username 只交哈希。客服、中介、商家、酒店管家
    这类按名字跳过，--people-skip 补排除。
+8. 微信标签：从 contact.db 读她给联系人打的标签
+   （contact_label 表 + contact.extra_buffer 第 30 号字段，Reader.labels），随统计只交标签名；读不到不报错，--dry-run 里打印读到几个。
 
 用法（在 Personal-OS 目录里，用 python3.14，它自带 zstd）：
   python3.14 -m ethan.wechatexport --db-root <db_storage> --keys <keys.json> --self-id <她的 sender id> --dry-run
@@ -245,9 +247,134 @@ class Reader:
         return {r["username"]: (r.get("remark") or r.get("nick_name") or r["username"]).strip() or r["username"]
                 for r in rows if r.get("username")}
 
+    def labels(self) -> tuple:
+        """她在微信里给联系人打的标签。
+        返回 ({username: [标签名, ...]}, 标签总数)；读不到（旧版本没有标签表、字段名对不上）返回 (None, 0)，不报错。
+
+        macOS 微信 4.x 的 contact/contact.db：标签名在 contact_label 表（label_id_、label_name_、sort_order_）；
+        联系人身上的标签在 contact.extra_buffer（protobuf）顶层第 30 号字段，是逗号隔开的标签编号，如 "1,5"。
+        出处：开源的 r266-tech/wx-cli、pandorafuture/wx-cli 都这样读。字段名拿不准的按候选名探测（LABEL_*），
+        也认 3.x 那种直接的列（label_id_list / LabelIDList）。"""
+        try:
+            with self.open("contact/contact.db") as db:
+                return read_labels(db)
+        except Exception:  # noqa: BLE001 —— 标签是锦上添花，读不到不拖累导出
+            return None, 0
+
     def sessions(self) -> list:
         with self.open("session/session.db") as db:
             return [r["username"] for r in db.query("SELECT username FROM SessionTable") if r.get("username")]
+
+
+# ---------- 联系人标签 ----------
+LABEL_TABLES = ("contact_label", "ContactLabel", "contact_labels", "label")
+LABEL_ID_COLS = ("label_id_", "label_id", "LabelId", "LabelID", "id")
+LABEL_NAME_COLS = ("label_name_", "label_name", "LabelName", "name")
+LABEL_SORT_COLS = ("sort_order_", "sort_order", "SortOrder")
+CONTACT_LABEL_COLS = ("label_id_list", "label_ids", "label_list", "LabelIDList", "labelIDList")
+LABEL_PROTO_FIELD = 30  # contact.extra_buffer 里放标签编号的字段
+MAX_LABELS = 10
+
+
+def _cols(db, table_name: str) -> list:
+    return [r["name"] for r in db.query(f"SELECT name FROM pragma_table_info('{table_name}')")]
+
+
+def _pick(cols: list, cands: tuple) -> str:
+    low = {c.lower(): c for c in cols}
+    return next((low[c.lower()] for c in cands if c.lower() in low), "")
+
+
+def _varint(b: bytes, i: int) -> tuple:
+    n = shift = 0
+    while i < len(b):
+        x = b[i]
+        i += 1
+        n |= (x & 0x7F) << shift
+        if not x & 0x80:
+            return n, i
+        shift += 7
+        if shift > 63:
+            break
+    return None, i
+
+
+def proto_strings(b: bytes, field: int) -> list:
+    """protobuf 顶层第 field 号、长度型（wire type 2）字段的所有值；坏数据就停，不猜。"""
+    out, i = [], 0
+    while i < len(b):
+        key, i = _varint(b, i)
+        if not key:
+            break
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = _varint(b, i)
+            if v is None:
+                break
+        elif wt == 1:
+            i += 8
+        elif wt == 5:
+            i += 4
+        elif wt == 2:
+            ln, i = _varint(b, i)
+            if ln is None or i + ln > len(b):
+                break
+            if num == field:
+                out.append(b[i:i + ln])
+            i += ln
+        else:
+            break
+    return out
+
+
+def _label_ids(raw) -> list:
+    text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw or "")
+    out = []
+    for part in re.split(r"[,，|\s]+", text):
+        part = part.strip()
+        if part.isdigit() and int(part) > 0 and part not in out:
+            out.append(str(int(part)))
+    return out
+
+
+def read_labels(db) -> tuple:
+    """一个已打开的 contact.db → ({username: [标签名]}, 标签总数)；没有标签表 → (None, 0)。"""
+    tables = {r["name"] for r in db.query("SELECT name FROM sqlite_master WHERE type='table'")}
+    lt = next((t for t in LABEL_TABLES if t in tables), "")
+    if not lt or "contact" not in tables:
+        return None, 0
+    cols = _cols(db, lt)
+    cid, cname, csort = _pick(cols, LABEL_ID_COLS), _pick(cols, LABEL_NAME_COLS), _pick(cols, LABEL_SORT_COLS)
+    if not cid or not cname:
+        return None, 0
+    order = f'"{csort}", ' if csort else ""
+    names, rank = {}, {}
+    for r in db.query(f'SELECT "{cid}" AS i, "{cname}" AS n FROM "{lt}" ORDER BY {order}"{cid}"'):
+        n = " ".join(str(r.get("n") or "").split())[:20]
+        i = str(r.get("i") or "").strip()
+        if i.isdigit() and int(i) > 0 and n:
+            names[str(int(i))] = n
+            rank[str(int(i))] = len(rank)
+    ccols = _cols(db, "contact")
+    direct = _pick(ccols, CONTACT_LABEL_COLS)
+    if direct:
+        rows = [(r["username"], _label_ids(r.get("v"))) for r in db.query(f'SELECT username, "{direct}" AS v FROM contact')]
+    elif "extra_buffer" in ccols:
+        rows = [(r["username"], [i for v in proto_strings(bytes.fromhex(r.get("eb") or ""), LABEL_PROTO_FIELD)
+                                 for i in _label_ids(v)])
+                for r in db.query("SELECT username, hex(extra_buffer) AS eb FROM contact "
+                                  "WHERE extra_buffer IS NOT NULL AND length(extra_buffer) > 0")]
+    else:
+        return None, 0
+    out = {}
+    for user, ids in rows:
+        got = []
+        for i in sorted(dict.fromkeys(ids), key=lambda x: rank.get(x, 1 << 30)):
+            if i in names and names[i] not in got:
+                got.append(names[i])
+        if user and got:
+            out[user] = got[:MAX_LABELS]
+    return out, len(names)
 
 
 # ---------- 会话、消息 ----------
@@ -522,8 +649,10 @@ ROUND_GAP = 6 * 3600  # 隔 6 小时以上算新的一轮，看谁先开口
 STATS_BATCH = 150  # 一次交多少人（服务器一次最多收 64KB）
 
 
-def people_stats(st: dict, out_dir: Path, chats: list, now_ts: int = None, skip=()) -> list:
+def people_stats(st: dict, out_dir: Path, chats: list, now_ts: int = None, skip=(), labels: dict = None) -> list:
     """按私聊联系人算：最近一次联系、90 / 365 天条数、她说的占比、谁先开口、共同群（最多 5 个）。
+    labels：{username: [她在微信里给这个人打的标签名]}；读到了才交（每人都带，没标签交空列表，服务器据此清掉）；
+    读不到（None）就不带这个字段，服务器上原来的标签不动。只交标签名，去掉联系方式。
     username 只交哈希（relations.wx_key），名字是备注 / 昵称。客服、中介、商家这类跳过（relations.is_service + --people-skip）。"""
     from ethan import relations
     now_ts = int(now_ts if now_ts is not None else time.time())
@@ -557,7 +686,8 @@ def people_stats(st: dict, out_dir: Path, chats: list, now_ts: int = None, skip=
                 her_starts += bool(r.get("is_her"))
             prev = r["ts"]
         groups = sorted((group_of.get(chat) or {}).items(), key=lambda x: -x[1])[:5]
-        out.append({"key": relations.wx_key(chat), "name": name, "last": recs[-1]["time"][:10],
+        extra = {"labels": [redact(x) for x in labels.get(chat, [])]} if labels is not None else {}
+        out.append({**extra, "key": relations.wx_key(chat), "name": name, "last": recs[-1]["time"][:10],
                     "n90": sum(1 for r in recs if r["ts"] >= now_ts - 90 * 86400),
                     "n365": sum(1 for r in recs if r["ts"] >= now_ts - 365 * 86400), "total": len(recs),
                     "her_share": round(her / len(recs), 3), "her_starts": round(her_starts / rounds, 3), "rounds": rounds,
@@ -583,11 +713,15 @@ def run(db_root: Path, keys_path: Path, self_id: str, mode: str = "dry-run", out
     reader = Reader(db_root, load_keys(keys_path), opener, tmp_root)
     st = load_state(state_path)
     people = reader.contacts()
+    labels, n_labels = reader.labels()
     chats = [c for c in dict.fromkeys(reader.sessions()) if keep_chat(c, filehelper)]
     work = json.loads(json.dumps(st))  # dry-run 不动真进度
     assign_files(chats, people, work)
     report = {"chats": len(chats), "new": 0, "her": 0, "per_chat": [], "sent": 0, "batches": 0, "written": [],
               "warnings": [], "errors": []}
+    # 她跑一次 --dry-run 就能看出标签读没读到（按微信标签分组）
+    report["labels"] = (f"读到 {n_labels} 个标签、{len(labels)} 个联系人有标签" if labels is not None
+                        else "没读到微信标签（这个版本的微信库里没有标签表或字段对不上），关系页照旧按重要程度分")
     counts = export(reader, self_id, out_dir, work, chats, people, mode == "dry-run", decompress, report)
     filt = {s.strip() for s in chats_filter if s.strip()}
     for chat in chats:
@@ -652,7 +786,7 @@ def run(db_root: Path, keys_path: Path, self_id: str, mode: str = "dry-run", out
             c["sent"] = len(recs)
             save_state(st, state_path)
     if tok:  # 私聊统计交给服务器建人物卡（工作台“关系”页）
-        send_people_stats(client, people_stats(st, out_dir, chats, skip=people_skip), report)
+        send_people_stats(client, people_stats(st, out_dir, chats, skip=people_skip, labels=labels), report)
     if not tok:
         report["note"] = ("没有钥匙（ETHAN_CLOUD_TOKEN），只生成了文件、没有交；有钥匙后重跑 --send 就会交，"
                           f"或者逐个用 python3 -m ethan.cloud interview --session \"微信 · 会话名\" --scene \"{SCENE}\" --file <文件> 交")

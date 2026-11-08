@@ -18,6 +18,7 @@
 """
 
 import argparse
+import gzip
 import json
 import mimetypes
 import os
@@ -112,6 +113,8 @@ class App:
             return self.json(200, self.wb.quests_page())
         if method == "GET" and path == "/api/team":
             return self.json(200, self.wb.team_page())
+        if method == "GET" and path == "/api/agent_task":  # 团队页点开一件活看全文
+            return self.json(200, self.wb.agent_task(int((query.get("id") or ["0"])[0] or 0)))
         if method == "GET" and path == "/api/map":
             return self.json(200, self.wb.map_page())
         if method == "GET" and path == "/api/season":
@@ -126,6 +129,8 @@ class App:
                 return 200, {"Content-Type": "text/plain; charset=utf-8"}, str(e).encode()
         if method == "GET" and path == "/api/settings":
             return self.json(200, self.wb.settings_page())
+        if method == "GET" and path == "/api/settings/system":
+            return self.json(200, self.wb.system_page(fresh=bool(query.get("fresh"))))
         if method == "GET" and path == "/api/memory":  # 记忆的各个使用者用得怎么样、纠错单（ethan/memusers.py；界面在“我”页，第三步做）
             return self.json(200, self.wb.memory_page())
         if method == "GET" and path == "/api/me":  # “我”页（ethan/mepage.py）
@@ -182,12 +187,24 @@ class App:
                 return self.json(200, {"ok": True, **voice.result(self.root, (query.get("job") or [""])[0])})
             except ValueError as e:
                 return self.json(400, {"ok": False, "error": str(e)})
+        if method == "POST" and path == "/api/translate":
+            try:
+                return self.json(200, self.wb.translate_ui(self.body_json(body)))
+            except ValueError as e:
+                return self.json(400, {"ok": False, "error": str(e)})
         if method == "POST" and path == "/api/act":
             data = self.body_json(body)
             return self.json(200, self.wb.act(str(data.pop("action", "")), data))
         m = re.fullmatch(r"/img/avatar/(day|night)", path)
         if method == "GET" and m:
             return self.file(self.root / "avatars" / f"avatar-{m.group(1)}.jpg")
+        m = re.fullmatch(r"/img/file/(\d+)", path)  # 她发的照片（第二大脑里看图、设为形象参考用）
+        if method == "GET" and m:
+            got = self.wb.photo_file(int(m.group(1)))
+            if got is None:
+                return self.json(404, {"ok": False, "error": "not found"})
+            status, head, data = self.file(got)
+            return status, {**head, "Content-Type": {".png": "image/png", ".webp": "image/webp"}.get(got.suffix.lower(), "image/jpeg")}, data
         m = re.fullmatch(r"/img/card/(\d{4}-\d{2}-\d{2})", path)
         if method == "GET" and m:
             return self.file(self.root / "cards" / f"{m.group(1)}.jpg")
@@ -208,7 +225,7 @@ class App:
 
     def index(self) -> tuple:
         status, headers, body = self.static("index.html")
-        for name in ("app.css", "app.js", "moves.js"):  # 静态文件带版本号，内容变了地址就变，绕开缓存
+        for name in ("app.css", "i18n.js", "app.js", "moves.js"):  # 静态文件带版本号，内容变了地址就变，绕开缓存
             body = body.replace(f"/static/{name}\"".encode(), f"/static/{name}?v={VERSION}\"".encode())
         return status, {**headers, "Cache-Control": "no-store"}, body
 
@@ -225,6 +242,12 @@ class App:
         if not path.is_file():
             return self.json(404, {"ok": False, "error": "not found"})
         return 200, {"Content-Type": "image/jpeg", "Cache-Control": "private, max-age=3600"}, path.read_bytes()
+
+
+def log_path(raw: str) -> str:
+    """日志里的路径：不带查询串，设备登录链接 /d/<令牌> 的令牌换成 …（Codex 评审 11-07 第 1 条：长期令牌进了服务日志，读日志的人能拿去登录）。"""
+    path = urlsplit(raw).path
+    return "/d/…" if path.startswith("/d/") else path
 
 
 def make_handler(app: App):
@@ -245,8 +268,14 @@ def make_handler(app: App):
                     with lock:
                         status, headers, body = app.handle(method, self.path, dict(self.headers), data)
                 except Exception as e:  # 不把异常细节给外面，只记日志
-                    print(f"[workbench] {method} {urlsplit(self.path).path} 出错：{type(e).__name__} {e}", flush=True)
+                    print(f"[workbench] {method} {log_path(self.path)} 出错：{type(e).__name__} {e}", flush=True)
                     status, headers, body = app.json(500, {"ok": False, "error": "服务器出错了"})
+            # 压缩（赛季页、关系页加载很慢——关系页一次 1.2 MB，从洛杉矶传到伦敦）：文本类、大于 1 KB、对方收 gzip 才压
+            ctype = str(headers.get("Content-Type") or "")
+            if (len(body) > 1024 and "gzip" in (self.headers.get("Accept-Encoding") or "")
+                    and (ctype.startswith(("application/json", "text/")) or "javascript" in ctype)):
+                body = gzip.compress(body, compresslevel=5)
+                headers = {**headers, "Content-Encoding": "gzip", "Vary": "Accept-Encoding"}
             self.send_response(status)
             for k, v in headers.items():
                 self.send_header(k, v)
@@ -264,8 +293,8 @@ def make_handler(app: App):
         def do_POST(self):
             self._go("POST")
 
-        def log_message(self, fmt, *args):  # 不记查询串（登录令牌在里面）
-            print(f"[workbench] {self.command} {urlsplit(self.path).path} {args[1] if len(args) > 1 else ''}", flush=True)
+        def log_message(self, fmt, *args):  # 不记查询串和设备令牌（登录令牌在里面）
+            print(f"[workbench] {self.command} {log_path(self.path)} {args[1] if len(args) > 1 else ''}", flush=True)
 
     return Handler
 

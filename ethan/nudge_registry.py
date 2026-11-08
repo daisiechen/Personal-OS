@@ -74,7 +74,7 @@ class Rule:
     window: tuple = None        # 她本地时间几点到几点（"HH:MM"，结束不含）；None 不限
     gap: timedelta = None       # 同一类两次之间至少隔多久（按 nudge_sent 发送记录）
     switch: bool = True         # 她 /proactive off 时停
-    hint: bool = False          # 只问一次、没回就挂在首页的小提示上（3）
+    hint: bool = False          # 只问一次、事情没了结就挂在首页的小提示上（3；“事情没了结就一直挂着”）
     why: str = ""               # 和默认不一样的地方，写原因
 
 
@@ -155,7 +155,7 @@ def once_prefixes() -> tuple:
 
 
 def hint_prefixes() -> tuple:
-    """问过一次、她没回就挂在首页小提示上的（nudges.hints；首页一行，点 × 不再显示）。"""
+    """问过一次、事情没了结就挂在首页小提示上的（nudges.hints；首页一行，了结了或点 × 才收）。"""
     return tuple(p for p, r in RULES.items() if r.hint)
 
 
@@ -166,7 +166,7 @@ BADGES = {
     "desk": "首页“邮件和留言” → 等她处理的",
     "me": "“我”页 → 待你定（加上收藏和资料里要她看的）",
     "quests": "首页积分 → 商店里能拆的惊喜",
-    "map": "赛季页地图 → 荒原里没归类的待办",
+    "map": "赛季页“七个领域”旁的“待归属” → 还没定领域的待办",
     "parked": "首页“小伴 今天在准备”上的小红点 → 弹层里“⏸ 先放着”那栏（同样的红点和数，点开看过就消失；state.parked_remind）",
 }
 

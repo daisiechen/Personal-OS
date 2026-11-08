@@ -67,9 +67,40 @@ class SharedComponentTest(unittest.TestCase):
         self.assertIn("--fs-sm: 12px", CSS)
         for c in (".t-xs", ".t-sm", ".t-md", ".t-h", ".u-between", ".u-g8"):
             self.assertIn(c + " {", CSS)
-        self.assertLessEqual(APP.count('style="'), 155)  # 11-06 前 607
-        self.assertLessEqual(len(re.findall(r"font-size:\s*\d+px", APP)), 62)  # 11-06 前 321
-        self.assertLessEqual(len(re.findall(r"#[0-9A-Fa-f]{6}\b", APP)), 21)  # 十六进制颜色（卡片稀有度、天气插画等，下一轮换变量）
+        self.assertLessEqual(APP.count('style="'), 144)  # 11-06 前 607；第三批后 155；11-06 清颜色后 144
+        self.assertLessEqual(len(re.findall(r"font-size:\s*\d+px", APP)), 52)  # 11-06 前 321；第三批后 62；清颜色后 52
+        self.assertEqual(re.findall(r"#[0-9A-Fa-f]{3,8}\b|rgba?\(\s*\d", APP), [])  # 十六进制 / rgba 颜色清零（11-06 前 21 处）：用 app.css 的变量和类
+
+    def test_colors_only_in_tokens(self):
+        """app.css 里的颜色只许写在顶上“设计变量”那一段（两套主题 + 固定色板），别处一律 var(--…)。
+        以前 CSS 里硬写的颜色约 300 处（十六进制 209、rgba 86），白天的覆盖规则各自写一遍颜色。"""
+        head, sep, rest = CSS.partition("/* ==== 设计变量结束 ==== */")
+        self.assertTrue(sep and "/* ==== 设计变量" in head)
+        loose = re.findall(r"#[0-9A-Fa-f]{3,8}\b|rgba?\(\s*\d|hsla?\(\s*\d|(?<![\w-])(?:white|black)(?![\w-])", rest)
+        self.assertEqual(loose, [], "颜色写进 app.css 顶上的设计变量，再用 var(--…)")
+        # 两套主题定义的变量一样多（白天只多“只在白天用的细调”那几个）
+        night = set(re.findall(r"(--[\w-]+):", head[head.index(":root, body.night {"):head.index("body.day {")]))
+        day = set(re.findall(r"(--[\w-]+):", head[head.index("body.day {"):head.index("/* 固定色板")]))
+        self.assertEqual(night - day, set(), "夜间有的主题变量白天也要有")
+        self.assertEqual(day - night, {"--panel-shadow", "--primary-fill", "--primary-line", "--primary-emboss", "--on-fill"})
+        # 用到的变量都有定义
+        bare = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+        inline = set(re.findall(r"(--[\w-]+):", APP))  # app.js 在 style 里给的（进度 --p、柱高 --n、填充 --fill……）
+        defined = set(re.findall(r"(--[\w-]+)\s*:", bare)) | inline | {"--eo-a"}
+        used = set(re.findall(r"var\((--[\w-]+)", bare))
+        self.assertEqual(used - defined, set())
+
+    def test_one_rarity_frame(self):
+        """卡片稀有度以前在 .ccard / .bigcard .img / .cardthumb 三份选择器里各写一遍：现在三处都带 .rar（app.js 的 rarity()）。"""
+        self.assertIsNone(re.search(r"\.(ccard|cardthumb)\.r[1-4]", CSS))
+        self.assertEqual(len(re.findall(r"^\.rar\.r[1-4] \{", CSS, re.M)), 4)
+        self.assertEqual(len(re.findall(r"\brarity\(\w+\.rarity\)", APP)), 4)  # 首页小卡、卡册、翻开的大卡（两处）
+
+    def test_saves_go_through_save(self):
+        """保存提示只有 save() 一种写法；直接 send 的只剩 save / act / meAct 三个共用入口和副本改名的批量存。"""
+        calls = re.findall(r"\bsend\(", APP)
+        self.assertEqual(len(calls), 5, "send 只许在：定义、save、act、meAct、flushSteps（批量改名，一次提示）")
+        self.assertGreaterEqual(APP.count("save(\""), 8)
 
 
 class TaskComponentTest(unittest.TestCase):
@@ -93,3 +124,29 @@ class TaskComponentTest(unittest.TestCase):
         self.assertEqual(used - views, set())
         self.assertTrue({"today", "other", "later", "dropped", "plan", "stage"} <= used)
 
+
+
+class DomainPageTest(unittest.TestCase):
+    """    所有领域详情页走同一个骨架 domainPage：标题 → 这个领域 → 健康线 → 图表 → 副本 → 探索地图 → 资料（docs/design/territories.md）。"""
+
+    def test_one_order_for_every_domain(self):
+        self.assertIn('const DOMAIN_ORDER = ["score", "health", "charts", "bosses", "explore", "brain"];', APP)
+        page = APP[APP.index("function territoryPage()"):APP.index("const DOMAIN_ORDER = ")]
+        self.assertIn("return domainPage(head, parts);", page)
+        parts = page[page.index("const parts = {"):page.index("const head = ")]
+        keys = re.findall(r"^    (\w+): ", parts, re.M)
+        self.assertEqual(keys, ["score", "health", "charts", "bosses", "explore", "brain"])
+        # 健康线、分数、图只在骨架里出现一次，各领域不另排
+        self.assertEqual(APP.count("<h2>健康线 · 本周</h2>"), 1)
+        self.assertEqual(APP.count("scorePanel(t.score, t)"), 1)
+        self.assertEqual(APP.count(".map(metricChart)"), 1)
+        for fn in ("weightChart(t.weights)", "spendChart(t.spend)"):
+            self.assertEqual(APP.count(fn), 1, fn)
+            self.assertIn(fn, APP[APP.index("const DOMAIN_CHARTS = {"):])
+        self.assertNotRegex(page, r"t\.key === \"(body|money|career|study|social|academic)\"")  # 只有生活体验的探索地图按领域出
+
+    def test_boss_bar_one_component(self):
+        """副本进度条只有 bossBar 一处画，旁边写依据（按指标 / 按里程碑 / 按步骤），没依据不画。"""
+        bar = APP[APP.index("const bossBar = "):APP.index("function bossPill(")]
+        self.assertIn("barby", bar)
+        self.assertIn("p && p.frac != null ?", bar)

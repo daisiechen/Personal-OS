@@ -73,14 +73,16 @@ def _mark(conn, name: str, ok: bool, note: str):
     conn.execute("INSERT OR REPLACE INTO migrations_done (name, at, ok, note) VALUES (?, ?, ?, ?)", (name, _now(), 1 if ok else 0, note[:300]))
 
 
-def run_all(store, repo: Path, data: Path) -> list:
-    """返回 [(名字, 成功没有, 说明)]。"""
+def run_all(store, repo: Path, data: Path, only=None) -> list:
+    """返回 [(名字, 成功没有, 说明)]。only(名字) 为真的才跑（检验题闸门先跑改检验题的那几个，见 memeval）。"""
     conn = store.db.conn
     if conn.in_transaction:
         conn.commit()  # 之前没提交的先落定，不混进第一个脚本
     _json_import(conn, data)
     out = []
     for path in pending(repo, data, store.db):
+        if only is not None and not only(path.stem):
+            continue
         spec = importlib.util.spec_from_file_location(f"migration_{path.stem}", path)
         mod = importlib.util.module_from_spec(spec)
         # 先在同一个事务里记一行“跑到一半”：脚本自己 commit 时跟数据改动一起落库，断在哪里都不会把改过的再跑一遍
@@ -123,6 +125,8 @@ def main():
     args = parser.parse_args()
     from .memory import MemoryStore
     store = MemoryStore(args.data)
+    # 部署时后台整理可能正占着写锁（11-07 15:39 那次 10 秒没拿到，迁移整个没跑）：迁移最多等 2 分钟
+    store.db.conn.execute("PRAGMA busy_timeout = 120000")
     try:
         got = run_all(store, args.repo, args.data)
     finally:

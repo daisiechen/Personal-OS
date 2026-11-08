@@ -34,6 +34,25 @@ class JobsTest(unittest.TestCase):
             self.assertFalse(row["ok"])
             self.assertIn("extract_realtime", row["detail"])
 
+    def test_killed_by_systemd_is_recorded_not_left_running(self):
+        """11-08：记忆整理跑超了 15 分钟上限被 systemd 停掉，没留记录，体检一直报“6 小时还没结束”。"""
+        import os
+        import signal
+        with tempfile.TemporaryDirectory() as d:
+            def killed(cmd, **kw):
+                os.kill(os.getpid(), signal.SIGTERM)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            self.assertEqual(jobs.run(Path(d), "memory", ["x"], runner=killed), 143)
+            row = {r["name"]: r for r in jobs.health(Path(d))}["每晚记忆整理"]
+            self.assertFalse(row["ok"])
+            self.assertIn("被系统停掉", row["detail"])
+            self.assertNotIn("还没结束", row["detail"])
+
+    def test_memory_service_has_room_to_finish(self):
+        """11-07 跑了 14 分钟、11-08 超过 15 分钟被停掉：上限放到 60 分钟。"""
+        svc = (Path(__file__).resolve().parents[1] / "deploy" / "systemd" / "ethan2-memory.service").read_text()
+        self.assertIn("TimeoutStartSec=60min", svc)
+
     def test_every_timer_job_goes_through_the_recorder(self):
         root = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
         for name in ("backup", "brain", "english", "planner", "prep", "proactive", "vault", "weekly"):

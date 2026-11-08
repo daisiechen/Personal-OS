@@ -10,7 +10,7 @@ from ethan.workbench.api import Workbench
 from tests.test_workbench import MONDAY, make_demo
 
 
-class AchievementsTest(unittest.TestCase):
+class AchievementsBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -24,6 +24,8 @@ class AchievementsTest(unittest.TestCase):
     def by_key(self):
         return {i["key"]: i for i in achievements.compute(self.db, self.root, MONDAY)["items"]}
 
+
+class AchievementsTest(AchievementsBase):
     def test_counts_from_real_data(self):
         h = quests.habit_by_title(self.db, "训练")
         for i in range(52):
@@ -141,7 +143,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class ShopNoticeTest(AchievementsTest):
+class ShopNoticeTest(AchievementsBase):
     def test_affordable_reward_pops_once_and_again_after_redeem(self):
         """小惊喜能拆了系统没提示。攒够了弹一次，拆过再攒够还会再弹。"""
         achievements.celebrate(self.db, self.root, MONDAY)  # 第一次把已有的记成弹过

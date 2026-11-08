@@ -90,10 +90,10 @@ class ContactOnlyFromCardsTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_default_interval_counts_everywhere(self):
-        """只设了重要程度、没手设间隔的人（3 级默认 14 天），领地页和属性分都算“该联系了”（老的只看手设间隔，漏掉她们）。"""
+        """只设了重要程度、没手设间隔的人（3 级默认 30 天，改），领地页和属性分都算“该联系了”（老的只看手设间隔，漏掉她们）。"""
         from ethan import attributes, lifelog, territory
         day = MONDAY
-        relations.upsert(self.db, "母上大人", source="wechat", importance=3, last_contact=(day - timedelta(days=20)).isoformat())
+        relations.upsert(self.db, "母上大人", source="wechat", importance=3, last_contact=(day - timedelta(days=40)).isoformat())
         relations.upsert(self.db, "小雨", source="wechat", importance=2, last_contact=(day - timedelta(days=3)).isoformat())
         cs = relations.contact_status(self.db, day, "me_page")
         self.assertEqual((cs["tracked"], [x["name"] for x in cs["contact"]]), (2, ["母上大人"]))

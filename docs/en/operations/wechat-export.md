@@ -136,6 +136,7 @@ source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -na
 
 It prints the number of chats (`chats`), new messages (`new`), messages from you (`her`), and per-chat counts (`per_chat`; `send` says whether that chat would be handed to Buddy).
 If `her` is 0 or the output says the `--self-id` can't be found, the id from step 6 is wrong — stop here.
+There is also a `labels` line: "读到 N 个标签、M 个联系人有标签" (read N tags, M contacts have tags) means your WeChat contact tags were found and the Relations page will group people by them; "没读到微信标签" (no tags read) doesn't affect the export — the page keeps grouping by importance.
 
 ### 8. Export the full history and hand it to Buddy
 
@@ -148,6 +149,7 @@ source ~/.config/ethan/wechat-export.env && cd "$(find ~ -maxdepth 4 -type d -na
 - Only some chats: add `--chats "Alex,Book club"`. Group chats are only sent if you spoke in them; add `--all` for everything; add `--filehelper` to include File Transfer.
 - Export without sending: replace `--send` with `--export`.
 - `--send` also sends per-person stats for one-on-one chats, used to build person cards (workbench "Relations" page). To skip some people: add `--people-skip "Name1,Name2"` (substring match) — include it when installing the daily job too.
+- The stats also carry the tags you gave each contact in WeChat (tag names only, contact details removed); the Relations page groups people by them.
 
 ### 9. Run it automatically every day
 
@@ -173,6 +175,7 @@ To remove it: `launchctl unload ~/Library/LaunchAgents/com.ethan.wechatexport.pl
 | Keys | The tool's `keys.json`: `{"keys": {"message/message_0.db": {"enc_key": "64 hex chars"}}}`; entries keyed by salt (first 16 bytes of the file) or absolute path are accepted too. Exactly one key per database; the file must be mode 600. |
 | Chats | `SessionTable.username` in `session/session.db`; names from `contact` in `contact/contact.db` (remark > nickname > WeChat id). Official accounts `gh_`, service and system accounts (`weixin`, `brandsessionholder`, ...) and folded entries are dropped; File Transfer needs `--filehelper`. |
 | Messages | `Msg_<md5(username)>` in `message/message_<n>.db`: `local_id`, `server_id`, `local_type` (low 32 bits kind, high 32 bits subtype), `create_time`, `real_sender_id` (rowid in `Name2Id`), `message_content` (starting with `28 b5 2f fd` means zstd, decoded with python3.14's built-in module). In groups, other people's text is prefixed with `<username>:\n`. Text is kept as is; images, voice, video, stickers, location, contact cards, calls, links, files, red packets, transfers etc. become placeholders such as `[图片]` (image); quote replies keep the reply text. |
+| WeChat tags | `contact/contact.db`: tag names in `contact_label` (`label_id_`, `label_name_`, `sort_order_`); a contact's tags are top-level protobuf field 30 of `contact.extra_buffer`, a comma-separated list of tag ids (e.g. `1,5`). Source: the open-source r266-tech/wx-cli and pandorafuture/wx-cli read it this way. Table and column names are probed from candidates (3.x-style `ContactLabel` / `LabelIDList` columns too); if nothing matches it reports "not read", raises nothing, and leaves `labels` out of the stats (the server keeps what it had). |
 | Files | `~/wechat-export/<chat name>.jsonl`, one message per line: `{"time", "who", "is_her", "text", "type", "sender", "db", "local_id", "server_id"}`; chats with the same name get a hash of the WeChat id appended. |
 | Incremental | `~/.config/ethan/wechatexport-state.json`: per chat and database, the last `local_id`, the database salt, the last `create_time` (to continue by time if a database was rebuilt), and how many lines were delivered. |
 | Handing to Buddy | Whole conversations, both sides: one block per day headed 〔date〕, one line per message labelled 【她】 (you) / 【remark name or group member name】. Messages over 2,000 characters are truncated; placeholder-only messages (images, voice) are skipped; phone numbers, emails and addresses are removed with `docquotes.redact`. Chat name "微信 · <chat name>" (WeChat · chat), sent via `cloud.CloudClient.interview` (`format: "transcript"`), at most 12,000 characters per batch, in order within a chat; progress advances only when a batch succeeds. All one-on-one chats are sent; groups only where you spoke, and only those days (`--chats` sends only named chats, `--all` all groups and days). The server processes it in the background right away. The key comes from `ETHAN_CLOUD_TOKEN` or `~/.claude/settings.json` (as in agent-export); without a key only handoff files are written to `~/.config/ethan/wechatexport-out/` (send them with `python3 -m ethan.cloud interview --file`; the server recognises transcripts). |
@@ -180,5 +183,6 @@ To remove it: `launchctl unload ~/Library/LaunchAgents/com.ethan.wechatexport.pl
 ## 3. Not done / to verify
 
 - Whether key extraction works on macOS versions the tool hasn't been tested on.
+- The tag location (`extra_buffer` field 30) comes from open-source tools; to be confirmed by the `labels` line of the first `--dry-run`.
 - Group member display names come only from remarks / nicknames in the contact table, not group nicknames (`chat_room.ext_buffer`); members not in the contact table show their WeChat id.
 - Filling in "people" and "relationships" from this data needs the first full delivery and a server pass before it can be evaluated.

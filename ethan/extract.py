@@ -42,7 +42,8 @@ SCHEMA = {"type": "object", "required": ["todos", "wishes", "facts", "events", "
     "todos": {"type": "array", "maxItems": 8, "items": _quoted({
         "op": {"type": "string", "enum": ["add", "update", "drop", "claim_done"]},
         "match_id": {"type": ["integer", "null"]}, "title": {"type": ["string", "null"], "maxLength": 40},
-        "due": {"type": ["string", "null"]}, "owner": {"type": ["string", "null"], "enum": list(OWNERS) + [None]}}, ["op"])},
+        "due": {"type": ["string", "null"]}, "owner": {"type": ["string", "null"], "enum": list(OWNERS) + [None]},
+        "detail": {"type": ["string", "null"], "maxLength": 300}}, ["op"])},
     "wishes": {"type": "array", "maxItems": 5, "items": _quoted({
         "op": {"type": "string", "enum": ["add", "mention", "drop"]}, "match_id": {"type": ["integer", "null"]},
         "text": {"type": ["string", "null"], "maxLength": 60},
@@ -165,9 +166,12 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
             title = naming.title(title)  # 标题式（docs/design/ui-spec.md 第 5 节）
             from . import prep
             # 只有交给 小伴 的才是他的活；交给 Claude / Codex / Grok 的不是他答应的，也不进准备员
-            tid = db.add_task(title, due=t.get("due"), promised_by_ethan=owner == "ethan" and not prep.is_ops(title))
+            tid = taskrules.add(db, title, due=t.get("due"), promised_by_ethan=owner == "ethan" and not prep.is_ops(title))
             db.conn.execute("UPDATE tasks SET owner = ?, source_type = 'chat', source_ref = ?, status = 'open' WHERE id = ?",
                             (owner, ref, tid))
+            if (t.get("detail") or "").strip():  # 短标题之外的做法和要求
+                lifebase.ensure(db)
+                db.conn.execute("UPDATE tasks SET detail = ? WHERE id = ?", (t["detail"].strip()[:300], tid))
             open_tasks[title] = {"id": tid, "title": title, "due": t.get("due")}
             got["todo_add"] += 1
         elif t["op"] == "update":
@@ -232,8 +236,11 @@ def apply(db, data: dict, evidence_id: int, ref: str, today: date) -> dict:
                             (now, json.dumps(sorted(set(ids) | {evidence_id})), importance, row["id"]))
             got["fact_seen"] += 1
             continue
-        lifebase.add_fact(db, f["dimension"], f["statement"], [evidence_id], subject=subject, also_dims=f.get("also_dims") or (),
-                          tags=tags, confidence=conf, importance=importance, valid_from=today.isoformat())
+        try:
+            lifebase.add_fact(db, f["dimension"], f["statement"], [evidence_id], subject=subject, also_dims=f.get("also_dims") or (),
+                              tags=tags, confidence=conf, importance=importance, valid_from=today.isoformat())
+        except lifebase.Forgotten:  # 这句她从这条来源“只删这条”删过，不记回来（Codex 评审 11-07 第 6 条）
+            continue
         got["fact_add"] += 1
     for e in data.get("events") or []:
         day = e["occurred_at"][:10]

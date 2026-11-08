@@ -19,13 +19,13 @@ from . import lifebase, tx
 
 # 新使用者在这里登记一行
 # tier（ontology-plan 3.3，按三档设一次）：internal 自己人（照内部规则看）/ partner 合作方（她信任的外部 agent）/
-# public 公开（主页助手、主页访客、不认识的 agent）。对外两档按“我”页的对外开关（lifebase.disclose）把关，新登记的只写 tier 就自动按那一档；
+# public 公开（Days、主页访客、不认识的 agent）。对外两档按“我”页的对外开关（lifebase.disclose）把关，新登记的只写 tier 就自动按那一档；
 # 对外两档的 level 写 "public"（不读内部的画像、检索场景）。
 USERS = {
     "ethan": {"tier": "internal", "name": "小伴", "level": "private", "uses": "她的一切、你们之间的过往、他自己的生活",
               "where": "聊天、主动消息、提醒和跟进", "since": "2026-10-31", "hypothesis": True,
-              "questions": [1, 2, 3, 4, 5, 11, 13, 18, 22, 23, 26, 27, 28]},
-    "twin": {"tier": "public", "name": "主页助手", "level": "public", "uses": "公开级那部分", "where": "主页接待访客、起草留言回复", "since": "2026-10-31",
+              "questions": [1, 2, 3, 4, 5, 11, 13, 18, 22, 23, 26, 27, 28, 29]},  # 29：某天她做了什么（11-06，聊天和“我”页问一问）
+    "twin": {"tier": "public", "name": "Days", "level": "public", "uses": "公开级那部分", "where": "主页接待访客、起草留言回复", "since": "2026-10-31",
              "questions": [14, 15, 16]},
     "planner": {"tier": "internal", "name": "计划器", "level": "private", "uses": "目标、作息、偏好、她删掉过的事", "where": "每日计划、周报",
                 "since": "2026-10-31", "questions": [1, 4, 6, 8, 9, 13, 22, 27]},
@@ -39,11 +39,12 @@ USERS = {
     "diary": {"tier": "internal", "name": "我的日记", "level": "private", "uses": "那天她自己在聊天里说的话、完成的事、出门、工作时长；她确认过的写作规范",
               "where": "日记本（用她的口吻写她的一天）", "since": "2026-11-01", "questions": [], "memory_only": ["writing_style"]},
     # 今日卡：
-    # 卡上关于昨天的只从昨天的日记取（diary 表那一篇，她改过的为准），不走检索和画像（memory_only 为空：一项记忆都不读）
-    "cards": {"tier": "internal", "name": "昨日卡", "level": "private", "uses": "昨天的日记（她改过的为准，没有就系统稿；都没有先补写）、今天的安排、伦敦天气、她的心愿和对卡的意见",
-              "where": "昨日卡的卡名和 小伴 那句话（ethan/cards.py）", "since": "2026-11-05", "questions": [], "memory_only": []},
+    # 卡上关于昨天的只从昨天的素材取，不走检索和画像；11-06 晚她同意“加”昨天她在聊天里说的原话：只登记读这一项（onto_query.day_her_words）
+    "cards": {"tier": "internal", "name": "昨日卡", "level": "private", "uses": "昨天的日记（她改过的为准，没有就系统稿；都没有先补写）、昨天的日程和训练记录、昨天伦敦的天气、她的心愿和对卡的意见（11-06 起今天的安排不进）；"
+              "昨天她在聊天里说的原话（只取她说的，挑有画面感的最多 8 句）、昨天她发的照片的看图描述（11-06 晚加）",
+              "where": "昨日卡的卡名、小伴 那句话和画面（ethan/cards.py）", "since": "2026-11-05", "questions": [], "memory_only": ["day_her_words"]},
     "me_page": {"tier": "internal", "name": "属性分数", "level": "private", "uses": "全部", "where": "7 项属性、画像展示", "since": "2026-10-31", "all": True,
-                "questions": [7, 11, 17, 18, 19, 23]},
+                "questions": [7, 11, 17, 18, 19, 23, 29]},
     "gaps": {"tier": "internal", "name": "补缺口提问", "level": "private", "uses": "每个方面有几条说法、她的聊天和文件里有没有提过某个话题（只判断有没有，不读出内容）",
              "where": "小伴 每天挑要问她的问题（ontology 1.7）", "since": "2026-11-04", "questions": []},
     "relations": {"tier": "internal", "name": "关系（人物卡）", "level": "private", "uses": "她和某个人的微信交接记录（只读这个人的那几份）、人物卡",
@@ -74,8 +75,8 @@ USERS = {
                "internal": True, "all": True, "questions": []},
 }
 # “我”页上按实体看：计划器、准备、邮件起草、属性分数都是 OS 在做的事；
-# 主页助手和主页文案都是个人主页。登记表照旧按用途细分（进出闸门、统计口径不变），页面上合并。新登记的用途要归到一个实体里。
-ENTITIES = {"ethan": ("小伴", ["ethan", "gaps", "heads_up"]), "twin": ("主页助手", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "cards", "relations", "style"])}
+# Days和主页文案都是个人主页。登记表照旧按用途细分（进出闸门、统计口径不变），页面上合并。新登记的用途要归到一个实体里。
+ENTITIES = {"ethan": ("小伴", ["ethan", "gaps", "heads_up"]), "twin": ("Days", ["twin"]), "site": ("个人主页", ["site"]), "os": ("OS", ["planner", "prep", "mail", "me_page", "diary", "cards", "relations", "style"])}
 
 
 def entity_of(user: str) -> str:
@@ -130,7 +131,7 @@ def external(user: str) -> bool:
 
 def may_read(user: str, know: str = None, read_by: str = None, dimension: str = None) -> bool:
     """读取与推理（ontology.md 6.1 节，2026-11-03 接进检索）：
-    - 系统的假设：只有 小伴 能读（只能拿来和她本人讨论），计划器、准备、邮件、日记、主页助手、主页都不读；
+    - 系统的假设：只有 小伴 能读（只能拿来和她本人讨论），计划器、准备、邮件、日记、Days、主页都不读；
     - 条目写了读取名单的，只有名单里的能读；没写的按原来的级别规则；
     - “我”页和系统维护看全部（她本人要能看到系统对她的所有猜测）。
     对外两档（合作方、公开）这里只挡猜测、预测和读取名单；**哪一类能说**要用 lifebase.disclose（按对外开关和逐条例外），
@@ -175,6 +176,9 @@ def need(user: str, what: str) -> dict:
 
 def ensure(db):
     lifebase.ensure(db)
+    from . import tx
+    if not tx.once(db, "memusers"):  # 建表、加列每个连接只做一次
+        return
     db.conn.execute(SCHEMA)
     have = {r[1] for r in db.conn.execute("PRAGMA table_info(corrections)")}
     # kind：wrong 错了（从来不是这样，算一次错）/ changed 变了（以前对、现在不一样，不算错）；status：undone 是她撤销的

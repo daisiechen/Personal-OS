@@ -18,7 +18,7 @@ import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from . import lifebase, llm
+from . import lifebase, llm, tx
 from .clock import her_today
 
 BLOCK_BUDGET = 600  # 每个维度摘要的字数上限
@@ -114,34 +114,53 @@ def propose_ops(router, db, new: list, old: list, day: date, ref: str = ""):
                           check=lambda d: check_ops(d, new, ids), version=version, input_ref=ref, purpose="fact-ops")
 
 
-def apply_ops(db, data: dict, evidence_id: int, day: date, context: str = None, props: dict = None, kinds: dict = None) -> dict:
+# 模型看的那一版和写入时比这几项：来源、状态、锁、内容、止日变了，模型的提议就作废（Codex 评审 11-07 第 5 条）
+BASIS = ("status", "evidence_ids", "locked", "statement", "valid_to", "superseded_by", "until")
+
+
+def _basis_changed(seen: dict, now: dict) -> bool:
+    return any(seen.get(k) != now.get(k) for k in BASIS if k in seen)
+
+
+def apply_ops(db, data: dict, evidence_id: int, day: date, context: str = None, props: dict = None, kinds: dict = None,
+              seen: dict = None) -> dict:
+    """执行模型提议的操作。seen：模型看到的旧事实（编号 → 那一行）。
+    模型调用之后、写入之前，她可能删了旧事实的来源或锁上了它：重读、核对、写入在一个写事务里做（tx.atomic，BEGIN IMMEDIATE），
+    依据变了这条就放弃，不从被删的内容接出新的有效事实（Codex 评审 11-07 第 5 条）。"""
     got = {"ADD": 0, "UPDATE": 0, "INVALIDATE": 0, "NOOP": 0}
     now = _now()
-    for op in data["ops"]:
-        kind, old = op["op"], _fact(db, op.get("fact_id")) if op.get("fact_id") else None
-        if kind != "ADD" and not _current(old):
-            continue  # 前面的操作已经改过它
-        since = (op.get("valid_from") or day.isoformat())[:10]
-        if kind == "NOOP":
-            ids = sorted(set(json.loads(old["evidence_ids"])) | {evidence_id})
-            db.conn.execute("UPDATE facts SET last_confirmed_at = ?, evidence_ids = ? WHERE id = ?", (now, json.dumps(ids), old["id"]))
-        elif kind == "INVALIDATE":
-            lifebase.invalidate(db, old["id"], since)
-        else:
-            subject = old["subject"] if old else "self"
-            # 临时状态预计到哪天：模型填的为准；没填但说法里明说了“这周 / 这几天 / 这个月”的，按说的那天算（借鉴 6）
-            until = (op.get("until") or "")[:10] or lifebase.temp_until(op["statement"], since)
-            if until and until < since:
-                until = None
-            new_id = lifebase.add_fact(db, op["dimension"], op["statement"], [evidence_id], subject=subject, valid_from=since, until=until,
-                                       importance=old["importance"] if old else 3,
-                                       visibility=old["visibility"] if old and subject == "self" else None, context=context,
-                                       prop=(props or {}).get(op.get("from")) or (old["prop"] if old and "prop" in old.keys() else None),
-                                       kind=(kinds or {}).get(op.get("from")) or "fact")
-            if kind == "UPDATE":
-                lifebase.supersede(db, old["id"], new_id, since)
-        got[kind] += 1
-    db.conn.commit()
+    with tx.atomic(db):
+        for op in data["ops"]:
+            kind, old = op["op"], _fact(db, op.get("fact_id")) if op.get("fact_id") else None
+            if kind != "ADD" and not _current(old):
+                continue  # 前面的操作已经改过它，或者她删了、停用了
+            if old and seen and old["id"] in seen and _basis_changed(dict(seen[old["id"]]), old):
+                got["stale"] = got.get("stale", 0) + 1
+                continue
+            since = (op.get("valid_from") or day.isoformat())[:10]
+            try:
+                if kind == "NOOP":
+                    ids = sorted(set(json.loads(old["evidence_ids"])) | {evidence_id})
+                    db.conn.execute("UPDATE facts SET last_confirmed_at = ?, evidence_ids = ? WHERE id = ?", (now, json.dumps(ids), old["id"]))
+                elif kind == "INVALIDATE":
+                    lifebase.invalidate(db, old["id"], since)
+                else:
+                    subject = old["subject"] if old else "self"
+                    # 临时状态预计到哪天：模型填的为准；没填但说法里明说了“这周 / 这几天 / 这个月”的，按说的那天算（借鉴 6）
+                    until = (op.get("until") or "")[:10] or lifebase.temp_until(op["statement"], since)
+                    if until and until < since:
+                        until = None
+                    new_id = lifebase.add_fact(db, op["dimension"], op["statement"], [evidence_id], subject=subject, valid_from=since,
+                                               until=until, importance=old["importance"] if old else 3,
+                                               visibility=old["visibility"] if old and subject == "self" else None, context=context,
+                                               prop=(props or {}).get(op.get("from")) or (old["prop"] if old and "prop" in old.keys() else None),
+                                               kind=(kinds or {}).get(op.get("from")) or "fact")
+                    if kind == "UPDATE":
+                        lifebase.supersede(db, old["id"], new_id, since)
+            except lifebase.Forgotten:  # 这天的整理或这句她删过（“只删这条”的墓碑），不记回来
+                got["forgotten"] = got.get("forgotten", 0) + 1
+                continue
+            got[kind] += 1
     return got
 
 
@@ -154,8 +173,10 @@ def nightly(store, router, day: date, statements: list, summary: str = "") -> di
     if statements:
         ev = lifebase.try_evidence(db, "chat", f"journal:{day.isoformat()}", day.isoformat(),
                                    (summary + "\n" if summary else "") + "\n".join(statements), path=f"wiki/journal/{day.isoformat()}.md")
-        data = propose_ops(router, db, statements, related(db, statements), day, f"journal:{day.isoformat()}") if ev else None
-        got = {"skipped": "她要求删掉过这天的整理"} if ev is None else apply_ops(db, data, ev, day) if data else {"failed": "两次都没通过校验"}
+        old = related(db, statements) if ev else []
+        data = propose_ops(router, db, statements, old, day, f"journal:{day.isoformat()}") if ev else None
+        got = {"skipped": "她要求删掉过这天的整理"} if ev is None else \
+            apply_ops(db, data, ev, day, seen={f["id"]: f for f in old}) if data else {"failed": "两次都没通过校验"}
     got["blocks"] = rebuild_blocks(db, router)
     return got
 

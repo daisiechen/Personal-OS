@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .clock import HOME_TZ, WEEKDAYS, her_now, home_now, stamp, utc_now
 from .clock import her_today
+from . import clock
 
 PREFIX = "ethan-life"
 HER_THINGS = f"{PREFIX}/her-things"
@@ -308,7 +309,7 @@ def ensure_plans(store, router, persona: str, settings=None, now: datetime = Non
     week = week_slug(day)
     week_plan = _body(wiki, week)
     if not week_plan:
-        monday = day - timedelta(days=day.weekday())
+        monday = clock.week_start(day)
         week_plan = _ask(router, system, (
             f"今天是深圳 {stamp(h)}。写本周（{monday} 起）的周计划：每天大致节奏、1–2 个关键事件、"
             "本周要推进的剧情线（接着前几天往下走）。\n\n"

@@ -44,8 +44,19 @@ REFUND = re.compile(r"退款|退货|撤销|冲正|退回")  # 退款和消费的
 _FIXED = set()
 
 
+# 退款冲回原来那一笔（看完方案说“按这个改”）：
+# refund_of 是对上的原消费，count_day 是这笔退款算在哪天（原消费那天）；对不上的退款 refund_of 为空，不算进任何一天的花销
+REFUND_DAYS = 90
+MERCHANT_NOISE = re.compile(r"财付通|支付宝|微信|快捷|支付|有限公司|有限|公司|科技|网络|旅行网|网|[-－·()\s]")
+TX_COLS = (("refund_of", "INTEGER"), ("count_day", "TEXT"))
+
+
 def ensure(db):
     db.conn.executescript(SCHEMA)
+    have = {r[1] for r in db.conn.execute("PRAGMA table_info(transactions)")}
+    for col, decl in TX_COLS:
+        if col not in have:
+            db.conn.execute(f"ALTER TABLE transactions ADD COLUMN {col} {decl}")
     if id(db) not in _FIXED:  # 之前按北京日期记的，改成本地日期（只在每个进程第一次用时检查一遍）
         _FIXED.add(id(db))
         rows = db.conn.execute("SELECT id, at, day FROM transactions").fetchall()
@@ -69,12 +80,75 @@ def london_day(at: datetime) -> date:
         return at.date()
 
 
+APPLE = "applepay"  # Apple Pay 快捷指令记的（卡名认不出是哪家银行的那种）；认出是 Revolut 的记成 revolut，没有别的来源会重
+
+
+def _same_pay(db, sources_sql: str, day: date, amount: float, currency: str, args=()) -> list:
+    """同一笔：金额、币种一样，日子相差不超过 1 天（银行邮件按北京时间、Monzo 晚入账，日子会差一天）。"""
+    return [r[0] for r in db.conn.execute(
+        f"SELECT id FROM transactions WHERE {sources_sql} AND ABS(amount - ?) < 0.005 AND currency = ? AND amount != 0 "
+        "AND day BETWEEN ? AND ?", (*args, amount, currency, (day - timedelta(days=1)).isoformat(), (day + timedelta(days=1)).isoformat()))]
+
+
+def _merchant_key(m: str) -> str:
+    return MERCHANT_NOISE.sub("", m or "")
+
+
+def _same_merchant(a: str, b: str) -> bool:
+    """商户名对得上：去掉“财付通、支付、有限公司”这些以后，一个里有另一个的任意两个连着的字（“程支付-携程旅行网”对“携程”）。"""
+    ka, kb = _merchant_key(a), _merchant_key(b)
+    if not ka or not kb:
+        return False
+    short, long_ = (ka, kb) if len(ka) <= len(kb) else (kb, ka)
+    return short in long_ or any(short[i:i + 2] in long_ for i in range(len(short) - 1))
+
+
+def match_refund(db, tid: int) -> int:
+    """给一笔退款找原消费：同币种、90 天内、商户对得上、金额不小于退款（扣了退订费的部分退款也认）、还没被别的退款冲完；
+    对上了写 refund_of 和 count_day（原消费那天），返回原消费编号；对不上返回 None（这笔不算进任何一天的花销）。"""
+    r = db.conn.execute("SELECT * FROM transactions WHERE id = ?", (int(tid),)).fetchone()
+    if r is None or r["category"] != "refund" or r["amount"] <= 0:
+        return None
+    start = (date.fromisoformat(r["day"]) - timedelta(days=REFUND_DAYS)).isoformat()
+    best = None
+    for c in db.conn.execute("SELECT * FROM transactions WHERE amount < 0 AND currency = ? AND day >= ? AND day <= ? "
+                             "AND COALESCE(category, '') NOT IN ('transfers', 'savings', 'unparsed', 'ignored') ORDER BY day DESC, id DESC",
+                             (r["currency"], start, r["day"])):
+        if not _same_merchant(r["merchant"] or r["raw"] or "", c["merchant"] or ""):
+            continue
+        used = db.conn.execute("SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE refund_of = ? AND id != ?", (c["id"], r["id"])).fetchone()[0]
+        left = -c["amount"] - used
+        if left + 0.005 < r["amount"]:
+            continue
+        if best is None or abs(left - r["amount"]) < abs(best[1] - r["amount"]):  # 金额最接近的那笔
+            best = (c, left)
+    if best is None:
+        db.conn.execute("UPDATE transactions SET refund_of = NULL, count_day = NULL WHERE id = ?", (r["id"],))
+        return None
+    db.conn.execute("UPDATE transactions SET refund_of = ?, count_day = ? WHERE id = ?", (best[0]["id"], best[0]["day"], r["id"]))
+    return best[0]["id"]
+
+
 def add(db, source, at: datetime, amount: float, currency: str, merchant=None, category=None, raw=None, ext_id=None) -> bool:
     ensure(db)
+    if category == "refund" and amount > 0 and db.conn.execute(  # 同一笔退款在动账通知和商家邮件里各来一次（11-07 携程 ¥933）：只记一次
+            "SELECT 1 FROM transactions WHERE category = 'refund' AND day = ? AND ABS(amount - ?) < 0.005 AND currency = ?",
+            (london_day(at).isoformat(), amount, currency)).fetchone():
+        return False
+    if source not in (APPLE, "revolut") and amount:
+        # 邮件 / Monzo / 账单记到的那笔以它为准：Apple Pay 先记了的同一笔删掉
+        for tid in _same_pay(db, "source = ?", london_day(at), amount, currency, (APPLE,)):
+            db.conn.execute("DELETE FROM transactions WHERE id = ?", (tid,))
     cur = db.conn.execute("INSERT OR IGNORE INTO transactions (source, ext_id, at, day, amount, currency, merchant, category, raw) "
                           "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                           (source, ext_id, at.isoformat(timespec="seconds"), london_day(at).isoformat(), amount, currency,
                            (merchant or "")[:80] or None, category, (raw or "")[:500] or None))
+    if cur.rowcount > 0 and category == "refund" and amount > 0:
+        match_refund(db, cur.lastrowid)
+    elif cur.rowcount > 0 and amount < 0:  # 原消费比退款晚记进来（补导账单）：90 天内对不上的退款再找一次
+        for r in db.conn.execute("SELECT id FROM transactions WHERE category = 'refund' AND refund_of IS NULL AND currency = ? AND day >= ?",
+                                 (currency, london_day(at).isoformat())).fetchall():
+            match_refund(db, r["id"])
     db.conn.commit()
     return cur.rowcount > 0
 
@@ -131,6 +205,11 @@ def record_cmb(db, text: str, now: datetime = None, sender: str = "") -> dict:
         return {"ok": True, "parsed": False, "bank": source}
     category = ("refund" if REFUND.search(text) else
                 "transfers" if TRANSFER.search(text) else None)  # 退款冲减花销；储蓄卡还信用卡、转给自己不算花销，免得算两遍
+    ensure(db)
+    # 同一笔在两封通知里都出现（招行把两条变动合成一封又单发一封，11-03 的境外汇款手续费记了两次）：同一时间同一金额只记一次
+    if db.conn.execute("SELECT 1 FROM transactions WHERE source = ? AND at = ? AND ABS(amount - ?) < 0.005 AND currency = 'CNY'",
+                       (source, got["at"].isoformat(timespec="seconds"), got["amount"])).fetchone():
+        return {"ok": True, "parsed": True, "amount": got["amount"], "merchant": got["merchant"], "bank": source, "dup": True}
     add(db, source, got["at"], got["amount"], "CNY", merchant=got["merchant"], category=category, raw=text, ext_id=ext)
     return {"ok": True, "parsed": True, "amount": got["amount"], "merchant": got["merchant"], "bank": source}
 
@@ -290,6 +369,59 @@ def sync_monzo(db, data: Path, opener=urllib.request.urlopen) -> int:
     return added
 
 
+# ---------- Apple Pay 每刷一次记一笔（Revolut 没有个人接口，最近的花销没记进来）----------
+# iPhone 快捷指令自动化“钱包 → 交易”：每次用 Apple Pay 付款就把 卡、商户、金额 POST 到 /cloud/spend（{"kind": "applepay", ...}）。
+# Monzo 卡有官方同步、招行卡有邮件，这两种这里不记，免得算两遍；其余（Revolut 等）按卡名记来源。
+SYMBOLS = {"£": "GBP", "￡": "GBP", "¥": "CNY", "￥": "CNY", "€": "EUR", "$": "USD", "US$": "USD", "HK$": "HKD"}
+CODES = ("GBP", "CNY", "RMB", "EUR", "USD", "HKD", "JPY", "CHF", "SEK", "NOK", "DKK", "ISK")
+COVERED = (("monzo", "Monzo 有官方同步"), ("招商", "招行有邮件通知"), ("招行", "招行有邮件通知"), ("cmb", "招行有邮件通知"),
+           ("china merchants", "招行有邮件通知"))
+
+
+def parse_money(text: str, currency: str = "") -> tuple:
+    """“£12.30” / “12,30 €” / “GBP 12.30” / “12.3” → (12.3, "GBP")；认不出抛 ValueError。没写币种按英镑（默认币种）。"""
+    t = str(text or "").strip()
+    m = re.search(r"-?\d[\d,.\s]*", t)
+    if not m:
+        raise ValueError("没有金额")
+    num = m.group(0).replace(" ", "")
+    if re.search(r",\d{2}$", num) and "." not in num:  # 欧洲写法 12,30
+        num = num.replace(",", ".")
+    value = abs(float(num.replace(",", "")))
+    cur = str(currency or "").strip().upper()
+    if not cur:
+        cur = next((v for k, v in sorted(SYMBOLS.items(), key=lambda x: -len(x[0])) if k in t), "")
+    if not cur:
+        cur = next((c for c in CODES if c in t.upper()), "GBP")
+    return value, "CNY" if cur == "RMB" else cur
+
+
+def record_applepay(db, data: dict, now: datetime = None) -> dict:
+    """Apple Pay 付了一笔：{card, merchant, amount, currency?}。花出去记负数；同一张卡、同一商户、同一金额、同一分钟只记一次。"""
+    now = now or _now()
+    card = " ".join(str(data.get("card") or "").split())[:60]
+    merchant = " ".join(str(data.get("merchant") or "").split())[:80] or None
+    low = card.lower()
+    skip = next((why for k, why in COVERED if k in low), None)
+    if skip:
+        return {"ok": True, "skipped": True, "why": f"{card}：{skip}，这里不重复记"}
+    try:
+        value, cur = parse_money(data.get("amount"), data.get("currency") or "")
+    except (ValueError, TypeError):
+        add(db, "applepay", now, 0, "GBP", merchant=merchant, category="unparsed", raw=json.dumps(data, ensure_ascii=False)[:500],
+            ext_id="ap:" + hashlib.sha1(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:20])
+        return {"ok": True, "parsed": False}
+    source = "revolut" if "revolut" in low else APPLE
+    if source == APPLE:
+        ensure(db)
+        if _same_pay(db, "source NOT IN (?, ?)", london_day(now), -value, cur, (APPLE, "revolut")):
+            return {"ok": True, "parsed": True, "amount": -value, "currency": cur, "merchant": merchant, "source": source, "dup": True,
+                    "why": "邮件或 Monzo 已经记了这一笔"}
+    ext = "ap:" + hashlib.sha1(f"{low}|{merchant}|{value}|{cur}|{now:%Y-%m-%dT%H:%M}".encode()).hexdigest()[:20]
+    new = add(db, source, now, -value, cur, merchant=merchant, raw=f"Apple Pay {card} {merchant or ''} {data.get('amount')}", ext_id=ext)
+    return {"ok": True, "parsed": True, "amount": -value, "currency": cur, "merchant": merchant, "source": source, "dup": not new}
+
+
 # ---------- 她转发或截图给 小伴 的消费通知（招行信用卡只有微信通知，快捷指令读不到） ----------
 MARK = re.compile(r"\[记账\s+(-?[\d,.]+)\s*(CNY|GBP|人民币|英镑|元|£|¥)?\s*([^\]]*)\]")
 PROMPT = ("她转发或截图银行、微信的消费通知给你时（比如招行信用卡的微信通知），在回复末尾加 [记账 金额 币种 商户 银行]，"
@@ -380,10 +512,12 @@ def spend_between(db, start: date, day: date) -> dict:
     ensure(db)
     start = start.isoformat()
     out = {}
-    for r in db.conn.execute("SELECT currency, -SUM(amount) s FROM transactions WHERE day >= ? AND day <= ? "
-                             "AND (amount < 0 OR category = 'refund') "
+    # 消费按它那天算；退款只在对上原消费时算，算在原消费那天（count_day）；对不上的退款、收入都不算
+    end = day.isoformat()
+    for r in db.conn.execute("SELECT currency, -SUM(amount) s FROM transactions WHERE "
+                             "((amount < 0 AND day >= ? AND day <= ?) OR (category = 'refund' AND refund_of IS NOT NULL AND count_day >= ? AND count_day <= ?)) "
                              "AND COALESCE(category, '') NOT IN ('transfers', 'savings', 'unparsed', 'ignored') GROUP BY currency",
-                             (start, day.isoformat())):
+                             (start, end, start, end)):
         out[r["currency"]] = round(r["s"], 2)
     return out
 
@@ -392,7 +526,8 @@ def recent(db, limit: int = 20) -> list:
     """最近几笔，给财务页看（她要能看到每一笔）。"""
     ensure(db)
     return [dict(r) for r in db.conn.execute(
-        "SELECT id, day, at, source, amount, currency, merchant, category FROM transactions ORDER BY at DESC, id DESC LIMIT ?", (limit,))]
+        "SELECT t.id, t.day, t.at, t.source, t.amount, t.currency, t.merchant, t.category, t.refund_of, t.count_day, "
+        "(SELECT o.merchant FROM transactions o WHERE o.id = t.refund_of) refund_merchant FROM transactions t ORDER BY t.at DESC, t.id DESC LIMIT ?", (limit,))]
 
 
 def ignore(db, tid: int, on: bool = True):

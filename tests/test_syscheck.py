@@ -16,6 +16,30 @@ from ethan.memory import MemoryStore
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ROOT / "deploy" / "systemd"
 NOW = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)  # 周三，本地 12:00
+class AgentBoxBackupTest(unittest.TestCase):
+    """Agent-Box 每晚备份进体检（Agent-Box 仓库 docs/mia/design.md 第 3 节）。"""
+
+    def write(self, base, name, kind, t):
+        (base / name).mkdir(parents=True, exist_ok=True)
+        (base / name / "status.json").write_text(json.dumps({kind: {"time": t, "bytes": 10}}))
+
+    def test_fresh_stale_missing_and_not_installed(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d) / "data"
+            data.mkdir()
+            base = Path(d) / "agent-box-backup"  # 在数据目录旁边
+            self.assertEqual(syscheck.backup_info(data, NOW), [])  # 这台机器没有备份仓库：不报
+            (base / ".git").mkdir(parents=True)
+            self.write(base, "seoul", "db", "2026-11-03T03:20:00Z")   # 33 小时前：好
+            self.write(base, "la", "homes", "2026-11-02T04:10:00Z")   # 56 小时前：连续两晚没备上
+            self.write(base, "mac", "homes", "2026-11-02T12:30:00Z")  # 48 小时：Mac 放宽到 3 天，还算好
+            got = {b["name"]: b["ok"] for b in syscheck.backup_info(data, NOW)}
+            self.assertEqual(got, {"seoul": True, "la": False, "mac": True})
+            (base / "mac" / "status.json").unlink()
+            self.assertFalse({b["name"]: b for b in syscheck.backup_info(data, NOW)}["mac"]["ok"])
+            whats = [p for p in syscheck.problems(data, None, NOW, meminfo=Path("/nonexistent")) if p["what"] == "Agent-Box 备份"]
+            self.assertEqual(len(whats), 2)
+            self.assertIn("la", whats[0]["detail"] + whats[1]["detail"])
 
 
 class TimersRegisteredTest(unittest.TestCase):
@@ -176,6 +200,28 @@ class SyscheckTest(unittest.TestCase):
             self.assertIn(k, out)
 
 
+class WeekendFeedTest(unittest.TestCase):
+    def test_sent_read_from_nudge_log(self):
+        """11-07 体检误报“这周五过了还没发”：发送记在 nudge_sent（weekend:周五），weekend_recs.sent_at 没人写。"""
+        import tempfile
+        from datetime import datetime, timezone
+        from pathlib import Path
+        from ethan import nudges, weekend
+        from ethan.memory import MemoryStore
+        with tempfile.TemporaryDirectory() as d:
+            store = MemoryStore(Path(d))
+            try:
+                weekend.ensure(store.db)
+                store.db.conn.execute("INSERT INTO weekend_recs (week, asked_at, got_at) VALUES ('2026-11-06', '2026-11-05T09:00:00+00:00', '2026-11-05T09:01:00+00:00')")
+                now = datetime(2026, 11, 7, 20, 0, tzinfo=timezone.utc)
+                bad = lambda: next(f for f in syscheck.feeds(store.db, now) if "周末" in f["name"])
+                self.assertFalse(bad()["ok"])
+                nudges.log_sent(store.db, "weekend:2026-11-06", datetime(2026, 11, 6, 12, 32, tzinfo=timezone.utc))
+                self.assertTrue(bad()["ok"])
+            finally:
+                store.close()
+
+
 class AutodeployHeartbeatTest(unittest.TestCase):
     def test_heartbeat_and_failed_test_names(self):
         from tests.test_autodeploy import FakeServer
@@ -184,7 +230,7 @@ class AutodeployHeartbeatTest(unittest.TestCase):
             orig = server.__call__
 
             def run(cmd, cwd=None):
-                if "unittest" in cmd:
+                if "ethan.testrun" in cmd:
                     raise autodeploy.StepFailed("FAILED (failures=1)", "FAIL: test_b (tests.test_mepage.MeTest.test_b)\nERROR: test_c (tests.test_jobs.JobsTest.test_c)\nFAILED")
                 return orig(cmd, cwd)
             rec = autodeploy.Deployer(Path("/repo"), Path(d), run=run, sleep=lambda s: None).once()

@@ -21,7 +21,7 @@ CREATE INDEX IF NOT EXISTS manual_locks_obj ON manual_locks (obj, field);"""
 ACTION_LOCKS = {
     "task.rename": ("task", "title", "long"), "task.postpone": ("task", "due", "long"), "task.star": ("task", "star", "long"),
     "task.domain": ("task", "domain", "long"), "task.delete": ("task", "deleted", "long"), "task.move": ("task", "goal", "long"),
-    "task.milestone": ("task", "milestone", "long"), "goal.set": ("goal", "settings", "long"),
+    "task.milestone": ("task", "milestone", "long"), "task.size": ("task", "size", "long"), "goal.set": ("goal", "settings", "long"),
     "milestone.set": ("milestone", "settings", "long"), "stage.set": ("task", "cadence", "long"),
     "event.time": ("event", "time", "day"), "event.delete": ("event", "deleted", "day"), "event.add": ("event", "added", "day"),
     "today.order": ("today", "order", "day"), "diary.save": ("diary", "body", "long"),

@@ -16,7 +16,7 @@ STATES = {
     # 收件台三张表的 desk_state（ethan/desk.py 的 DESK_STATES；“等你处理”的判断在 desk.state_of，11-06）
     "mail_desk": {"open", "todo", "drafting", "draft", "sending", "sent", "ignored", "closed"},
     "visitor_desk": {"open", "todo", "handed", "draft", "sending", "sent", "ignored"},
-    "outbox_desk": {"draft", "drafting", "sent"},
+    "outbox_desk": {"draft", "drafting", "sending", "sent", "ignored"},  # sending：发之前先占住（Codex 评审 11-07 第 7 条）  # ignored：收件台里她点“不发了”（desk.ignore 允许 out，11-06 巡检补）
 }
 
 

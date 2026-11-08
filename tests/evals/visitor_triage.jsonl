@@ -3,6 +3,6 @@
 {"id": "friend", "input": {"name": "小林", "intent": "约聊", "message": "哈哈是我小林！看到你主页了，这周末约饭？"}, "expect": {"tier": "reply"}, "note": "虚构示例"}
 {"id": "praise", "input": {"name": "匿名", "intent": "其他", "message": "主页好好看！设计太棒了"}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
 {"id": "vague", "input": {"name": "Tom", "intent": "约聊", "message": "Hi, would love to connect sometime."}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
-{"id": "question", "input": {"name": "Amy", "intent": "其他", "message": "请问你用的是什么模型做的主页助手？"}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
+{"id": "question", "input": {"name": "Amy", "intent": "其他", "message": "请问你用的是什么模型做的Days？"}, "expect": {"tier": "fyi"}, "note": "虚构示例"}
 {"id": "spam", "input": {"name": "SEO Pro", "intent": "合作", "message": "We can boost your website to #1 on Google! Cheap price, click here"}, "expect": {"tier": "junk"}, "note": "虚构示例"}
 {"id": "gibberish", "input": {"name": "asdf", "intent": "其他", "message": "asdfasdf qwer 1234"}, "expect": {"tier": "junk"}, "note": "虚构示例"}

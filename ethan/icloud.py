@@ -131,6 +131,12 @@ def parse_events(ics: str) -> list:
     return [(e["start"], e["end"], e["title"]) for e in parse_vevents(ics)]
 
 
+# 登录被拒（401）后这么久不再试（改了 Apple ID 密码，专用密码全作废，工作台每隔几分钟撞一次，一天一千多次，
+# 换了新密码也被苹果临时拦着登不上）。同一组账号密码在这个进程里共用；换了密码（auth 变了）马上能试。
+DENIED_WAIT = 30 * 60
+_DENIED = {}
+
+
 class ICloudCalendar:
     def __init__(self, username: str, password: str, root: str = ROOT, opener=urllib.request.urlopen):
         token = base64.b64encode(f"{username}:{password}".encode()).decode()
@@ -141,6 +147,10 @@ class ICloudCalendar:
 
     # 底层请求
     def request(self, method: str, url: str, body: bytes = None, depth: str = None, ctype="application/xml") -> tuple:
+        import time
+        wait = _DENIED.get(self.auth, 0) - time.time()
+        if wait > 0:  # 刚被拒过：先不去撞，苹果会因为失败太多临时拦住这个账号
+            raise CalendarError(f"登录被拒，{int(wait // 60) + 1} 分钟后再试")
         headers = {"Authorization": self.auth, "Content-Type": f"{ctype}; charset=utf-8"}
         if depth is not None:
             headers["Depth"] = depth
@@ -151,6 +161,8 @@ class ICloudCalendar:
         except urllib.error.HTTPError as e:
             if e.code == 404 and method == "DELETE":
                 return 404, ""
+            if e.code == 401:
+                _DENIED[self.auth] = time.time() + DENIED_WAIT
             raise CalendarError(f"{method} {urllib.parse.urlparse(url).path} 失败：HTTP {e.code}") from e
 
     def _href(self, xml: str, prop: str) -> str:

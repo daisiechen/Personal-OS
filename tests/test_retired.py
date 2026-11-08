@@ -21,11 +21,12 @@ class RetiredTest(unittest.TestCase):
         self.assertNotIn(">第二大脑<", APP)
 
     def test_me_page_old_blocks_gone(self):  # 11-04 “我”页旧版块下线：大号对齐率和周柱子撤掉，使用者和纠错单挪进第二层
-        page = APP[APP.index("function mePage()"):APP.index("function meUsersSheet()")]
+        page = APP[APP.index("function mePage()"):APP.index("function meUsersPanel()")]
         self.assertNotIn("mehero", APP)
-        self.assertNotIn("meusers", page)
-        self.assertNotIn("meticket", page)
-        self.assertIn('data-k="me-users"', page)
+        # 谁在用和纠错不要收进弹窗，直接一张卡片放在页面里
+        self.assertNotIn('data-k="me-users"', APP)
+        self.assertNotIn('S.overlay === "me-users"', APP)
+        self.assertIn("${meUsersPanel()}", page)
 
     def test_weekly_social_from_relations(self):  # 11-04 周报的“社交”改从人物卡三张清单取（ethan/relations.py），不再用旧的 people_to_contact
         src = (ROOT / "ethan/report.py").read_text(encoding="utf-8")
@@ -53,19 +54,92 @@ class RetiredTest(unittest.TestCase):
         self.assertTrue(DECIDED.search("查英语陪练的渠道（线上或线下）"))
         self.assertFalse(DECIDED.search("英语陪练（Grok）"))
 
-    def test_wasteland_entry_on_season_map(self):  # 11-02 赛季页改版丢了荒原入口，红点没去处；11-05 第二版荒原是分数柱最右边那根虚线柱
-        board = APP[APP.index("function seasonBoard("):APP.index("function seasonRoute(")]
-        self.assertIn('data-k="waste"', board)
+    def test_wasteland_entry_on_season_map(self):  # 11-02 赛季页改版丢了荒原入口，红点没去处；11-06 改成“七块领地”旁的“待归属”按钮
+        board = APP[APP.index("function seasonBoard("):APP.index("function reviewsPage(")]
+        self.assertIn("<h3>七个领域</h3>", board)  # 11-06 晚她：是七个领域，不是七块领地
+        self.assertIn('<span class="u-mlauto">${pendBtn(z.waste)}</span>', board)  # 待归属放到这一行最右边
+        self.assertIn('data-k="waste"', APP[APP.index("const pendBtn = "):APP.index("const mapImg = ")])
+
+    def test_waste_not_an_eighth_territory(self):
+        """        替代清单见 docs/design/territories.md“待归属”：赛季页分数柱第八根“荒原”柱、大地图上的“荒原”标签撤掉；给她看的“荒原”改叫“待归属”。"""
+        board = APP[APP.index("function seasonBoard("):APP.index("function reviewsPage(")]
+        self.assertNotIn("const waste = ", board)
+        self.assertNotIn("${waste}", board)
+        self.assertNotIn("mtag waste", APP)
+        self.assertNotIn("MAPPOS.waste", APP)
+        self.assertNotIn(".mtag.waste", (ROOT / "ethan/workbench/static/app.css").read_text(encoding="utf-8"))
+        self.assertIn('class="rbadge"', APP[APP.index("const pendBtn = "):APP.index("const mapImg = ")])  # 有就带红点
+        code = re.sub(r"/\*.*?\*/", "", re.sub(r"(?m)^\s*//.*$|\s//\s.*$", "", APP), flags=re.S)
+        self.assertNotIn("荒原", code, "给她看的字里不再叫荒原（代码名 waste 不改）")
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        self.assertNotIn('"荒原"', api)
+
+    def test_boss_bar_says_what_it_counts(self):
+        """替代清单见 docs/design/territories.md“副本进度条”：
+        以前首页、领域页、周回顾、副本详情各画一根 b.frac 进度条，没依据也画一根空条，按什么算各处不一样（api.bosses 里步骤、里程碑先后打架）。"""
+        self.assertNotIn("b.frac || 0", APP)
+        self.assertEqual(APP.count("${bossBar("), 4)  # 首页、领域页、周回顾、副本详情
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        self.assertNotIn('frac = round(sum(s["done"] for s in steps) / len(steps), 2)', api)
+        self.assertNotIn("{round(100 * (b['frac'] or 0))}%", api)
+        self.assertIn("stages.boss_progress(", api)
+
+    def test_domain_page_one_skeleton(self):
+        """以前左列是 分数 → 指标图 → 健康线 → 各页自己的图，
+        有指标图的页健康线在图下，没有的在图上。现在只有 domainPage 一个骨架（DOMAIN_ORDER），各领域的图在 DOMAIN_CHARTS。"""
+        self.assertNotRegex(APP, r"\$\{scorePanel\(t\.score[^}]*\)\}\$\{\(t\.charts \|\| \[\]\)\.map\(metricChart\)")
+        self.assertNotIn("const extra = t.key ===", APP)
+        stats = (ROOT / "ethan/domain_stats.py").read_text(encoding="utf-8")
+        for old in ('"每周训练"', '"每周 0 点前睡"', '"每周认知拓展"', '"每周英语陪练"'):  # 不要这几张图
+            self.assertNotIn(old, stats, old)
 
     def test_season_page_v2_replaced_map_and_cards(self):  # 11-05 赛季页第二版（样稿 A + C 的分数柱）：地图关系线、两张大卡、21 天小日历、领域行撤掉
-        page = APP[APP.index("function mapPage()"):APP.index("function seasonPass(")]
+        page = APP[APP.index("function mapPage()"):APP.index("function seasonVerdict(")]
         for old in ("smap", "fcard", "srccard", "srow", "mcal", "ledger", "nextbox"):
             self.assertNotIn(old, page, old)
             self.assertNotIn(f".{old}", (ROOT / "ethan/workbench/static/app.css").read_text(encoding="utf-8"), old)
-        for new in ("seasonPass(z)", "seasonVerdict(z)", "seasonBoard(z)", "seasonRoute(z.route)"):
+        for new in ("seasonVerdict(z)", "seasonBoard(z)"):
             self.assertIn(new, page)
         from ethan import season
         self.assertFalse(hasattr(season, "calendar"))
+
+    def test_season_pass_card_gone(self):
+        css = (ROOT / "ethan/workbench/static/app.css").read_text(encoding="utf-8")
+        for old in ("seasonPass", "赛季通行证", 'class="spass"', "passtop", "railfoot", "nexts"):
+            self.assertNotIn(old, APP, old)
+        for old in (".spass", ".passtop", ".lvinfo", ".expbar", ".expmeta", ".tracklabel", ".railfoot", ".nexts", ".nx ", ".clock ", ".rail "):
+            self.assertNotIn(old, css, old)
+        from ethan import season
+        self.assertFalse(hasattr(season, "season_pass"))
+        self.assertIn("seasonVerdict(z) + seasonBoard(z)", APP)  # 总评 + 建议、分数柱留着
+
+    def test_season_route_card_gone(self):
+        css = (ROOT / "ethan/workbench/static/app.css").read_text(encoding="utf-8")
+        page = APP[APP.index("function mapPage()"):APP.index("function reviewsPage(")]
+        for old in ("seasonRoute", 'class="quest"', 'class="route"', "主副本关卡", "z.route"):
+            self.assertNotIn(old, APP if old == "seasonRoute" else page, old)
+        for old in (".quest ", ".qhead", ".route", ".stage", ".tpips", ".sayrow", ".says "):
+            self.assertNotIn(old, css, old)
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        self.assertNotIn("def main_route", api)
+        self.assertIn("sdgo", page)  # 每块领地“接下来怎么调”
+        self.assertIn("z.conclusion", page)  # 结论
+
+    def test_life_page_duplicates_gone(self):
+        ds = (ROOT / "ethan/domain_stats.py").read_text(encoding="utf-8")
+        self.assertNotIn('_chart("每周新体验"', ds)
+        self.assertIn('_chart("每周出门天数"', ds)
+        page = APP[APP.index("function territoryPage()"):APP.index("function reviewPage()")]
+        self.assertNotIn("t.merged", page)  # 11-06 晚她说没让合并：七个领域都单画“健康线 · 本周”
+        # 探索地图在副本和资料中间：11-06 晚并进统一骨架（DOMAIN_ORDER 里 bosses → explore → brain，tests/test_ui_rules.py 守着顺序）
+        self.assertIn("还没有探索地图，点“编辑”加地方", page)  # 没上传过表格时的提示
+        self.assertNotIn('t.key === "life" && ex ?', page)  # 旧的探索地图位置（左栏最下面）
+
+    def test_waste_counted_in_one_place(self):
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        self.assertNotIn('["territory"] is None', api)
+        self.assertNotIn('if not t["territory"])', api)
+        self.assertGreaterEqual(api.count('taskrules.rows(self.db, "waste", day)'), 4)  # 红点、地图、赛季页、荒原页
 
     def test_daily_cold_start_rotation_off(self):  # 11-02 冷启动挪进 M2 阶段任务，旧的每日轮换关掉
         src = (ROOT / "ethan/domains.py").read_text(encoding="utf-8")
@@ -136,6 +210,32 @@ class RetiredTest(unittest.TestCase):
         self.assertNotIn("director_failed", src)  # 导演失败不再退回随机拼图出卡
         self.assertNotIn("def redirect(", src)
 
+    def test_card_material_only_yesterday(self):  # 11-06 晚（diary.md“昨日卡：素材只按昨天取”）
+        src = (ROOT / "ethan/cards.py").read_text(encoding="utf-8")
+        for old in ("她今天的安排", "今天是训练日", "def _today_source(", "latest_plan(day.isoformat())", "今天练{focus}", "训练日出门"):
+            self.assertNotIn(old, src, old)
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        card = api[api.index("    def card(self, day: date):"):api.index("    def training_today(")]
+        self.assertNotIn("latest_plan(day.isoformat())", card)  # 卡上那句不再按今天的计划改
+        for f in ("ethan/planner.py", "ethan/catchup.py"):  # 出卡不再把今天的计划交进去
+            text = (ROOT / f).read_text(encoding="utf-8")
+            self.assertIsNone(__import__("re").search(r"make(_card)?\([^)]*latest_plan\(today", text), f)
+
+    def test_card_refs_her_photos_first(self):  # 11-06 晚（avatar.md“她的形象参考照”）
+        src = (ROOT / "ethan/cards.py").read_text(encoding="utf-8")
+        self.assertNotIn('refs = [av / "avatar-day.jpg", av / "avatar-night.jpg"] + sorted((av / "refs").glob("*"))[:3]', src)
+        app = (ROOT / "ethan/workbench/static/app.js").read_text(encoding="utf-8")
+        self.assertNotIn('const imgUrl = (u) => S.token ? u + "?s="', app)  # 卡图地址自带 ?v=，不能再拼第二个问号
+
+    def test_selfie_ref_is_automatic(self):  # 11-06 晚（avatar.md“她的形象参考照”）
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        app = (ROOT / "ethan/workbench/static/app.js").read_text(encoding="utf-8")
+        for text in (api, app):
+            self.assertNotIn("只用她点过的", text)
+            self.assertNotIn("不擅自用所有照片", text)
+        self.assertNotIn('.glob(f"her-{got[1][:16]}.*")', api)  # 是不是参考统一走 cards.ref_state（手动和自动都算）
+        self.assertIn("本人照", (ROOT / "ethan/files.py").read_text(encoding="utf-8"))  # 看图那一步顺带判断
+
     def test_scattered_task_rules_gone(self):
         """11-06 任务规矩统一（ethan/taskrules.py，tasks-and-schedule.md 第 8 节替代清单）：各处自己写的判断不再出现。"""
         src = lambda f: (ROOT / "ethan" / f).read_text(encoding="utf-8")
@@ -167,8 +267,7 @@ class RetiredTest(unittest.TestCase):
     def test_scattered_desk_rules_gone(self):
         """11-06 邮件和留言“等你处理”统一成 desk.state_of（docs/design/mail-desk.md 替代清单，决定 6）。"""
         src = lambda f: (ROOT / "ethan" / f).read_text(encoding="utf-8")
-        self.assertNotIn('["open", "draft"].includes(x.state)', APP)
-        self.assertNotIn("date('now')", src("desk.py"))
+        # app.js 的 ["open", "draft"].includes 在 tests/test_desk_rules.py、desk.py 的 date('now') 在 tests/test_time_guard.py 查
         self.assertNotIn('x["state"] in ("open", "draft")', src("desk.py") + src("invariants.py"))
         self.assertNotIn("IN ('open', 'draft', 'drafting', 'todo')", src("mail.py"))
         self.assertNotIn("NOT IN ('sent', 'ignored')", src("publicsite.py"))
@@ -218,11 +317,53 @@ class RetiredTest(unittest.TestCase):
                 self.assertNotIn("source IN ('her'", text, path)
         for path in ("ethan/diary.py", "ethan/season.py", "ethan/catchup.py"):  # 复制的“mtime 900 秒”锁文件 → bgwork.kick 的锁
             self.assertNotIn("st_mtime <", files[path], path)
-        self.assertNotIn("date('now')", files["ethan/desk.py"])  # 邮件台“今天发的”按她的时区
         self.assertNotIn("17 * _k", files["ethan/attributes.py"])  # 领域标准两套数字 → ethan/standards.py
         self.assertNotIn('("训练", "训练", 5, 4)', files["ethan/territory.py"])
         self.assertNotIn("04:00 以后", files["ethan/onto_query.py"])  # 决定 9：作息按 5 点分天
         self.assertNotIn("class QuotaBlocked(Exception)", files["ethan/bgwork.py"])  # 挪进 router，Router 自己也抛
+
+    def test_cleanup_1106_scattered_ways_gone(self):
+        """上一轮没清完的散落写法不再出现（替代清单见 docs/design/system-rules.md 第 5 节、ui-spec.md“颜色变量”、nudges.md 第 3 节）。"""
+        # “本周一”25 份 → clock.week_start、写死的伦敦 → clock.her_tz：全仓扫描在 tests/test_time_guard.py（同样的正则和白名单）
+        files = {p.relative_to(ROOT).as_posix(): p.read_text(encoding="utf-8") for p in (ROOT / "ethan").rglob("*.py")}
+        self.assertNotIn('ZoneInfo(ethan.router.settings.get("timezone"', files["ethan/proactive.py"])
+        self.assertNotIn("her_last >= at", files["ethan/nudges.py"])  # 首页提示不再因为她回过一句话就收起
+        static = ROOT / "ethan/workbench/static"
+        app, css = (static / "app.js").read_text(encoding="utf-8"), (static / "app.css").read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"#[0-9A-Fa-f]{6}\b", app))  # app.js 里的十六进制颜色 → app.css 的变量和类
+        self.assertNotIn(".ccard.r3, .bigcard .img.r3, .cardthumb.r3", css)  # 卡片稀有度三份 → .rar
+        self.assertNotIn("body.day .shop.t1 {", css)  # 白天覆盖规则 → 主题变量
+        self.assertNotIn("body.day .cardback span { color: #8D7A55 !important; }", css)
+        self.assertNotIn('send("diary.save", { day, text }).then(', app)  # 自己 send + 提示 → save()
+        self.assertNotIn('send("plan.replan", {}).then(', app)
+        self.assertNotIn('send("diary.note"', app)
+
+    def test_effort_size_old_ways_gone(self):  # 11-06 晚她定方案 A + C 的补漏（原话“要”）：按预计工作量定档、效率补漏算的分、首页英语同口径
+        api = (ROOT / "ethan/workbench/api.py").read_text(encoding="utf-8")
+        self.assertNotIn("size = 'S'", api)  # 工作台加的副本步骤不再写死 S
+        self.assertNotIn("（看大小）", APP)
+        self.assertNotIn("· 其他 +20 ·", APP)
+        wa = (ROOT / "ethan/workaholic.py").read_text(encoding="utf-8")
+        self.assertNotIn("p.ref = 'task:' || t.id", wa)  # 效率不再只算 task: 的分
+        self.assertNotIn("WORK_DOMAINS", wa)
+        terr = (ROOT / "ethan/territory.py").read_text(encoding="utf-8")
+        self.assertNotIn("上周同期 {l['efficiency']", terr)  # 效率看本周和最近 4 周平均
+        self.assertIn("workaholic.efficiency", terr)
+        self.assertIn("workaholic.efficiency", (ROOT / "ethan/report.py").read_text(encoding="utf-8"))
+        q = (ROOT / "ethan/quests.py").read_text(encoding="utf-8")
+        self.assertNotIn('"count": week_count(db, h["id"], day)', q)  # 首页周常数走 weekly_count（英语用 practice_days）
+
+
+
+class PageResetTest(unittest.TestCase):
+    def test_every_page_starts_fresh(self):
+        """进任何一页都要初始化再展示（“我”页的星图还停在上次离开时的样子）。切页面、点进领域、从领域返回都先 resetView。"""
+        for act in ('a === "go"', 'a === "terr"', 'a === "terrback"'):
+            body = APP[APP.index(act):APP.index("else if", APP.index(act) + 10)]
+            self.assertIn("resetView()", body, act)
+        keep = APP[APP.index("const KEEP_ACROSS_PAGES"):APP.index("function resetView()")]
+        for k in ("meStar", "meStarDim", "mapTab", "wishOpen", "relCircle", "cardF", "setTab", "me", "terr", "season"):
+            self.assertNotIn(f'"{k}"', keep, k)
 
 
 if __name__ == "__main__":

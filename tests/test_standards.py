@@ -19,7 +19,7 @@ class StandardsTest(unittest.TestCase):
 
     def test_decision_8_numbers(self):
         """松的当保底、严的当目标（数字列在 docs/design/territories.md 给她过目）。"""
-        want = {"training": (4, 5), "protein": (5, 7), "sleep": (5, 7), "outside": (6, 7), "english": (5, 5),
+        want = {"training": (4, 5), "protein": (5, 7), "sleep": (5, 6), "outside": (6, 7), "english": (5, 5),
                 "cognitive": (5, 7), "new_exp": (1, 1), "outing": (1, 1), "new_friend": (3, 4)}
         for k, (floor, target) in want.items():
             s = standards.get(k)
@@ -29,7 +29,8 @@ class StandardsTest(unittest.TestCase):
         d = date(2026, 11, 6)
         self.assertAlmostEqual(standards.full("training", d - timedelta(days=29), d), 5 * 30 / 7)
         self.assertAlmostEqual(standards.full("new_friend", d - timedelta(days=29), d), 4)
-        self.assertEqual(standards.week_label("sleep", "target"), "每天")
+        self.assertEqual(standards.week_label("sleep", "target"), "每周 6 天")  # 从每天改成每周 6 天
+        self.assertEqual(standards.week_label("protein", "target"), "每天")
         self.assertEqual(standards.week_label("training", "floor"), "每周 4 天")
         self.assertEqual(standards.week_label("research"), "每周 2 小时")
 

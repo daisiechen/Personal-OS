@@ -25,6 +25,18 @@ AGENTS = {"claude", "codex", "grok"}  # 交给它们的事不进她的待办（�
 GOAL_LATER = {"paused", "done", "not_started"}  # 这些副本下剩的事按暂停处理（第 5、8 条）
 # 等别人结果的步骤；原来在 workbench/api.py
 WAITING = re.compile(r"[（(]等[^）)]*[）)]|^等|等(结果|通知|回复|审批|审核|出签|消息|对方)")
+# 标题写的是状态、不是要做的事（为什么排进今日任务、分数还这么高）：也算在等
+STATUS_NOTE = re.compile(r"已取消|暂不|先不|定了再|再说|有了再|到时再|之后再")
+# 到那天才发生的事（开会、见面、面试、饭局）：提前几天不进今日任务，只在“其他”里标着日期，当天才列（
+# “我跟 小伴 说，我明天要跟合伙人开会，他为什么要把这个代办放到我今天的日历里呢？”）。要提前做的（准备、约、订、确认）照旧
+APPOINTMENT = re.compile(r"开会|会议|见面|面试|聚餐|饭局|吃饭|约饭|电话会|视频会|meeting|call\b", re.I)
+PREP_WORK = re.compile(r"准备|整理|写|发|约|订|确认|预约|安排|改|查|做|交")
+
+
+def is_appointment(title: str) -> bool:
+    return bool(APPOINTMENT.search(title or "")) and not PREP_WORK.search(title or "")
+
+
 TODAY_ORDER = "CREATE TABLE IF NOT EXISTS today_order (day TEXT NOT NULL, task_id INTEGER NOT NULL, pos INTEGER NOT NULL, PRIMARY KEY (day, task_id))"
 
 # 一件事“现在”的状态，按先后取第一个命中的
@@ -49,11 +61,13 @@ LABEL = {"waiting": "在等", "postponed": "推到明天", "blocked": "等前置
 
 # 每个调用的地方自己的特殊规则：有名字、有原因（tasks-and-schedule.md 第 8 节“规则表”）
 RULES = {
+    "no_territory": "待归属（代码名 waste，原叫荒原）= 领地视图里还没归到领域的那几件；导航红点、赛季页和大地图上“待归属”按钮的数、待归属页都只从这一个视图取（红点说荒原有，点进去又没有；同日改叫待归属，不当第八块领域）",
     "star_override": "她点了 ★ 的照样进今天：暂停副本的、在等的也算（11-06）",
     "hidden_today": "她今天把它移出今日任务（取消 ★）：今天不再进今日任务，别处照列",
     "keep_done_today": "今天做完的留在今日任务底下“已完成”里，第二天才走",
     "plus_soon": "截止在 2 天内的进今天",
     "plus_mail": "邮件、主页留言来的待处理事项进今天",
+    "source_ignored": "来源邮件 / 留言她点了“不用管”：从它来的没做的待办按“她说算了”处理，能在“你说算了的”里恢复",
     "plus_stage": "当前里程碑里今天该做的阶段任务直接进今天，不等早上 6:30 的计划",
     "plus_planned": "早上计划里老结构副本的“下一步”和计划器当天新建的进今天（计划器的“下一步”另外只用来排时间块）",
     "side_only": "“其他”只列不在副本主线里的事；主线在副本详情里看",
@@ -84,6 +98,7 @@ VIEWS = {
     "ethan_ctx":    {"union": ("today", "other"), "states": {"waiting", "postponed", "not_started"},
                      "rules": ("month_window", "label")},
     "territory":    {"states": {"open", "stage_rest", "blocked", "not_started", "postponed", "waiting"}, "rules": ()},
+    "waste":        {"union": ("territory",), "rules": ("no_territory",)},
     "helpscope":    {"states": {"open", "not_started"}, "rules": ("help_window", "help_no_review", "help_no_ops")},
     "planner_in":   {"states": {"open", "stage_rest", "blocked"}, "rules": ("month_window",)},
     "export":       {"states": set(STATES) - {"done", "dropped", "not_mine", "goal_dropped"}, "rules": ("label",)},
@@ -122,7 +137,7 @@ def when(t: dict, day: date) -> str:
         return "overdue"
     if due == d:
         return "today"
-    if due <= (day + timedelta(days=SOON_DAYS)).isoformat():
+    if due <= (day + timedelta(days=SOON_DAYS)).isoformat() and not is_appointment(t.get("title")):
         return "soon"
     if due <= (day + timedelta(days=MONTH_DAYS)).isoformat():
         return "month"
@@ -160,7 +175,7 @@ def state(t: dict, day: date) -> str:
         return "not_started"
     if t.get("postpone_day") == d:
         return "postponed"
-    if WAITING.search(t.get("title") or ""):
+    if WAITING.search(t.get("title") or "") or STATUS_NOTE.search(t.get("title") or ""):
         return "waiting"
     if t.get("milestone_id") and not t.get("due_now"):
         return "stage_rest"
@@ -237,6 +252,9 @@ def _planned(plan) -> set:
             and ((i.get("priority") == "main" and i.get("how") == "下一步") or i.get("task_created"))}
 
 
+DESK_SOURCES = ("email", "visitor")  # 邮件、主页留言记成的待办：首页“邮件和留言”管着，不进荒原等归类
+
+
 def _today(ts: list, day: date, plan, db) -> list:
     planned = _planned(plan)
     out = []
@@ -292,6 +310,8 @@ def rows(db, view: str, day: date = None, plan="auto") -> list:
         today = {t["id"] for t in _today(ts, day, plan, db)}
         return [t for t in ts if t["who"] == "mia" and t["state"] == "open" and t.get("quest") != "main"
                 and _in_month(t) and t["id"] not in today]
+    if view == "waste":  # no_territory；邮件、主页留言来的待办不算（它们在“邮件和留言”里管，邮件和留言的红点为什么会同时在赛季上面出现？）
+        return [t for t in rows(db, "territory", day, plan) if not t["territory"] and t.get("source_type") not in DESK_SOURCES]
     if "union" in spec:
         seen, out = set(), []
         for part in spec["union"]:
@@ -332,6 +352,32 @@ def rows(db, view: str, day: date = None, plan="auto") -> list:
 
 def view_ids(db, view: str, day: date = None, plan="auto") -> list:
     return [t["id"] for t in rows(db, view, day, plan)]
+
+
+def done_that_day(db, day: date) -> list:
+    """那天她做完的（第 29 题“某天她做了什么”，11-06）：一次性的看做完在哪天（那天记了分，或完成时间按她的时区落在那天），
+    反复做的阶段任务看那天记没记一笔。只算她的（小伴 答应的、交给 agent 的不算）。"""
+    from . import stages
+    from .clock import LOCAL
+    d = day.isoformat()
+    paid = {r[0] for r in db.conn.execute("SELECT ref FROM points WHERE day = ? AND ref LIKE 'task:%'", (d,))}
+
+    def local_day(at) -> str:
+        try:
+            t = datetime.fromisoformat(str(at).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return str(at or "")[:10]
+        return (t if t.tzinfo else t.replace(tzinfo=timezone.utc)).astimezone(LOCAL).date().isoformat()
+    out = []
+    for t in facts(db, day):
+        if t["who"] != "mia":
+            continue
+        if t.get("milestone_id") and (t.get("cadence") or "once") != "once":
+            if stages.done_on(db, t, day):
+                out.append(t)
+        elif t["done"] and (f"task:{t['id']}" in paid or local_day(t.get("done_at")) == d):
+            out.append(t)
+    return out
 
 
 def ethan_tasks(db, day: date = None) -> list:
@@ -501,6 +547,18 @@ def drop(db, task_id: int) -> bool:
     return n > 0
 
 
+def drop_from_source(db, refs, task_ids=()) -> int:
+    """来源（邮件 / 主页留言 / 新邮件）被她点了“不用管”：从它来的、还没做的待办都按“她说算了”处理（规则 source_ignored）。
+    refs 是 source_ref 的几种写法，task_ids 是来源上直接记着的待办编号。返回收起了几件。"""
+    ensure(db)
+    refs = sorted({str(x) for x in refs if x})
+    ids = {int(t) for t in task_ids if t}
+    if refs:
+        q = ",".join("?" * len(refs))
+        ids |= {x[0] for x in db.conn.execute(f"SELECT id FROM tasks WHERE done = 0 AND source_ref IN ({q})", refs)}
+    return sum(1 for t in sorted(ids) if drop(db, t))
+
+
 def restore(db, task_id: int) -> bool:
     """“你说算了的”里点恢复：回到没做。"""
     from . import transitions
@@ -544,3 +602,98 @@ def already(db, title: str, user: str = "ethan", goal_id=None, money: bool = Fal
         if any(m in o.replace(",", "") for m in nums for o in list(opened) + done):
             return {"why": "open", "id": None}
     return None
+
+
+# ---------- 定档（方案 A：任务按预计工作量定档，所有建任务的入口都在这里定） ----------
+# 分数见 quests.SIZE_POINTS（S 40 / M 100 / L 200 / XL 400），节点 +300、硬骨头 ×1.5 照旧；每天 / 每周反复做的每次 +10 不看档。
+SIZES = {"S": "一小时内", "M": "半天", "L": "一两天", "XL": "好几天"}
+DEFAULT_SIZE = "S"  # 估不出来先按 S，她在工作台能改
+NO_HINT = "看不出是大活"  # 估不出来时理由的开头
+_QUICK = re.compile(r"^(回复|回一下|预约|约|买|订|打电话|打个电话|电话|发给|发消息|发邮件|问一下|问问|确认|付|缴|交钱|提醒|催|查一下|取|寄|领)")
+_SIZE_WORDS = (  # 先看大的：标题里有就按这一档（以“回复 / 预约 / 买 / 打电话”这类开头的不看，见 _QUICK）
+    ("XL", re.compile(r"上线|搭建|系统|迁移|重构|开发(?!会话)|改版|从零")),
+    ("L", re.compile(r"验收|申请|准备.{0,6}材料|材料|方案|报告|论文|评估|调研|设计")),
+    ("M", re.compile(r"写|研究|对比|比较|读完|填表|填写|准备|规划|整理|面试|学习|练习|复习|梳理")),
+    ("S", re.compile(r"回复|预约|买|打电话|订|付款|缴费|确认|提醒|催|寄|取件|复盘")),
+)
+
+
+def estimate(title: str, context: str = "") -> tuple:
+    """按标题估档，返回 (档, 理由)。context：所属副本 / 里程碑的名字，标题看不出时用来往上提一档到 M。"""
+    title = (title or "").strip()
+    m = _QUICK.match(title)
+    if m:
+        return "S", f"以“{m.group(1)}”开头的小事，{SIZES['S']}"
+    for size, pat in _SIZE_WORDS:
+        m = pat.search(title)
+        if m:
+            return size, f"标题里有“{m.group(0)}”，按{SIZES[size]}"
+    for size, pat in _SIZE_WORDS[:2]:
+        m = pat.search(context or "")
+        if m:
+            return "M", f"所属的「{context[:20]}」是大活（“{m.group(0)}”），这一步先按{SIZES['M']}"
+    return DEFAULT_SIZE, f"{NO_HINT}，先按{SIZES[DEFAULT_SIZE]}"
+
+
+def add(db, title: str, due=None, goal_id=None, promised_by_ethan: bool = False, size: str = None, context: str = "") -> int:
+    """建一件待办，唯一的入口（工作台加任务、副本加步骤、阶段任务、计划器、小伴 的标记、邮件、聊天抽取、帮办……都走这里）：
+    给了档（计划器、小伴 估的、她选的）就用，没给按标题估（estimate），估不出是 S。返回编号。"""
+    from . import tx
+    tid = db.add_task(title, due=due, goal_id=goal_id, promised_by_ethan=promised_by_ethan)
+    db.conn.execute("UPDATE tasks SET size = ? WHERE id = ?", (size if size in SIZES else estimate(title, context)[0], tid))
+    tx.commit(db)
+    return tid
+
+
+def set_size(db, task_id: int, size: str) -> dict:
+    """她在工作台改一件的档（锁由工作台的 act 记成 task:编号 size，补估档这类自动流程以后不动）。返回 {"old", "size", "points"}。"""
+    from . import quests
+    if size not in SIZES:
+        raise ValueError("档只能是 S、M、L、XL")
+    old = _row(db, task_id)
+    db.conn.execute("UPDATE tasks SET size = ? WHERE id = ?", (size, int(task_id)))
+    _size_seen(db, [int(task_id)])
+    db.conn.commit()
+    return {"old": old.get("size"), "size": size, "points": quests.task_points({**old, "size": size})}
+
+
+# 估档清单：补估档的迁移（migrations/20261106_effort_sizes.py）估过的，等她在工作台“日历 · 改计划”里过目
+SIZE_REVIEW = ("CREATE TABLE IF NOT EXISTS size_review (task_id INTEGER PRIMARY KEY, size TEXT NOT NULL, old TEXT, why TEXT, "
+               "at TEXT NOT NULL, seen_at TEXT)")
+
+
+def size_review_add(db, task_id: int, size: str, old, why: str):
+    db.conn.execute(SIZE_REVIEW)
+    db.conn.execute("INSERT OR REPLACE INTO size_review (task_id, size, old, why, at) VALUES (?, ?, ?, ?, ?)",
+                    (int(task_id), size, old, why, _now()))
+
+
+def size_review(db) -> list:
+    """还没过目、还没做完的估档：大的在前。每行带现在的档和分（她改过的显示改后的）。"""
+    from . import quests
+    db.conn.execute(SIZE_REVIEW)
+    order = {k: n for n, k in enumerate(("XL", "L", "M", "S"))}
+    out = []
+    for r in db.conn.execute("SELECT r.why, r.old, t.* FROM size_review r JOIN tasks t ON t.id = r.task_id "
+                             "WHERE r.seen_at IS NULL AND t.done = 0"):
+        t = dict(r)
+        out.append({"id": t["id"], "title": t["title"], "size": t.get("size") or DEFAULT_SIZE, "old": t["old"], "why": t["why"],
+                    "points": quests.task_points(t)})
+    return sorted(out, key=lambda x: (order.get(x["size"], 9), x["id"]))
+
+
+def _size_seen(db, ids=None):
+    db.conn.execute(SIZE_REVIEW)
+    if ids is None:
+        db.conn.execute("UPDATE size_review SET seen_at = ? WHERE seen_at IS NULL", (_now(),))
+    else:
+        for i in ids:
+            db.conn.execute("UPDATE size_review SET seen_at = ? WHERE task_id = ? AND seen_at IS NULL", (_now(), int(i)))
+
+
+def size_review_ok(db) -> int:
+    """她点“都对”：清单收起，档不变。返回收起了几件。"""
+    n = len(size_review(db))
+    _size_seen(db)
+    db.conn.commit()
+    return n

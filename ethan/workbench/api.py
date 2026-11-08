@@ -18,6 +18,7 @@ from .. import achievements, autodone, checkup, finance, jobs, agents, brain, br
 from ..clock import her_now, DEFAULT_TZ
 from ..planner import goal_card
 from ..progress import year_progress
+from .. import clock
 
 MAIN_BOSS = taskrules.MAIN_BOSS  # 本赛季主副本，今日任务优先排它；定义挪到 taskrules
 from ..season import SEASON  # 赛季定义放在 ethan/season.py
@@ -82,6 +83,17 @@ class _OutsideLock:
                     self._lock.acquire()
 
 
+TASK_TEXT = 300  # 团队页列表里每件活的说明只带这么多字，点开再拉全文（团队页一次 240 KB，加载很慢）
+
+
+def _short_task(r) -> dict:
+    d = dict(r)
+    for k in ("spec", "review_note"):
+        if d.get(k) and len(d[k]) > TASK_TEXT:
+            d[k], d["cut"] = d[k][:TASK_TEXT] + "……", True
+    return d
+
+
 class Workbench:
     def __init__(self, store, settings, calendar=None, places=None, background=False, card_runner=None, replan_runner=None):
         """background：苹果日历放到后台线程同步（服务器上开，测试里关）；card_runner()：现画昨日卡，返回是否开始画了。"""
@@ -135,7 +147,7 @@ class Workbench:
         except Exception as e:
             print(f"[workbench] 成就弹窗没算上：{type(e).__name__} {e}", flush=True)
             celebrate = []
-        return {
+        return {"ui_lang": self.settings.get("ui_lang", "zh"),
             "celebrate": celebrate, "badges": self.badges(day),
             "day": day.isoformat(), "weekday": WEEKDAYS[day.weekday()], "time": now.strftime("%H:%M"),
             "night": is_night(now), "weather": card.get("weather") if card else "",
@@ -165,7 +177,7 @@ class Workbench:
             "prep_today": prep.today_order(db),
             # 先放着的：每天第一次打开工作台提醒她看一眼
             "parked_remind": self.parked_remind(day),
-            # 约撞时间、计划撞了、路线排不开：只问一次，她没回就挂在首页一行，能点掉（3，nudges.hints）
+            # 约撞时间、计划撞了、路线排不开：只问一次，事情没了结就挂在首页一行，了结了或点掉才收（3，nudges.hints）
             "hints": self.hints(day),
             "prep_routines": [r["title"] for r in db.conn.execute("SELECT title FROM tasks WHERE done = 0 AND promised_by_ethan = 1 ORDER BY id")
                               if prep.ROUTINE.search(r["title"]) and not prep.is_ops(r["title"])],
@@ -180,7 +192,7 @@ class Workbench:
 
     def hints(self, day: date) -> list:
         try:
-            return nudges.hints(self.db, self.store.raw.recent(80), day)
+            return nudges.hints(self.db, day)
         except Exception as e:
             print(f"[workbench] 首页提示没算上：{type(e).__name__} {e}", flush=True)
             return []
@@ -198,7 +210,9 @@ class Workbench:
 
     def _weekly(self, g: dict, day: date) -> list:
         """周常：达标后还能接着做（超额每次 +20），today 是今天做过没有（点了就撤销今天这次）。"""
-        return [{**h, "today": quests.checked(self.db, h["id"], day)} for h in g["weekly"]]
+        # yesterday：昨天打过没有（周常也能补昨天的卡，在 Grok App 里练了英语，服务器收不到回报，第二天要能自己补上）
+        return [{**h, "today": quests.checked(self.db, h["id"], day),
+                 "yesterday": quests.checked(self.db, h["id"], day - timedelta(days=1))} for h in g["weekly"]]
 
     def _easy(self, habit_id: int, day: date) -> bool:
         r = self.db.conn.execute("SELECT easy FROM habit_log WHERE habit_id = ? AND day = ?",
@@ -219,20 +233,21 @@ class Workbench:
                 continue
             c = goal_card(p)
             steps = mains.get(p["goal_id"], [])
-            frac = c["frac"]
-            if frac is None and steps and p["goal_id"] not in agent_goals:  # 交给 agent 的副本她名下只剩做完的几步，算出来会是 100%
-                frac = round(sum(s["done"] for s in steps) / len(steps), 2)
+            agent = p["goal_id"] in agent_goals
             nxt = next((s for s in steps if not s["done"]), None)
             nxt_title = nxt["title"] if nxt else None
             from .. import stages
-            if stages.has_structure(self.db, p["goal_id"]):  # 新结构：进度按过了几个里程碑，下一步写当前里程碑
+            gp = None
+            if stages.has_structure(self.db, p["goal_id"]):  # 新结构：下一步写当前里程碑
                 gp = stages.goal_progress(self.db, p["goal_id"])
-                if frac is None or p["goal_id"] in agent_goals:
-                    frac = gp["frac"]
                 nxt_title = (f"{gp['current']['title']}" + (f"（{gp['current']['due'][5:]}）" if gp["current"]["due"] else "")) if gp["current"] else None
+            # 进度条按什么画只在 stages.boss_progress 一处定（指标 → 里程碑 → 步骤 → 不画）；
+            # 交给 agent 的副本她名下只剩做完的几步，按步骤算会是 100%，不算步骤
+            prog = stages.boss_progress(c["frac"], gp, sum(1 for s in steps if s["done"]), 0 if agent else len(steps))
+            frac = prog["frac"]
             out.append({"goal_id": p["goal_id"], "name": c["name"], "line": c["line"], "status": c["status"],
                         "steps_done": sum(1 for s in steps if s["done"]), "steps_total": len(steps),
-                        "frac": frac, "main": MAIN_BOSS in c["name"], "next": nxt_title,
+                        "frac": frac, "prog": prog, "main": MAIN_BOSS in c["name"], "next": nxt_title,
                         "comment": review.get(str(p["goal_id"])), "due": dues.get(p["goal_id"]), "title": titles.get(p["goal_id"]),
                         "target": (metrics.get(p["goal_id"]) or {}).get("target"), "unit": (metrics.get(p["goal_id"]) or {}).get("unit")})
         return sorted(out, key=lambda b: not b["main"])
@@ -261,6 +276,14 @@ class Workbench:
             t["done"] = int(t["done_now"])
             out.append(self._task(t, day.isoformat()))
         return {"today": out}
+
+    def _card_img(self, day: str) -> str:
+        """卡图地址带上图的修改时间：重出后地址就变，浏览器不会再拿缓存里的旧图。"""
+        try:
+            v = int((Path(self.store.root) / "cards" / f"{day}.jpg").stat().st_mtime)
+        except OSError:
+            v = 0
+        return f"/img/card/{day}?v={v}"
 
     def _task(self, t: dict, d: str) -> dict:
         main = t.get("quest") == "main"
@@ -399,11 +422,13 @@ class Workbench:
         for t in taskrules.rows(self.db, "plan_panel", day, plan):
             todos.append({"id": t["id"], "title": t["title"], "due": t["due"], "quest": t.get("quest"), "star_day": t.get("star_day"),
                           "domain": t.get("domain"), "goal": t.get("goal"), "goal_domain": t.get("goal_domain"),
-                          "star": t["id"] in today_ids, "label": t["label"],
+                          "star": t["id"] in today_ids, "label": t["label"], "points": quests.task_points(t),
+                          "size": t.get("size") or "", "repeat": (t.get("cadence") or "once") != "once" or bool(t.get("habit_id")),
                           "sub": (t.get("goal") or "").split("：")[0] if t.get("quest") == "main" else "其他",
                           "terr": t["territory"] or territory.WASTE})  # 归哪块领域，这里也能改
         skipped = taskrules.skipped_shown(self.db, (json.loads(plan["brief"]).get("skipped") or []) if plan else [], day)
-        return {"events": events, "todos": todos, "skipped": skipped, "replanning": bool(self.replan_runner and self.replan_runner.busy())}
+        return {"events": events, "todos": todos, "skipped": skipped, "replanning": bool(self.replan_runner and self.replan_runner.busy()),
+                "size_review": taskrules.size_review(self.db)}  # 估档清单（方案 A，补估档的迁移估的），过目后收起
 
     def card(self, day: date):
         path = Path(self.store.root) / "cards" / f"{day.isoformat()}.json"
@@ -415,12 +440,16 @@ class Workbench:
                     "line": None, "weather": None} if w else None
         if self.card_refresh is not None and (c.get("stale") or cards.stale(self.store.root, self.db, day)):
             self.card_refresh(day)  # 昨天的日记改了（或后来补写了）：后台重出卡上的字，不推送
-        if c.get("code") == "S1" and not c.get("shot"):  # 训练日的备用句按今天计划里实际练的写（之前写死“练腿”）；导演照日记写的那句不换
-            plan = self.db.latest_plan(day.isoformat())
-            train = next((i for i in (plan or {}).get("items", []) if i["kind"] == "event" and i["title"].startswith("训练")), None)
-            c["line"] = cards.line_for("S1", train["title"] if train else "")
+        if c.get("code") == "S1" and not c.get("shot"):  # 训练的备用句按昨天练的写（之前写死“练腿”；11-06 起不看今天的计划）；导演照日记写的那句不换
+            c["line"] = cards.line_for("S1", cards.yesterday_train(self.db, day))
         return {k: c.get(k) for k in ("day", "title", "rarity", "reason", "line", "weather")} | {
-            "image": f"/img/card/{c['day']}" if c.get("image") else None}
+            "image": self._card_img(c['day']) if c.get("image") else None} | self._redo_state(day)
+
+    def _redo_state(self, day: date) -> dict:
+        """重画进度（点开昨日卡就能重画）：正在画、上一次重画没成的原因（原来那张留着）。"""
+        busy = bool(self.redo_runner is not None and getattr(self.redo_runner, "busy", lambda: False)())
+        note = cards.redo_note(self.store.root, day)
+        return {"redoing": busy, "redo_msg": note["msg"] if note and not busy and not note.get("ok") else None}
 
     def training_today(self, day: date, plan):
         """训练详情排成卡片用：今天的动作处方（和日历里同一套代码算的）+ 计划里训练那一项的时间和路上安排。"""
@@ -453,7 +482,7 @@ class Workbench:
             rows = territory.health(self.db, key, day, bool(mine), self.store.root)
             light = territory.worst([r["light"] for r in rows])
             if mine:
-                line = " · ".join(f"{'★ ' if b['main'] else ''}{b['name']} {round(100 * (b['frac'] or 0))}%" for b in mine[:2])
+                line = " · ".join(f"{'★ ' if b['main'] else ''}{b['name']}" + (f" {b['prog']['label']}" if b["prog"]["label"] else "") for b in mine[:2])  # 进度写明按什么（stages.boss_progress）
             else:
                 lit = sorted((r for r in rows if r["light"] != "none"), key=lambda r: territory.ORDER[r["light"]])
                 line = f"{lit[0]['name']} {lit[0]['actual']}" if lit else next((r["note"] for r in rows if r["note"]), "没有副本")
@@ -464,7 +493,7 @@ class Workbench:
             out.append({"key": key, "name": name, "light": light, "line": line,
                         "todos": sum(1 for t in tasks if t["territory"] == key)})
         brain.sync(self.store)
-        return {"territories": out, "waste": sum(1 for t in tasks if t["territory"] is None),
+        return {"territories": out, "waste": len(taskrules.rows(self.db, "waste", day)),
                 "brain_ask": brain.counts(self.db)["ask"]}
 
     def spend_page(self, start: str, end: str) -> dict:
@@ -475,8 +504,8 @@ class Workbench:
         now = now or self.now()
         day = now.date()
         if key == territory.WASTE:
-            _, tasks = self._territory_parts(day)
-            rows = [t for t in tasks if t["territory"] is None]
+            tasks = taskrules.rows(self.db, "territory", day)
+            rows = taskrules.rows(self.db, "waste", day)  # 和导航红点、赛季页荒原柱同一个视图（taskrules 的 waste）
             # 最近 14 天她归过的：归错了回到这里能改
             from .. import locks
             locks.ensure(self.db)
@@ -485,7 +514,7 @@ class Workbench:
                 "SELECT obj, at FROM manual_locks WHERE field = 'domain' AND obj LIKE 'task:%' AND released_at IS NULL AND at >= ? ORDER BY at",
                 (since,))}
             recent = sorted((t for t in tasks if t["id"] in at and t["territory"]), key=lambda t: at[t["id"]], reverse=True)
-            return {"key": key, "name": "荒原", "tasks": [{"id": t["id"], "title": t["title"], "due": t["due"],
+            return {"key": key, "name": "待归属", "tasks": [{"id": t["id"], "title": t["title"], "due": t["due"],
                                                          "guess": territory.guess(t["title"])} for t in rows],
                     "recent": [{"id": t["id"], "title": t["title"], "terr": t["territory"], "at": at[t["id"]][5:]} for t in recent[:30]],
                     "options": [{"key": k, "name": n} for k, n, _ in territory.TERRITORIES]}
@@ -517,12 +546,13 @@ class Workbench:
         if key == "body":
             out["weights"] = territory._weights(self.db, day, 28)
         if key == "life":
-            out["explore"] = territory.explore_stats(self.store.root)
+            out["explore"] = territory.explore_stats(self.store.root) or None
+            out["wishes_done"] = domain_stats.wishes_done(self.db, day)  # “实现心愿”那一项点开看是哪条、哪天
         return out
 
     # ---------- 回顾、设置 ----------
     def season_page(self, now: datetime = None) -> dict:
-        """赛季页（第二版：样稿 A 的通行证 + C 的七块领地分数柱 + 小伴 总评和下赛季建议，docs/design/season-page.md）。"""
+        """赛季页（docs/design/season-page.md）：小伴 总评 + 结论 + 下赛季建议 + 七块领地各自的状态（11-06 删了通行证大卡和主副本路线，和首页重复）。"""
         from .. import season
         day = (now or self.now()).date()
         s, start = season.current(self.settings)
@@ -535,27 +565,16 @@ class Workbench:
         out["draft"] = d["body"] if d else None
         out["draft_at"] = d["updated_at"][:16].replace("T", " ") if d else None
         out["past"] = past
-        out["route"] = self.main_route(day)
-        out["waste"] = sum(1 for t in taskrules.rows(self.db, "territory", day) if not t["territory"])  # 荒原：没归类的待办（柱子里的虚线那根）
+        out["waste"] = len(taskrules.rows(self.db, "waste", day))  # 待归属（代码名 waste）：没归类的待办，七块领地旁的按钮上的数，和红点、待归属页同一个视图（不是第八块领域）
         if out.get("stale") and getattr(self, "season_kick", None):  # 小伴 那句结论旧了：后台重写，过一会儿刷新就是新的
-            out["rewriting"] = bool(self.season_kick())
+            old, out["rewriting"] = not out.get("line_at") or season.stale({"at": out["line_at"]}, day), False
+            # 只是因为她之后又记了东西（11-06）：每天最多重写 REWRITE_CAP 次，别刷额度；写满 2 天的旧结论照旧重写
+            out["capped"] = not old and not season.may_rewrite(self.store.root, day)
+            if not out["capped"]:
+                out["rewriting"] = bool(self.season_kick())
+                if out["rewriting"] and not old:
+                    season.count_rewrite(self.store.root, day)
         return out
-
-    def main_route(self, day: date):
-        """赛季页只留主副本一条关卡路线（A 的关卡路线换成领地分数柱，只替掉一部分）。"""
-        from .. import stages
-        b = next((x for x in self.bosses(day) if x["main"]), None)
-        if not b:
-            return None
-        ms = stages.milestones(self.db, b["goal_id"])
-        cur = next((m["id"] for m in ms if m["status"] == "open"), None)
-        out = []
-        for m in ms:
-            ts = [t for t in stages.tasks_of(self.db, m["id"]) if not t["draft"]] if m["id"] == cur else []
-            out.append({"title": m["title"], "due": m["due"], "state": "now" if m["id"] == cur else ("clear" if m["status"] == "done" else ("miss" if m["status"] == "missed" else "lock")),
-                        "done": sum(1 for t in ts if t["done"]), "total": len(ts)})
-        return {"goal_id": b["goal_id"], "name": b["name"], "title": b["title"], "due": b["due"], "frac": b["frac"],
-                "next": b["next"], "milestones": out}
 
     def review_page(self, now: datetime = None) -> dict:
         day = (now or self.now()).date()
@@ -606,19 +625,15 @@ class Workbench:
             {"name": "Mac 工作时长", "ok": worktime.has_data(db), "detail": "事业领域的工作时长上限", "fix": "Mac 上跑一次 python3 -m ethan.worktime --install"},
             {"name": "小红书 / Instagram 账号", "ok": False, "detail": "发帖数、粉丝", "fix": "等接账号"}]
         plan = db.latest_plan(day.isoformat())
-        hooks = agents.load_sessions(root).get("at") or ""
+        hooks, codex = agents.last_report(root, "claude"), agents.last_report(root, "codex")
         health = [
             {"name": "每日计划", "ok": plan is not None, "detail": "今天的计划排好了" if plan else "今天还没排（每天 06:30）"},
             {"name": "昨日卡", "ok": (root / "cards" / f"{day.isoformat()}.json").exists(), "detail": "今天的卡画好了" if (root / "cards" / f"{day.isoformat()}.json").exists()
              else f"在等：{cards.waiting(root, day)['reason']}" if cards.waiting(root, day) else "今天还没画"},
             {"name": "Claude 会话报到", "ok": bool(hooks), "detail": f"最近一次 {fmt(hooks)}" if hooks else "还没有会话报到"},
+            {"name": "Codex 回报", "ok": bool(codex), "detail": f"最近一次 {fmt(codex)}（Mac 和旧服务器上的 Codex 每分钟报一次在干什么）" if codex
+             else "还没有报到：Mac 上跑 python3 -m ethan.setup_hook --where codex 装好报到"},
             {"name": "Grok 回报", "ok": bool(latest("inbox")), "detail": f"最近一次 {latest('inbox') or '没有'}"}]
-        # 系统体检一屏（升级系统页）：定时任务、部署、大批整理、来源、内存、红点自检，和巡检看同一份（ethan/syscheck.py）
-        try:
-            from .. import syscheck
-            system = syscheck.overview(root, db, now.astimezone(timezone.utc) if now.tzinfo else None, wb=self, services=self.services_check)
-        except Exception as e:
-            system = {"error": f"{type(e).__name__} {str(e)[:200]}"}
         try:
             metrics = sysmetrics.weekly(self.store, root)
         except Exception:
@@ -629,11 +644,38 @@ class Workbench:
             mem = {**lifebase.memory_stats(db), "files": interviews.files_progress(db), "semantic": memsearch.semantic_on(db)}  # 来源健康挪到系统体检
         except Exception:
             mem = None
-        return {"memory": mem, "prefs": {"proactive": self.settings.get("proactive_enabled", True) is not False,
+        return {"memory": mem, "prefs": {"ui_lang": self.settings.get("ui_lang", "zh"), "proactive": self.settings.get("proactive_enabled", True) is not False,
                           "quiet": self.settings.get("quiet_hours", "00:00-08:00"), "timezone": self.settings.get("timezone", DEFAULT_TZ)},
-                "connections": conns, "health": health, "metrics": metrics, "system": system}
+                "connections": conns, "health": health, "metrics": metrics}
+
+    SYSTEM_TTL = 300
+
+    def system_page(self, now: datetime = None, fresh: bool = False) -> dict:
+        """系统体检一屏（升级系统页，数据见 ethan/syscheck.py）。算一次要好几秒（11-07 实测 3–10 秒），
+        和设置页分开拉（设置先出来），5 分钟内再打开直接用上次的。"""
+        now = now or self.now()
+        cache = getattr(self, "_system_cache", None)
+        if cache and not fresh and (datetime.now() - cache[0]).total_seconds() <= self.SYSTEM_TTL:
+            return cache[1]
+        try:
+            from .. import syscheck
+            system = syscheck.overview(Path(self.store.root), self.db, now.astimezone(timezone.utc) if now.tzinfo else None, wb=self, services=self.services_check)
+        except Exception as e:
+            return {"error": f"{type(e).__name__} {str(e)[:200]}"}
+        self._system_cache = (datetime.now(), system)
+        return system
+
+    def translate_ui(self, payload):
+        """只翻前端选中的可见内容，不改业务原文。"""
+        from .translation import translate
+        return translate(self.db, self._model(), payload.get("texts"))
 
     def do_settings_set(self, p, day):
+        if "ui_lang" in p:
+            if p["ui_lang"] not in ("zh", "en"):
+                return {"ok": False, "msg": "不支持的界面语言"}
+            self.settings.set("ui_lang", p["ui_lang"])
+            return {"ok": True, "msg": "界面语言已保存"}
         if "proactive" in p:
             self.settings.set("proactive_enabled", bool(p["proactive"]))
             return {"ok": True, "msg": "小伴 会按时段主动找你" if p["proactive"] else "先不主动找你了",
@@ -732,7 +774,7 @@ class Workbench:
                 # 每天早上画的卡是照着前一天画的：日记本、卡册里这张卡算前一天的，和前一天的日记放一起；今天的还没有
                 dday = (date.fromisoformat(c["day"]) - timedelta(days=1)).isoformat()
                 out.append({k: c.get(k) for k in ("title", "rarity", "reason", "line", "weather")}
-                           | {"day": dday, "made": c["day"], "image": f"/img/card/{c['day']}",
+                           | {"day": dday, "made": c["day"], "image": self._card_img(c['day']),
                               "kind": "点单" if c.get("wish") else {"E": "节点", "S": "训练"}.get((c.get("code") or "W")[0], "日常"),
                               "wish": c.get("wish") or ""} | self._diary(dday))
         busy = bool(self.redo_runner is not None and getattr(self.redo_runner, "busy", lambda: False)())
@@ -788,12 +830,18 @@ class Workbench:
         ready = sum(1 for r in quests.rewards(self.db) if g["balance"] >= r["cost"])
         if ready:
             out["quests"] = ready  # 商店里有能拆的惊喜
-        out["map"] = sum(1 for t in taskrules.rows(self.db, "territory", day) if not t["territory"])  # 荒原里等她归类的（不用再算一遍副本）
+        out["map"] = len(taskrules.rows(self.db, "waste", day))  # 荒原里等她归类的：和荒原页、赛季页荒原柱同一个视图（taskrules 的 waste）
         return {k: v for k, v in out.items() if v}
 
     def brain_page(self, tab: str = "all", q: str = "", kind: str = "", terr: str = "") -> dict:
         brain.sync(self.store)
-        return {"items": brain.search(self.db, tab, q, kind, terr), "counts": brain.counts(self.db, tab, q, kind, terr),
+        items = brain.search(self.db, tab, q, kind, terr)
+        for x in items:  # 她发的照片：能看图；是不是昨日卡的形象参考（她设的 manual / 自动认出的 auto / 不是 ""，晚）
+            got = self._photo_of(x)
+            if got:
+                x["photo"] = f"/img/file/{x['id']}"
+                x["avatar_ref"] = cards.ref_state(self.store.root, got[1])
+        return {"items": items, "counts": brain.counts(self.db, tab, q, kind, terr),
                 "kinds": brain.KINDS, "groups": brain.KIND_GROUPS, "statuses": brain.STATUS_LABELS,
                 "territories": [{"key": k, "name": n} for k, n, _ in territory.TERRITORIES]}
 
@@ -847,7 +895,8 @@ class Workbench:
             active = skills.listing(self.db, self.store.root)  # 在用的 skill：第几版、能退回哪版（待你定最下面）
         except Exception:
             active = []
-        return {"items": mepage.pending_items(self.db), "skills": active}
+        from .. import followups
+        return {"items": mepage.pending_items(self.db), "skills": active, "later": followups.later(self.db)}
 
     def do_me_skillback(self, p, day):
         """在用的 skill 一键退回上一版（ethan/skills.py rollback）。"""
@@ -928,7 +977,7 @@ class Workbench:
                                               once=bool(p.get("once")), to_whom=(p.get("to_whom") or "").strip() or None)
         except ValueError as e:
             return {"ok": False, "msg": str(e)}
-        return {"ok": True, "msg": "记下了：对外的（主页助手、主页、合作方）可以说这一句", "id": did}
+        return {"ok": True, "msg": "记下了：对外的（Days、主页、合作方）可以说这一句", "id": did}
 
     def do_me_policy(self, p, day):
         """对外开关：某一档的某一类改成 可以说 / 问我 / 不说（ontology-plan 3.3）。"""
@@ -979,6 +1028,26 @@ class Workbench:
     def do_person_loopdone(self, p, day):
         from .. import relations
         return relations.loop_done(self.db, int(p["id"]), str(p.get("text") or ""))
+
+    def do_person_loopdefer(self, p, day):
+        """没了结的事“先放着”：挪进等着办。"""
+        from .. import relations
+        return relations.defer_loop(self.db, int(p["id"]), str(p.get("text") or ""), day)
+
+    def do_person_datedone(self, p, day):
+        """生日和重要日子“办完了”：这一次不再列。"""
+        from .. import relations
+        return relations.date_done(self.db, int(p["id"]), str(p.get("date") or ""), str(p.get("what") or ""))
+
+    def do_person_merge(self, p, day):
+        """两张卡合成一张（的合并入口）：drop 并进 keep。"""
+        from .. import relations
+        return relations.merge(self.db, int(p["keep"]), int(p["drop"]))
+
+    def do_person_notsame(self, p, day):
+        """“可能是同一个人”里点“不是同一个人”：这一对以后不再提。"""
+        from .. import relations
+        return relations.not_same(self.db, int(p["drop"]), int(p["keep"]))
 
     def do_person_delete(self, p, day):
         """删卡：以后不再从微信建回来。"""
@@ -1058,7 +1127,7 @@ class Workbench:
             raise ValueError("没有这个领域")
         self.db.conn.execute("UPDATE tasks SET domain = ? WHERE id = ?", (key if key in territory.NAME else "waste", tid))
         self.db.conn.commit()
-        name = territory.NAME.get(key, "荒原")
+        name = territory.NAME.get(key, "待归属")
         return {"ok": True, "msg": f"归到{name}了", "log": f"待办归到{name}：{row['title']}",
                 "undo": {"action": "task.domain", "id": tid, "undo": 1, "prev": row["domain"] or ""}}
 
@@ -1078,6 +1147,11 @@ class Workbench:
         self.db.conn.commit()
         name = next(b["name"] for b in bosses if b["goal_id"] == gid)
         return {"ok": True, "msg": "往前挪了", "log": f"副本排序：{name} 往前挪一位"}
+
+    def agent_task(self, tid: int) -> dict:
+        """团队页点开一件活：完整的“要做什么”和交上来的说明（列表里只带前 300 字，团队页加载很慢）。"""
+        r = self.db.conn.execute(f"SELECT {', '.join(agents.LIST_FIELDS)}, review_note, spec FROM agent_tasks WHERE id = ?", (int(tid),)).fetchone()
+        return dict(r) if r else {}
 
     def team_page(self, now: datetime = None) -> dict:
         """团队页：各 agent 的成绩单（最近 7 天）和任务看板（见 docs/design/agent-team.md）。"""
@@ -1105,11 +1179,11 @@ class Workbench:
                 ("failed", "失败 · 放弃（7 天）", "status IN ('failed', 'dropped') AND finished_at >= ? AND archived_at IS NULL", (week,))):
             rows = db.conn.execute(f"SELECT {', '.join(agents.LIST_FIELDS)}, review_note, spec FROM agent_tasks "
                                    f"WHERE {sql} ORDER BY id DESC LIMIT 30", args)
-            cols.append({"key": key, "label": label, "tasks": [dict(r) for r in rows]})
-        archive = [dict(r) for r in db.conn.execute(
+            cols.append({"key": key, "label": label, "tasks": [_short_task(r) for r in rows]})
+        archive = [_short_task(r) for r in db.conn.execute(
             f"SELECT {', '.join(agents.LIST_FIELDS)}, review_note, spec FROM agent_tasks WHERE (status = 'accepted' AND rating IS NOT NULL) "
             "OR (status IN ('failed', 'dropped') AND finished_at < ?) OR archived_at IS NOT NULL "
-            "ORDER BY COALESCE(archived_at, reviewed_at, finished_at) DESC LIMIT 100", (week,))]
+            "ORDER BY COALESCE(archived_at, reviewed_at, finished_at) DESC LIMIT 40", (week,))]
         # 系统之外也在干的活（团队页漏了很多）：Claude 会话（钩子报到）、准备员（算 小伴 的）、Grok（派出去还没回的）
         sessions = agents.load_sessions(self.store.root)
         live = [{"agent": x.get("agent", "claude"), "title": x["title"],
@@ -1144,7 +1218,7 @@ class Workbench:
         for r in board:
             r["open"] = (r.get("open") or 0) + sum(1 for x in live if x["agent"] == r["agent"] and x["state"] in ("running", "queued"))
         return {"scoreboard": board, "columns": cols, "archive": archive, "live": live,
-                "claude_sessions": sessions,
+                "claude_sessions": {**sessions, "sessions": sessions.get("sessions", [])[:30]},
                 "names": {**agents.REPORT_AGENTS, "ethan": "小伴"}}
 
     def quests_page(self, now: datetime = None) -> dict:
@@ -1341,9 +1415,9 @@ class Workbench:
         if not title:
             raise ValueError("要做什么还没填")
         when = p.get("when", "today")  # 今天 = 进今日任务；这周；不急（让计划器排）
-        due = {"today": day, "week": day + timedelta(days=6 - day.weekday())}.get(when)
+        due = {"today": day, "week": clock.week_end(day)}.get(when)
         gid = int(p["goal_id"]) if p.get("goal_id") else None
-        tid = self.db.add_task(title, due=due.isoformat() if due else None, goal_id=gid)
+        tid = taskrules.add(self.db, title, due=due.isoformat() if due else None, goal_id=gid, size=p.get("size"))  # 档：她选了用她的，没选按标题估
         key = str(p.get("territory") or "")
         if not gid:  # 没挂副本的：她选了领地就用她选的，没选就让 小伴 按标题猜，猜不出留在荒原
             key = key if key in territory.NAME or key == territory.WASTE else (territory.guess(title) or "")
@@ -1353,7 +1427,7 @@ class Workbench:
         if gid:  # 挂到副本：算那个副本主线的一步，排在最后
             seq = self.db.conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM tasks WHERE goal_id = ? AND quest = 'main'",
                                        (gid,)).fetchone()[0]
-            self.db.conn.execute("UPDATE tasks SET quest = 'main', size = 'S', seq = ? WHERE id = ?", (seq, tid))
+            self.db.conn.execute("UPDATE tasks SET quest = 'main', seq = ? WHERE id = ?", (seq, tid))
         if when == "today" or p.get("star"):
             self._star(tid, day, True)
         self.db.conn.commit()
@@ -1428,6 +1502,22 @@ class Workbench:
         self.db.conn.commit()
         return {"ok": True, "msg": "改好了", "log": f"改副本：{title}（截止 {due or '不限'}）"}
 
+    def _goal_title(self, gid) -> str:
+        r = self.db.conn.execute("SELECT title FROM goals WHERE id = ?", (gid,)).fetchone() if gid else None
+        return r[0] if r else ""
+
+    def do_task_size(self, p, day):
+        """她改一件的档（S 一小时内 / M 半天 / L 一两天 / XL 好几天，方案 A）；锁由 act 记，自动流程以后不动。"""
+        title = self._title(int(p["id"]))
+        r = taskrules.set_size(self.db, int(p["id"]), str(p.get("size") or ""))
+        return {"ok": True, "msg": f"改成 {r['size']}（+{r['points']}）", "undo": {"action": "task.size", "id": p["id"], "size": r["old"] or "S"},
+                "log": f"改档：{title} {r['old'] or '—'} → {r['size']}"}
+
+    def do_size_ok(self, p, day):
+        """估档清单她看过了、都对：收起来，档不变。"""
+        n = taskrules.size_review_ok(self.db)
+        return {"ok": True, "msg": f"好，{n} 件按估的来", "log": f"估档清单过目：{n} 件按估的来"}
+
     def do_task_rename(self, p, day):
         title = str(p.get("title") or "").strip()[:200]
         if not title:
@@ -1468,8 +1558,8 @@ class Workbench:
         if not self.db.goal_exists(gid):
             raise ValueError("没有这个副本")
         seq = self.db.conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM tasks WHERE goal_id = ? AND quest = 'main'", (gid,)).fetchone()[0]
-        tid = self.db.add_task(title, goal_id=gid)
-        self.db.conn.execute("UPDATE tasks SET quest = 'main', size = 'S', seq = ?, milestone = ? WHERE id = ?",
+        tid = taskrules.add(self.db, title, goal_id=gid, size=p.get("size"), context=self._goal_title(gid))
+        self.db.conn.execute("UPDATE tasks SET quest = 'main', seq = ?, milestone = ? WHERE id = ?",
                              (seq, 1 if p.get("milestone") else 0, tid))
         self.db.conn.commit()
         return {"ok": True, "id": tid, "msg": "加上了", "undo": {"action": "task.delete", "id": tid},
@@ -1493,7 +1583,7 @@ class Workbench:
         if not title:
             return {"ok": False, "msg": "写一下要做什么"}
         tid = stages.add_task(self.db, int(p["milestone_id"]), title, str(p.get("cadence") or "once"),
-                              int(p["per_week"]) if str(p.get("per_week") or "").strip() else None)
+                              int(p["per_week"]) if str(p.get("per_week") or "").strip() else None, size=p.get("size"))
         return {"ok": True, "id": tid, "msg": "加上了", "undo": {"action": "task.delete", "id": tid}, "log": f"加阶段任务：{title}"}
 
     def do_stage_set(self, p, day):
@@ -1756,6 +1846,53 @@ class Workbench:
         return {"ok": True, "msg": ("先补昨天的日记再出卡，大约一两分钟" if c else "正在画今天的卡，大约半分钟") if started else "还在画，稍等",
                 "log": "让 小伴 现画昨日卡" if started else None}
 
+    def _photo_of(self, x: dict):
+        """第二大脑里她发的一张照片（kind=file、在 media/ 下、图片格式）：返回 (路径, 文件哈希)，不是就 None。"""
+        rel = (x.get("extra") or {}).get("path") or ""
+        if x.get("kind") != "file" or not str(x.get("ref") or "").startswith("file:") or not rel.startswith("media/"):
+            return None
+        path = (Path(self.store.root) / rel).resolve()
+        if path.suffix.lower() not in cards.REF_EXTS or not path.is_relative_to((Path(self.store.root) / "media").resolve()):
+            return None
+        return path, x["ref"][5:]
+
+    def photo_file(self, item_id: int):
+        """/img/file/<编号>：她发的照片原图（只给她自己看，要登录）。"""
+        row = self.db.conn.execute("SELECT id, kind, ref, extra FROM brain_items WHERE id = ?", (int(item_id),)).fetchone()
+        if not row:
+            return None
+        got = self._photo_of({**dict(row), "extra": json.loads(row["extra"] or "{}")})
+        return got[0] if got and got[0].is_file() else None
+
+    def do_avatar_ref(self, p, day):
+        """她点“设为形象参考”/“不当参考了”。11-06 晚起她本人清楚的自拍收照片时就自动用（ethan/files.py → cards.auto_ref），
+        这里是她亲手改：设的优先级最高；“不当参考了”记一把锁，自动流程永远不再把这张放回去。"""
+        row = self.db.conn.execute("SELECT id, kind, ref, extra FROM brain_items WHERE id = ?", (int(p.get("id") or 0),)).fetchone()
+        got = self._photo_of({**dict(row), "extra": json.loads(row["extra"] or "{}")}) if row else None
+        if not got or not got[0].is_file():
+            return {"ok": False, "msg": "这条不是能当参考的照片"}
+        from .. import locks
+        kind, field = cards.REF_LOCK
+        if p.get("off"):
+            cards.drop_ref(self.store.root, got[1])
+            locks.lock(self.db, kind, got[1][:16], field, "off", note="她点了“不当参考了”")
+            return {"ok": True, "msg": "这张不再当形象参考了，以后也不会自动用", "log": "取消一张形象参考照"}
+        locks.release(self.db, kind, got[1][:16], field)
+        cards.add_ref(self.store.root, got[0], got[1])
+        return {"ok": True, "msg": "设好了：以后画昨日卡先照这张画你的脸", "log": "设了一张形象参考照"}
+
+    def do_card_redo(self, p, day):
+        """重画这张昨日卡：
+        重新让导演编一个和上一版不同的镜头、重新生图（约 0.09 美元，记账 daily-card）；没成原来那张留着。卡册的“现在重画今天”也走同一个 redo_runner。"""
+        c = self.card(day)
+        if not c or c.get("waiting"):
+            return {"ok": False, "msg": "今天的卡还没出，没有可以重画的"}
+        if self.redo_runner is None:
+            return {"ok": False, "msg": "这里重画不了"}
+        started = self.redo_runner()  # 预算用完的话 remake 不动原来那张，结果记在 card-redo.json，这里显示出来
+        return {"ok": True, "msg": "正在重画，大约半分钟，画好了原地换上" if started else "上一张还在画，稍等",
+                "log": "昨日卡重画" if started else None}
+
     def do_card_wish(self, p, day):
         """她想要的卡（场景、动作、视角、cosplay）：排进队里，下一张普通卡照这个画；now=1 就马上重画今天。"""
         text = str(p.get("text") or "").strip()
@@ -1770,6 +1907,23 @@ class Workbench:
                     else "上一张还在画，画完马上按你这条（和之前没画的几条一起）再重画一次",
                     "log": f"昨日卡重画：{text[:30]}"}
         return {"ok": True, "msg": "记下了，下一张卡照这个画", "log": f"想要的卡：{text[:30]}"}
+
+    def do_wish_reopen(self, p, day):
+        """“实现心愿”里那条不是她实现的（比如在 Telegram 待办清单里误点了 ✓）：放回心愿清单，可撤销。"""
+        r = self.db.conn.execute("SELECT id, quote, status, done_at FROM wishes WHERE id = ?", (int(p["id"]),)).fetchone()
+        if r is None or r["status"] != "done":
+            return {"ok": False, "msg": "这条不在“实现了的”里"}
+        self.db.conn.execute("UPDATE wishes SET status = 'open', done_at = NULL WHERE id = ?", (r["id"],))
+        self.db.conn.commit()
+        return {"ok": True, "msg": "放回心愿清单了", "undo": {"action": "wish.redone", "id": r["id"], "done_at": r["done_at"]},
+                "log": f"心愿放回清单：{r['quote'][:40]}"}
+
+    def do_wish_redone(self, p, day):
+        """撤销“放回”：照原来的日子记回实现了。"""
+        n = self.db.conn.execute("UPDATE wishes SET status = 'done', done_at = ? WHERE id = ? AND status = 'open'",
+                                 (str(p.get("done_at") or "") or quests.now(), int(p["id"]))).rowcount
+        self.db.conn.commit()
+        return {"ok": bool(n), "msg": "记回实现了" if n else "这条已经不在清单里了"}
 
     def do_card_wishdrop(self, p, day):
         ok = cards.drop_wish(self.db, int(p["id"]))

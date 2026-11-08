@@ -121,6 +121,52 @@ class TerritoryTest(unittest.TestCase):
         self.assertEqual((ex["countries"], ex["china"], ex["goals_done"], ex["goals_doing"]), (2, 1, 1, 1))
         self.assertIn("点亮 2 国", {t["key"]: t for t in self.wb.map_page(NOON_WED)["territories"]}["life"]["line"])
 
+class LifePageTest(unittest.TestCase):
+    """看生活体验领域页：“出门做工作以外的事那一行……不要换行”“我实现的那个心愿是啥呀？我咋不知道？”
+    “每周新体验的那个图去掉”“探索地图放在副本和资料中间”“本周的健康线跟你最上面的那个进度条那个模块是不是重复了呀？”"""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from ethan.core.router import Settings
+        from ethan.workbench.api import Workbench
+        from tests.test_workbench import FakeCalendar, NOON, make_demo
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = make_demo(Path(self.tmp.name))
+        self.wb = Workbench(self.store, Settings(Path(self.tmp.name) / "settings.json"), calendar=FakeCalendar())
+        self.now = NOON
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_life_page_keeps_the_shared_skeleton(self):
+        """七个领域详情页的排版和框架保持一致，没让把生活体验的“这个领域”和健康线合在一起。"""
+        t = self.wb.territory_page("life", self.now)
+        self.assertNotIn("merged", t)
+        self.assertTrue(t["rows"])  # 健康线单独一块
+        self.assertTrue(all("week" not in i for i in t["score"]["items"]))
+        self.assertEqual([c["title"] for c in t["charts"]], ["每周出门天数"])  # 每周新体验的图去掉了
+        self.assertIsNone(t["explore"])  # 没上传探索地图：给 None（页面写怎么加），不再显示 undefined
+
+    def test_done_wish_shows_which_and_can_go_back(self):
+        from ethan import attributes
+        db = self.store.db
+        wid = db.add_wish("一起去看一次北极光")
+        db.close_wish(wid, "done")  # Telegram 待办清单“我们的心愿”那栏点了 ✓
+        t = self.wb.territory_page("life", self.now)
+        self.assertEqual([(w["id"], w["quote"]) for w in t["wishes_done"]], [(wid, "一起去看一次北极光")])
+        item = next(i for i in t["score"]["items"] if i["name"] == "实现心愿")
+        self.assertEqual(item["actual"], "90 天实现 1 个")  # 页面上的数和点开看到的是同一批
+        r = self.wb.act("wish.reopen", {"id": wid}, self.now)
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.wb.territory_page("life", self.now)["wishes_done"], [])
+        self.assertEqual(db.open_wishes()[0]["id"], wid)
+        done_at = r["undo"]["done_at"]
+        self.assertTrue(self.wb.act("wish.redone", {"id": wid, "done_at": done_at}, self.now)["ok"])  # 撤销：照原来的日子记回
+        self.assertEqual(db.conn.execute("SELECT done_at FROM wishes WHERE id = ?", (wid,)).fetchone()[0], done_at)
+        self.assertFalse(self.wb.act("wish.reopen", {"id": 99999}, self.now)["ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

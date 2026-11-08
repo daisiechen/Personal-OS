@@ -101,7 +101,7 @@ class MePageTest(unittest.TestCase):
         got = mepage.ask(self.db, Router(["一周 5 次", "我不知道"]), "我每周练几次")
         self.assertEqual([a["user"] for a in got["answers"]], ["ethan", "twin"])
         self.assertIn(f"fact:{fid}", got["answers"][0]["keys"])
-        self.assertEqual(got["answers"][1]["keys"], [])  # 主页助手只能看公开的，私密的查不到
+        self.assertEqual(got["answers"][1]["keys"], [])  # Days只能看公开的，私密的查不到
         out = mepage.verdict(self.db, got["id"], {"ethan": "ok", "twin": "bad"})
         self.assertEqual(len(out["tickets"]), 1)  # 说错的那个开一张纠错单
         t = self.db.conn.execute("SELECT user, entry, right FROM corrections").fetchone()
@@ -132,7 +132,7 @@ class MePageTest(unittest.TestCase):
     def test_page_orders_users_and_counts_only_real_errors(self):
         memusers.open_ticket(self.db, "现在吃香菜", "不吃香菜", kind="changed")  # 变了：不算错
         p = mepage.page(self.db)
-        self.assertEqual([u["user"] for u in p["users"]], ["ethan", "twin", "site", "os"])  # 按实体（不要把每个任务都放上来；11-01：主页助手 是聊天沟通的，和做文案的个人主页分开）
+        self.assertEqual([u["user"] for u in p["users"]], ["ethan", "twin", "site", "os"])  # 按实体（不要把每个任务都放上来；11-01：Days 是聊天沟通的，和做文案的个人主页分开）
         self.assertIn("计划器", p["users"][3]["parts"])
         self.assertEqual(p["wrong"], 0)
         self.assertEqual(p["tickets"][0]["kind"], "changed")
@@ -235,6 +235,15 @@ def load_tests(loader, tests, pattern):  # 公开版（scripts/export_public.py 
                 setup = inspect.getsource(type(t).setUp) if "setUp" in vars(type(t)) else ""
             except (OSError, TypeError):
                 setup = ""
+            import re as _re  # 测试里调的辅助函数（self.xxx( / 模块里的 xxx(）去读迁移脚本的，也算（11-08 两个测试漏过）
+            mod = inspect.getmodule(t)
+            for name in set(_re.findall(r"(?:self\.)?([A-Za-z_]\w*)\(", src)):
+                fn = getattr(type(t), name, None) or getattr(mod, name, None)
+                if callable(fn) and not isinstance(fn, type):
+                    try:
+                        setup += inspect.getsource(fn)
+                    except (OSError, TypeError):
+                        pass
             if t._testMethodName in ('test_upload_replaces_map_and_reads_new_achievements_sheet', 'test_utf7', 'test_case_insensitive_synonyms_and_source_label') or any(k in src or k in setup for k in ('"migrations"', 'migrations/', 'migrations.', 'import migrations', 'docs/research', 'docs/status.md', 'docs/changelog')):
                 continue
             keep.addTest(t)

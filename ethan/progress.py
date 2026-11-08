@@ -11,13 +11,13 @@
 
 import json
 from datetime import date, datetime, timedelta, timezone
+from . import clock
 
 STATUS_PAUSED = "暂停"
 NO_DATA = "还没有数据"
 
 
-def week_start(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+week_start = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def _day_start_utc(day: date) -> str:

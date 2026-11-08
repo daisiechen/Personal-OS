@@ -21,10 +21,9 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from . import brief_card, life, nudge_registry, nudges
-from .clock import DEFAULT_TZ, HOME_TZ, home_now
+from .clock import DEFAULT_TZ, HOME_TZ, her_tz, home_now
 from .core.agent import Ethan
 from .core.router import AllBackendsFailed, BudgetExceeded, NeedsSwitchApproval
 
@@ -391,7 +390,7 @@ def say(rd: Round, key: str, occasion: str = "", day_key: str = None, text=None)
 
 
 def _tz(ethan):
-    return ZoneInfo(ethan.router.settings.get("timezone", DEFAULT_TZ))
+    return her_tz(ethan.router.settings)
 
 
 def relay_grok(ethan, channel, now: datetime = None) -> str:
@@ -432,7 +431,7 @@ def tick(ethan: Ethan, channel, now: datetime = None, calendar=None) -> str:
         log.append(f"计划没写成（{str(e)[:60]}）")
     if not settings.get("proactive_enabled", True):  # gate 里同一条规则（switch）；这一轮的都受它管，提前返回省得白算
         return "；".join(log + ["主动消息已暂停"])
-    tz = ZoneInfo(settings.get("timezone", DEFAULT_TZ))
+    tz = her_tz(settings)
     now_local = now.astimezone(tz)
     wiki = ethan.store.wiki
     records = ethan.store.raw.recent(50)

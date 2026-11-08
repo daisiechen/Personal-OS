@@ -226,8 +226,11 @@ def _prep_ask(db, now_local: datetime, done: dict):
     她回了再按 [准备 #编号 开始 / 不用] 处理。"""
     if not in_window("prep-ask:", now_local):
         return None
-    from . import prep
-    x = next((x for x in prep.asking(db) if fresh(db, f"prep-ask:{x['id']}", done)), None)
+    from . import lifelog, prep
+    from . import clock
+    monday = clock.week_start(now_local.date())
+    met = lifelog.met_since(db, monday)  # 这周已经记过见朋友：“选本周和朋友见面的地方”这类不再问
+    x = next((x for x in prep.asking(db) if fresh(db, f"prep-ask:{x['id']}", done) and not (met and "朋友见面" in (x.get("title") or ""))), None)
     if x is None:
         return None
     return f"prep-ask:{x['id']}", (f"#{x['id']}「{x['title']}」你想替她准备，但还没问过她要不要。用一句口语问她要不要你先做"
@@ -549,17 +552,15 @@ def _open_asks(db, today) -> list:
     return out
 
 
-def hints(db, records: list, today) -> list:
-    """首页的小提示：登记表 hint=True 的几类，小伴 问过一次、她之后没回过话、事情还没了结、她没点掉的。
-    [{"key", "text"}]。她回过话就算回了（小伴 在聊天里接着处理），不再挂。"""
-    hers = [r for r in records or () if r.get("role") == "mia"]
-    her_last = datetime.fromisoformat(hers[-1]["at"]).astimezone(timezone.utc) if hers else None
+def hints(db, today) -> list:
+    """首页的小提示：登记表 hint=True 的几类，小伴 问过一次、事情还没了结、她没点掉的。[{"key", "text"}]。
+    一直挂到事情了结（约不再撞、路线排开、计划不撞，_open_asks 里就没有了）或她点 ×；
+    不再因为她回过任何一句话就收起（以前她随便回一句“嗯”提示就没了，事情其实还撞着）。"""
     out = []
     for key, text in _open_asks(db, today):
         if not key.startswith(nudge_registry.hint_prefixes()) or told(db, HINT_OFF + key):
             continue
-        at = sent_at(db, key)
-        if at is None or (her_last and her_last >= at):
+        if sent_at(db, key) is None:  # 还没问过：不挂
             continue
         out.append({"key": key, "text": text})
     return out

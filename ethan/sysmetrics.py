@@ -14,6 +14,7 @@ import json
 import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from . import clock
 
 SHE_FORGOT = re.compile(r"你(又)?忘了|你不记得|我(之前|早就|刚才)?(都)?(跟你)?说过|跟你说过|你怎么不记得")
 ETHAN_BLANK = re.compile(r"不记得|不知道你|没有.{0,6}记录|你没(有)?(告诉|跟我说)|我这边(看不到|没有)")
@@ -27,8 +28,7 @@ def note_prep(db, task_id: int, kind: str):
                     (datetime.now(timezone.utc).isoformat(timespec="seconds"), task_id, kind))
 
 
-def _monday(day: date) -> date:
-    return day - timedelta(days=day.weekday())
+_monday = clock.week_start  # 本周一只在 clock 算（11-06）
 
 
 def _chat_counts(raw, start: date, end: date) -> tuple:
